@@ -221,8 +221,8 @@ pub enum Outcome {
     Passed,
     /// It did, and this is what it contributes.
     Failed(Action),
-    /// It did, and the `packages` entry it carries excused it.
-    Excepted { entry: usize, action: Action },
+    /// It did, and the `packages` entries it carries excused it.
+    Excepted { entries: Vec<usize>, action: Action },
     /// The check has no meaning for this ecosystem.
     NotApplicable,
 }
@@ -257,8 +257,8 @@ pub struct Weighed {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
     pub results: Vec<Result>,
-    /// The `packages` entry that applied, if any, whether or not it excused anything.
-    pub entry: Option<usize>,
+    /// What the `packages` entries that matched set, whether or not it excused anything.
+    pub applied: Applied,
     /// The score a package is refused at.
     pub threshold: u32,
     /// The detectors' and advisories' signals, each rule once.
@@ -396,9 +396,9 @@ impl Decision {
         let mut used: Vec<usize> = self
             .results
             .iter()
-            .filter_map(|r| match r.outcome {
-                Outcome::Excepted { entry, .. } => Some(entry),
-                _ => None,
+            .flat_map(|r| match &r.outcome {
+                Outcome::Excepted { entries, .. } => entries.clone(),
+                _ => Vec::new(),
             })
             .collect();
         used.sort_unstable();
@@ -414,13 +414,13 @@ impl Decision {
 /// a policy says on another day.
 pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
     let selectors = policy.selectors();
-    let entry = most_specific_match(policy, &selectors, facts, as_of);
+    let applied = Applied::of(policy, matching(policy, &selectors, facts, as_of));
 
     let threshold = policy.risk_threshold;
     let results = Check::ALL
         .iter()
         .map(|&check| {
-            let outcome = run(policy, facts, check, entry, as_of);
+            let outcome = run(policy, facts, check, &applied, as_of);
             let weight = weight(&outcome, check_weight(policy, check, &facts.provenance));
             Result {
                 check,
@@ -432,7 +432,7 @@ pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
 
     Decision {
         results,
-        entry,
+        applied,
         threshold,
         signals: Vec::new(),
     }
@@ -459,12 +459,12 @@ fn weight(outcome: &Outcome, weight: u32) -> u32 {
     }
 }
 
-/// The wait that applies to a package: the exception's where it sets one, else the global
-/// setting.
-pub fn cooldown_required(policy: &Policy, entry: Option<usize>) -> u32 {
-    entry
-        .and_then(|i| policy.packages[i].set.cooldown_days)
-        .unwrap_or(policy.cooldown_days)
+/// The wait that applies to a package: the last matching entry's where one sets it, else the
+/// global setting.
+pub fn cooldown_required(policy: &Policy, applied: &Applied) -> u32 {
+    applied
+        .cooldown_days
+        .map_or(policy.cooldown_days, |(days, _)| days)
 }
 
 /// The advisories over `max_cvss` or with no score, split into those that still count and
@@ -474,17 +474,14 @@ pub fn cooldown_required(policy: &Policy, entry: Option<usize>) -> u32 {
 pub fn over_max_cvss<'a>(
     policy: &Policy,
     facts: &'a Facts,
-    entry: Option<usize>,
+    applied: &Applied,
     as_of: Date,
 ) -> (Vec<&'a Advisory>, Vec<&'a Advisory>) {
-    let ignored = entry
-        .map(|i| policy.packages[i].set.ignored_vuln_advisory_ids.as_slice())
-        .unwrap_or(&[]);
     facts
         .advisories
         .iter()
         .filter(|a| score(policy, a, as_of).is_none_or(|(cvss, _)| cvss > policy.max_cvss))
-        .partition(|a| !ignored.iter().any(|id| a.is_named(id)))
+        .partition(|a| applied.ignoring(a).is_empty())
 }
 
 /// The score `max_cvss` compares for an advisory, and the `advisory_scores` entry it came
@@ -505,46 +502,87 @@ pub fn score(policy: &Policy, advisory: &Advisory, as_of: Date) -> Option<(f64, 
         .map(|(i, s)| (s.cvss, Some(i)))
 }
 
-/// The exception that applies, if any.
-///
-/// Most specific wins, by strict subset containment. Overlapping entries that cannot be
-/// ordered are refused at load, so whatever matches here forms a chain and the narrowest
-/// is unique.
-///
-/// A lapsed entry does not match at all, which is what makes an expiry do anything.
-fn most_specific_match(
-    policy: &Policy,
-    selectors: &[Canonical],
-    facts: &Facts,
-    as_of: Date,
-) -> Option<usize> {
-    let mut winner: Option<usize> = None;
-    for (i, selector) in selectors.iter().enumerate() {
-        let entry = &policy.packages[i];
-        if entry.expires.is_some_and(|e| e.has_passed(as_of)) {
-            continue;
+/// The live `packages` entries `facts` matches, in file order. A lapsed entry matches
+/// nothing, which is what makes an expiry do anything.
+fn matching(policy: &Policy, selectors: &[Canonical], facts: &Facts, as_of: Date) -> Vec<usize> {
+    selectors
+        .iter()
+        .enumerate()
+        .filter(|&(i, selector)| {
+            !policy.packages[i]
+                .expires
+                .is_some_and(|e| e.has_passed(as_of))
+                && selector.matches(
+                    &facts.ecosystem,
+                    &facts.name,
+                    &facts.version,
+                    facts.has_install_scripts,
+                )
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// What the `packages` entries matching a version set, from first to last: [`Applied::of`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// The entries, in file order.
+    pub entries: Vec<usize>,
+    pub cooldown_days: Option<(u32, usize)>,
+    pub kev: Option<(Action, usize)>,
+    pub install_scripts: Option<(Action, usize)>,
+    pub yanked: Option<(Action, usize)>,
+    pub deprecated: Option<(Action, usize)>,
+    pub provenance: Option<(Action, usize)>,
+    /// Each advisory id ignored, with the entry naming it.
+    pub ignored: Vec<(String, usize)>,
+}
+
+impl Applied {
+    /// `entries` of `policy` applied in file order: each key the last value set, with the
+    /// entry that set it, and every entry's ignored ids.
+    pub fn of(policy: &Policy, entries: Vec<usize>) -> Self {
+        let mut applied = Self::default();
+        for &i in &entries {
+            let set = &policy.packages[i].set;
+            let last = |slot: &mut Option<(Action, usize)>, value: Option<Action>| {
+                if let Some(value) = value {
+                    *slot = Some((value, i));
+                }
+            };
+            last(&mut applied.kev, set.kev);
+            last(&mut applied.install_scripts, set.install_scripts);
+            last(&mut applied.yanked, set.yanked);
+            last(&mut applied.deprecated, set.deprecated);
+            last(&mut applied.provenance, set.provenance);
+            if let Some(days) = set.cooldown_days {
+                applied.cooldown_days = Some((days, i));
+            }
+            applied.ignored.extend(
+                set.ignored_vuln_advisory_ids
+                    .iter()
+                    .map(|id| (id.clone(), i)),
+            );
         }
-        if !selector.matches(
-            &facts.ecosystem,
-            &facts.name,
-            &facts.version,
-            facts.has_install_scripts,
-        ) {
-            continue;
-        }
-        winner = match winner {
-            None => Some(i),
-            Some(current) if selector.strictly_contained_by(&selectors[current]) => Some(i),
-            Some(current) => Some(current),
-        };
+        applied.entries = entries;
+        applied
     }
-    winner
+
+    /// The entries that ignore `advisory`, by its id or an alias, in file order.
+    pub fn ignoring(&self, advisory: &Advisory) -> Vec<usize> {
+        let mut entries: Vec<usize> = self
+            .ignored
+            .iter()
+            .filter(|(id, _)| advisory.is_named(id))
+            .map(|(_, entry)| *entry)
+            .collect();
+        entries.dedup();
+        entries
+    }
 }
 
 /// Run one check.
-fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of: Date) -> Outcome {
-    let set = entry.map(|i| &policy.packages[i].set);
-
+fn run(policy: &Policy, facts: &Facts, check: Check, applied: &Applied, as_of: Date) -> Outcome {
     match check {
         Check::Denials => denials(policy, facts),
 
@@ -556,11 +594,15 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             }
         }
 
-        Check::CooldownDays => cooldown_days(policy, facts, entry, as_of),
+        Check::CooldownDays => cooldown_days(policy, facts, applied, as_of),
 
-        Check::Kev => kev(policy, facts, set, entry),
+        Check::Kev => on_off(
+            facts.advisories.iter().any(|a| a.kev),
+            policy.kev,
+            applied.kev,
+        ),
 
-        Check::MaxCvss => max_cvss(policy, facts, entry, as_of),
+        Check::MaxCvss => max_cvss(policy, facts, applied, as_of),
 
         Check::InstallScripts => {
             if !merge::applies(&facts.ecosystem, Rule::InstallScripts) {
@@ -569,8 +611,7 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             on_off(
                 facts.has_install_scripts,
                 policy.install_scripts,
-                set.and_then(|s| s.install_scripts),
-                entry,
+                applied.install_scripts,
             )
         }
 
@@ -578,12 +619,7 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             if !merge::applies(&facts.ecosystem, Rule::Yanked) {
                 return Outcome::NotApplicable;
             }
-            on_off(
-                facts.yanked.is_some(),
-                policy.yanked,
-                set.and_then(|s| s.yanked),
-                entry,
-            )
+            on_off(facts.yanked.is_some(), policy.yanked, applied.yanked)
         }
 
         Check::Deprecated => {
@@ -593,16 +629,14 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             on_off(
                 facts.deprecated.is_some(),
                 policy.deprecated,
-                set.and_then(|s| s.deprecated),
-                entry,
+                applied.deprecated,
             )
         }
 
         Check::Provenance => on_off(
             facts.provenance != Provenance::Consistent,
             policy.provenance,
-            set.and_then(|s| s.provenance),
-            entry,
+            applied.provenance,
         ),
     }
 }
@@ -631,7 +665,7 @@ fn denials(policy: &Policy, facts: &Facts) -> Outcome {
 /// Zero days of waiting is satisfied by everything, including a package whose publish date
 /// is unknown: there is no wait for it to be inside. This is how the check is turned off,
 /// and without the short circuit it fails every package the registry published no time for.
-fn cooldown_days(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Date) -> Outcome {
+fn cooldown_days(policy: &Policy, facts: &Facts, applied: &Applied, as_of: Date) -> Outcome {
     let waited = |days: u32| {
         days == 0
             || facts.published.is_some_and(|published| {
@@ -642,9 +676,12 @@ fn cooldown_days(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Da
     };
     if waited(policy.cooldown_days) {
         Outcome::Passed
-    } else if let Some(entry) = entry.filter(|_| waited(cooldown_required(policy, entry))) {
+    } else if let Some((_, entry)) = applied
+        .cooldown_days
+        .filter(|_| waited(cooldown_required(policy, applied)))
+    {
         Outcome::Excepted {
-            entry,
+            entries: vec![entry],
             action: Action::Quarantine,
         }
     } else {
@@ -652,54 +689,35 @@ fn cooldown_days(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Da
     }
 }
 
-/// "None at all" and "all of them excused" are different answers, and only the second is an
-/// exception doing work, so both questions are asked.
-fn kev(
-    policy: &Policy,
-    facts: &Facts,
-    set: Option<&super::SetBlock>,
-    entry: Option<usize>,
-) -> Outcome {
-    if !facts.advisories.iter().any(|a| a.kev) {
-        return Outcome::Passed;
+/// An advisory with no score is refused, as "not known" is not "low". Excepted only when
+/// entries excused every advisory over it, and then by each entry that excused one.
+fn max_cvss(policy: &Policy, facts: &Facts, applied: &Applied, as_of: Date) -> Outcome {
+    let (counting, excused) = over_max_cvss(policy, facts, applied, as_of);
+    if !counting.is_empty() {
+        return Outcome::Failed(Action::Block);
     }
-    let excused = set.and_then(|s| s.kev) == Some(Action::Allow);
-    match entry.filter(|_| excused) {
-        Some(entry) => Outcome::Excepted {
-            entry,
-            action: policy.kev,
-        },
-        None if policy.kev == Action::Allow => Outcome::Passed,
-        None => Outcome::Failed(policy.kev),
-    }
-}
-
-/// An advisory with no score is refused, as "not known" is not "low".
-fn max_cvss(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Date) -> Outcome {
-    let (counting, excused) = over_max_cvss(policy, facts, entry, as_of);
-    match (counting.is_empty(), excused.is_empty(), entry) {
-        (false, _, _) => Outcome::Failed(Action::Block),
-        (true, false, Some(entry)) => Outcome::Excepted {
-            entry,
+    let mut entries: Vec<usize> = excused.iter().flat_map(|a| applied.ignoring(a)).collect();
+    entries.sort_unstable();
+    entries.dedup();
+    if entries.is_empty() {
+        Outcome::Passed
+    } else {
+        Outcome::Excepted {
+            entries,
             action: Action::Block,
-        },
-        _ => Outcome::Passed,
+        }
     }
 }
 
-/// A check that is on or off, with an exception that can turn it off for one package.
-fn on_off(
-    found: bool,
-    setting: Action,
-    exception: Option<Action>,
-    entry: Option<usize>,
-) -> Outcome {
+/// A check that is on or off, with the entry that last set it for this package. "None found"
+/// and "found and excused" are different answers, and only the second is an entry at work.
+fn on_off(found: bool, setting: Action, exception: Option<(Action, usize)>) -> Outcome {
     if !found {
         return Outcome::Passed;
     }
-    match (exception, entry) {
-        (Some(Action::Allow), Some(entry)) => Outcome::Excepted {
-            entry,
+    match exception {
+        Some((Action::Allow, entry)) => Outcome::Excepted {
+            entries: vec![entry],
             action: setting,
         },
         _ if setting == Action::Allow => Outcome::Passed,
@@ -726,7 +744,7 @@ mod tests {
                     weight: *weight,
                 })
                 .collect(),
-            entry: None,
+            applied: crate::policy::decide::Applied::default(),
             threshold,
             signals: Vec::new(),
         }
@@ -899,7 +917,7 @@ mod tests {
         assert_eq!(weight(&Outcome::Failed(Action::Allow), 7), 0);
         assert_eq!(weight(&Outcome::Passed, 7), 0);
         let excepted = Outcome::Excepted {
-            entry: 0,
+            entries: vec![0],
             action: Action::Block,
         };
         assert_eq!(weight(&excepted, 7), 0);
@@ -1170,7 +1188,7 @@ mod tests {
         assert_eq!(
             *outcome(&d, Check::InstallScripts),
             Outcome::Excepted {
-                entry: 0,
+                entries: vec![0],
                 action: Action::Block
             }
         );
@@ -1240,7 +1258,7 @@ mod tests {
         assert_eq!(
             *outcome(&d, Check::MaxCvss),
             Outcome::Excepted {
-                entry: 0,
+                entries: vec![0],
                 action: Action::Block
             }
         );
@@ -1292,7 +1310,7 @@ mod tests {
         assert_eq!(
             *outcome(&d, Check::CooldownDays),
             Outcome::Excepted {
-                entry: 0,
+                entries: vec![0],
                 action: Action::Quarantine
             }
         );
@@ -1341,7 +1359,7 @@ mod tests {
         assert_eq!(
             *outcome(&d, Check::MaxCvss),
             Outcome::Excepted {
-                entry: 0,
+                entries: vec![0],
                 action: Action::Block
             }
         );
@@ -1368,7 +1386,7 @@ mod tests {
         assert_eq!(
             *outcome(&d, Check::MaxCvss),
             Outcome::Excepted {
-                entry: 0,
+                entries: vec![0],
                 action: Action::Block
             },
             "the id exception covers the score"
@@ -1493,7 +1511,7 @@ mod tests {
             ..clean()
         };
 
-        let (counting, excused) = over_max_cvss(&p, &facts, None, TODAY);
+        let (counting, excused) = over_max_cvss(&p, &facts, &Applied::default(), TODAY);
         let ids: Vec<&str> = counting.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, ["GHSA-none", "GHSA-lapsed", "GHSA-alias", "GHSA-two"]);
         assert!(excused.is_empty());
@@ -1564,7 +1582,7 @@ mod tests {
         assert_eq!(
             *outcome(&d, Check::MaxCvss),
             Outcome::Excepted {
-                entry: 0,
+                entries: vec![0],
                 action: Action::Block
             }
         );
@@ -1629,39 +1647,97 @@ mod tests {
         assert!(d.exceptions_used().is_empty());
     }
 
-    /// The most specific entry applies, written first so "narrowest wins" and "last wins"
-    /// give different answers.
+    /// Every matching entry applies in file order, so a key two entries set takes the later
+    /// one's value, however narrow the earlier.
     #[test]
-    fn the_most_specific_matching_exception_is_the_one_that_applies() {
+    fn the_last_matching_entry_to_set_a_key_decides_it() {
         let narrow_first = policy(
             "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
              set: { cooldown_days: 0 }\n    reason: narrow\n    permanent: true\n  \
-             - match: { ecosystem: npm, name: \"lo*\" }\n    set: { cooldown_days: 30 }\n    \
+             - match: { ecosystem: npm, name: \"lo*\" }\n    set: { cooldown_days: 3 }\n    \
              reason: wide\n    permanent: true\n",
         );
         let facts = Facts {
             published: Some(date(2026, 9, 11)),
             ..clean()
         };
+        let decided = decide(&narrow_first, &facts, TODAY);
         assert!(
-            decide(&narrow_first, &facts, TODAY).delivered(),
-            "the narrow entry waives the wait, and it is not the last one written"
+            !decided.delivered(),
+            "the wide entry, written last, waits 3 days"
         );
+        assert_eq!(decided.applied.entries, [0, 1]);
+        assert_eq!(decided.applied.cooldown_days, Some((3, 1)));
 
         let narrow_last = policy(
             "packages:\n  - match: { ecosystem: npm, name: \"lo*\" }\n    \
-             set: { cooldown_days: 30 }\n    reason: wide\n    permanent: true\n  \
+             set: { cooldown_days: 3 }\n    reason: wide\n    permanent: true\n  \
              - match: { ecosystem: npm, name: lodash }\n    set: { cooldown_days: 0 }\n    \
              reason: narrow\n    permanent: true\n",
         );
-        assert!(decide(&narrow_last, &facts, TODAY).delivered());
+        let decided = decide(&narrow_last, &facts, TODAY);
+        assert!(decided.delivered());
+        assert_eq!(decided.exceptions_used(), [1]);
 
         let other = Facts {
             name: "lolcat".to_owned(),
             published: Some(date(2026, 9, 11)),
             ..clean()
         };
-        assert!(!decide(&narrow_first, &other, TODAY).delivered());
+        assert_eq!(decide(&narrow_first, &other, TODAY).applied.entries, [1]);
+    }
+
+    /// Keys set by different entries all apply, and the ids each ignores together; a check
+    /// names each entry that excused it.
+    #[test]
+    fn the_keys_of_every_matching_entry_apply_together() {
+        let both = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { install_scripts: allow, ignored_vuln_advisory_ids: [GHSA-a] }\n    \
+             reason: one\n    permanent: true\n  \
+             - match: { ecosystem: npm, name: \"lo*\" }\n    \
+             set: { ignored_vuln_advisory_ids: [GHSA-b] }\n    reason: two\n    \
+             permanent: true\n",
+        );
+        let facts = Facts {
+            has_install_scripts: true,
+            advisories: vec![advisory("GHSA-a", 9.0), advisory("GHSA-b", 9.0)],
+            intel: Intel::Consulted {
+                exploitation_loaded: true,
+            },
+            ..clean()
+        };
+        let decided = decide(&both, &facts, TODAY);
+        assert!(decided.delivered(), "{decided:?}");
+        let outcome = |check: Check| {
+            decided
+                .results
+                .iter()
+                .find(|r| r.check == check)
+                .map(|r| r.outcome.clone())
+        };
+        assert_eq!(
+            outcome(Check::MaxCvss),
+            Some(Outcome::Excepted {
+                entries: vec![0, 1],
+                action: Action::Block
+            })
+        );
+        assert_eq!(
+            outcome(Check::InstallScripts),
+            Some(Outcome::Excepted {
+                entries: vec![0],
+                action: Action::Block
+            })
+        );
+        let one = Facts {
+            advisories: vec![advisory("GHSA-a", 9.0), advisory("GHSA-c", 9.0)],
+            ..facts.clone()
+        };
+        assert!(
+            !decide(&both, &one, TODAY).delivered(),
+            "GHSA-c is excused by none"
+        );
     }
 
     #[test]
@@ -1723,6 +1799,6 @@ mod tests {
             .iter()
             .find(|r| r.check == Check::Yanked)
             .expect("asked");
-        assert!(matches!(yanked.outcome, Outcome::Excepted { entry: 0, .. }));
+        assert!(matches!(&yanked.outcome, Outcome::Excepted { entries, .. } if entries == &[0]));
     }
 }

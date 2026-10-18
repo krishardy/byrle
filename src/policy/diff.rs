@@ -21,12 +21,12 @@ pub const TIGHTENED: u8 = 2;
 pub const ERROR: u8 = 4;
 
 /// What a check answered, as the report shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Shown {
     Pass,
     Fail(Action),
-    /// Excused by a `packages` entry. Delivers, and the entry is worth naming.
-    Excepted(usize),
+    /// Excused by `packages` entries. Delivers, and the entries are worth naming.
+    Excepted(Vec<usize>),
     /// No meaning for this ecosystem.
     NotApplicable,
     /// The fact the check needs is not available in this build.
@@ -36,11 +36,18 @@ pub enum Shown {
 }
 
 impl Shown {
-    pub fn as_str(self) -> String {
+    pub fn as_str(&self) -> String {
         match self {
             Self::Pass => "pass".to_owned(),
             Self::Fail(action) => format!("FAIL {}", action.as_str()),
-            Self::Excepted(entry) => format!("excepted by packages[{entry}]"),
+            Self::Excepted(entries) => format!(
+                "excepted by {}",
+                entries
+                    .iter()
+                    .map(|entry| format!("packages[{entry}]"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
             Self::NotApplicable => "n/a".to_owned(),
             Self::Unenforced => Unanswered::Unenforced.as_str().to_owned(),
             Self::NotAnalyzed => Unanswered::NotAnalyzed.as_str().to_owned(),
@@ -48,8 +55,8 @@ impl Shown {
     }
 
     /// What the package actually gets. `None` where the check cannot be compared at all.
-    fn effect(self) -> Option<Action> {
-        match self {
+    fn effect(&self) -> Option<Action> {
+        match *self {
             Self::Pass | Self::Excepted(_) | Self::Unenforced | Self::NotAnalyzed => {
                 Some(Action::Allow)
             }
@@ -69,10 +76,10 @@ pub fn shown(decision: &Decision, unenforceable: &[Unenforceable], check: Check)
     }
     match decision.results.iter().find(|r| r.check == check) {
         None => Shown::Unenforced,
-        Some(result) => match result.outcome {
+        Some(result) => match &result.outcome {
             Outcome::Passed => Shown::Pass,
-            Outcome::Failed(action) => Shown::Fail(action),
-            Outcome::Excepted { entry, .. } => Shown::Excepted(entry),
+            Outcome::Failed(action) => Shown::Fail(*action),
+            Outcome::Excepted { entries, .. } => Shown::Excepted(entries.clone()),
             Outcome::NotApplicable => Shown::NotApplicable,
         },
     }
@@ -88,7 +95,7 @@ pub struct Moved {
 }
 
 /// How one check's two answers compare.
-pub fn compare(from: Shown, to: Shown) -> Strictness {
+pub fn compare(from: &Shown, to: &Shown) -> Strictness {
     match (from.effect(), to.effect()) {
         (None, None) => Strictness::NotApplicable,
         (None, Some(_)) | (Some(_), None) => Strictness::Incomparable,
@@ -126,7 +133,10 @@ impl Package {
 
     /// How the verdict moved.
     pub fn verdict(&self) -> Strictness {
-        compare(Shown::Fail(self.from_verdict), Shown::Fail(self.to_verdict))
+        compare(
+            &Shown::Fail(self.from_verdict),
+            &Shown::Fail(self.to_verdict),
+        )
     }
 
     /// Whether anything about it moved: a check, the score or the threshold.
@@ -163,9 +173,9 @@ pub fn package(
             let after = shown(to.0, to.1, check);
             (before != after).then(|| Moved {
                 check,
+                strictness: compare(&before, &after),
                 from: before,
                 to: after,
-                strictness: compare(before, after),
             })
         })
         .collect();
@@ -1027,8 +1037,11 @@ mod tests {
     /// An exception delivers the package as a pass does, so moving between them is no move.
     #[test]
     fn two_answers_that_deliver_alike_are_the_same() {
-        assert_eq!(compare(Shown::Pass, Shown::Excepted(0)), Strictness::Same);
-        assert_eq!(compare(Shown::Unenforced, Shown::Pass), Strictness::Same);
+        assert_eq!(
+            compare(&Shown::Pass, &Shown::Excepted(vec![0])),
+            Strictness::Same
+        );
+        assert_eq!(compare(&Shown::Unenforced, &Shown::Pass), Strictness::Same);
     }
 
     #[test]
@@ -1283,7 +1296,7 @@ mod tests {
         );
 
         assert_eq!(d.moved[0].from, Shown::Fail(Action::Block));
-        assert_eq!(d.moved[0].to, Shown::Excepted(0));
+        assert_eq!(d.moved[0].to, Shown::Excepted(vec![0]));
         assert!(d.loosened());
         assert!(d.moved[0].to.as_str().contains("packages[0]"));
     }
@@ -1293,15 +1306,15 @@ mod tests {
     #[test]
     fn not_applicable_against_anything_else_is_incomparable_and_fails_the_gate() {
         assert_eq!(
-            compare(Shown::NotApplicable, Shown::Pass),
+            compare(&Shown::NotApplicable, &Shown::Pass),
             Strictness::Incomparable
         );
         assert_eq!(
-            compare(Shown::Pass, Shown::NotApplicable),
+            compare(&Shown::Pass, &Shown::NotApplicable),
             Strictness::Incomparable
         );
         assert_eq!(
-            compare(Shown::NotApplicable, Shown::NotApplicable),
+            compare(&Shown::NotApplicable, &Shown::NotApplicable),
             Strictness::NotApplicable
         );
 
@@ -1404,7 +1417,7 @@ mod tests {
         let moved: Vec<(Check, Shown, Shown, Strictness)> = d
             .moved
             .iter()
-            .map(|m| (m.check, m.from, m.to, m.strictness))
+            .map(|m| (m.check, m.from.clone(), m.to.clone(), m.strictness))
             .collect();
         assert_eq!(
             moved,
@@ -1417,7 +1430,7 @@ mod tests {
                 ),
                 (
                     Check::InstallScripts,
-                    Shown::Excepted(0),
+                    Shown::Excepted(vec![0]),
                     Shown::Fail(Action::Block),
                     Strictness::Stricter
                 ),
@@ -1511,7 +1524,7 @@ mod tests {
     fn every_state_renders_with_its_own_words() {
         assert_eq!(Shown::Pass.as_str(), "pass");
         assert_eq!(Shown::Fail(Action::Quarantine).as_str(), "FAIL quarantine");
-        assert_eq!(Shown::Excepted(3).as_str(), "excepted by packages[3]");
+        assert_eq!(Shown::Excepted(vec![3]).as_str(), "excepted by packages[3]");
         assert_eq!(Shown::NotApplicable.as_str(), "n/a");
         assert_eq!(Shown::Unenforced.as_str(), "unenforced");
         assert_eq!(Shown::NotAnalyzed.as_str(), "not analyzed");
@@ -1523,7 +1536,7 @@ mod tests {
         }];
         let decision = Decision {
             results: Vec::new(),
-            entry: None,
+            applied: crate::policy::decide::Applied::default(),
             threshold: crate::policy::decide::DEFAULT_RISK_THRESHOLD,
             signals: Vec::new(),
         };
@@ -1538,7 +1551,7 @@ mod tests {
     fn a_check_absent_from_the_vector_is_not_a_pass() {
         let empty = Decision {
             results: Vec::new(),
-            entry: None,
+            applied: crate::policy::decide::Applied::default(),
             threshold: crate::policy::decide::DEFAULT_RISK_THRESHOLD,
             signals: Vec::new(),
         };

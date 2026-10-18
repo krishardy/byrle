@@ -128,3 +128,4 @@ Implemented means it is in the code, and the file names where.
 | 0114 | [Maven: byrle passes every file through unchanged, so a client can check byrle](0114-maven-files-unchanged.md) | Implemented 2026-10-18 |  |
 | 0115 | [Maven: the Gradle plugin portal is a second repository of the Maven row](0115-gradle-plugin-portal.md) | Decided by the user 2026-10-17 |  |
 | 0116 | [Every refusal is a weighted signal, refused at one threshold](0116-every-refusal-a-signal.md) | Implemented 2026-10-18 |  |
+| 0117 | [Every `packages` entry that matches a version applies, in file order](0117-every-matching-entry-applies.md) | Decided by the user 2026-10-18 |  |

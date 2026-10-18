@@ -3,7 +3,7 @@
 //!
 //! See docs/engineering_decisions/0013-quarantine-filter-metadata.md.
 
-use super::decide::{Check, Decision, Intel, Outcome, Provenance};
+use super::decide::{Applied, Check, Decision, Intel, Outcome, Provenance};
 use super::{Action, Policy};
 use crate::intel::store::PackageIntel;
 use crate::policy::decide::{Facts, decide};
@@ -214,7 +214,7 @@ fn verdict(policy: &Policy, facts: &Facts, decision: &Decision) -> Verdict {
     let mut reasons: Vec<String> = decision
         .reasons()
         .iter()
-        .map(|r| reason(r, policy, facts, decision.entry))
+        .map(|r| reason(r, policy, facts, &decision.applied))
         .collect();
     let weighed: Vec<String> = decision
         .signals
@@ -242,8 +242,8 @@ fn verdict(policy: &Policy, facts: &Facts, decision: &Decision) -> Verdict {
 ///
 /// `None` when the registry published no date for it, which is the case the check is
 /// dropped as unenforceable for anyway.
-fn lifts_on(policy: &Policy, facts: &Facts, entry: Option<usize>) -> Option<Date> {
-    let days = i64::from(super::decide::cooldown_required(policy, entry));
+fn lifts_on(policy: &Policy, facts: &Facts, applied: &Applied) -> Option<Date> {
+    let days = i64::from(super::decide::cooldown_required(policy, applied));
     facts
         .published?
         .checked_add(jiff::Span::new().days(days))
@@ -255,7 +255,7 @@ fn reason(
     result: &super::decide::Result,
     policy: &Policy,
     facts: &Facts,
-    entry: Option<usize>,
+    applied: &Applied,
 ) -> String {
     let name = result.check.as_str();
     match (&result.check, &result.outcome) {
@@ -270,7 +270,7 @@ fn reason(
         (Check::Denials, _) => format!("{name}: this exact version is denied"),
         (Check::Provenance, _) => format!("{name}: {}", facts.provenance.describe()),
         (Check::KnownMalware, _) => format!("{name}: reported as malware"),
-        (Check::CooldownDays, _) => match lifts_on(policy, facts, entry) {
+        (Check::CooldownDays, _) => match lifts_on(policy, facts, applied) {
             Some(date) => format!("{name}: published too recently, installable on {date}"),
             None => format!("{name}: published too recently, and this lapses as it ages"),
         },
@@ -763,7 +763,7 @@ mod tests {
                 &refused,
                 &loaded("version: 1\ncooldown_days: 30\n"),
                 &facts,
-                None
+                &Applied::default()
             ),
             "cooldown_days: published too recently, and this lapses as it ages"
         );
@@ -1001,12 +1001,17 @@ mod tests {
                 &result(Check::Deprecated, Outcome::Failed(Action::Block)),
                 &policy,
                 &facts,
-                None
+                &Applied::default()
             ),
             "deprecated: deprecated by its publisher"
         );
         assert_eq!(
-            reason(&result(Check::Kev, Outcome::Passed), &policy, &facts, None),
+            reason(
+                &result(Check::Kev, Outcome::Passed),
+                &policy,
+                &facts,
+                &Applied::default()
+            ),
             "kev: Passed"
         );
     }

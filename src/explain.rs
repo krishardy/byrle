@@ -48,15 +48,22 @@ pub fn decision(
             ),
             (None, Outcome::Failed(action)) => (
                 format!("FAIL {}", action.as_str()),
-                found(policy, facts, decision.entry, result.check, false, as_of),
+                found(policy, facts, &decision.applied, result.check, false, as_of),
             ),
-            (None, Outcome::Excepted { entry, action }) => (
+            (None, Outcome::Excepted { entries, action }) => (
                 "excepted".to_owned(),
                 format!(
-                    "would have been {}: {}; packages[{entry}] excused it, {}",
+                    "would have been {}: {}; {}",
                     action.as_str(),
-                    found(policy, facts, Some(*entry), result.check, true, as_of),
-                    lasts(policy, *entry)
+                    found(policy, facts, &decision.applied, result.check, true, as_of),
+                    entries
+                        .iter()
+                        .map(|&entry| format!(
+                            "packages[{entry}] excused it, {}",
+                            lasts(policy, entry)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 ),
             ),
         };
@@ -81,7 +88,7 @@ pub fn decision(
 fn found(
     policy: &Policy,
     facts: &Facts,
-    entry: Option<usize>,
+    applied: &decide::Applied,
     check: Check,
     excepted: bool,
     as_of: Date,
@@ -90,12 +97,9 @@ fn found(
         Check::Denials => "this exact version is denied".to_owned(),
         Check::KnownMalware => "reported as malware; this has no exception".to_owned(),
         Check::CooldownDays => {
-            let wait = match entry.filter(|_| !excepted) {
-                Some(i) if decide::cooldown_required(policy, entry) != policy.cooldown_days => {
-                    format!(
-                        "cooldown_days {}, from packages[{i}]",
-                        decide::cooldown_required(policy, entry)
-                    )
+            let wait = match applied.cooldown_days.filter(|_| !excepted) {
+                Some((days, i)) if days != policy.cooldown_days => {
+                    format!("cooldown_days {days}, from packages[{i}]")
                 }
                 _ => format!("cooldown_days {}", policy.cooldown_days),
             };
@@ -128,7 +132,7 @@ fn found(
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            let (counting, excused) = decide::over_max_cvss(policy, facts, entry, as_of);
+            let (counting, excused) = decide::over_max_cvss(policy, facts, applied, as_of);
             let unscored = counting
                 .iter()
                 .chain(&excused)
@@ -137,14 +141,15 @@ fn found(
                 true => format!("over max_cvss {} or unscored", policy.max_cvss),
                 false => format!("over max_cvss {}", policy.max_cvss),
             };
-            match (excepted, entry) {
+            match (excepted, excused.is_empty()) {
                 (true, _) => format!("{over}: {}", named(&excused)),
-                (false, Some(entry)) if !excused.is_empty() => format!(
-                    "{over}: {}; packages[{entry}] excused {}",
+                (false, false) => format!(
+                    "{over}: {}; {} excused {}",
                     named(&counting),
+                    excusing(applied, &excused),
                     named(&excused)
                 ),
-                (false, _) => format!("{over}: {}", named(&counting)),
+                (false, true) => format!("{over}: {}", named(&counting)),
             }
         }
         Check::InstallScripts => "declares an install script".to_owned(),
@@ -169,6 +174,18 @@ fn found(
             provenance => provenance.describe(),
         },
     }
+}
+
+/// The entries that excused `excused`, as `packages[i]`, in file order.
+fn excusing(applied: &decide::Applied, excused: &[&Advisory]) -> String {
+    let mut entries: Vec<usize> = excused.iter().flat_map(|a| applied.ignoring(a)).collect();
+    entries.sort_unstable();
+    entries.dedup();
+    entries
+        .iter()
+        .map(|entry| format!("packages[{entry}]"))
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
 /// How long an entry lasts, as the file says.
@@ -637,7 +654,7 @@ mod run_tests {
         let keys: Vec<String> = found.iter().map(Signal::key).collect();
         let decided = Decision {
             results: Vec::new(),
-            entry: None,
+            applied: crate::policy::decide::Applied::default(),
             threshold: 100,
             signals: Vec::new(),
         }
