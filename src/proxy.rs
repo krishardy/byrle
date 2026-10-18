@@ -826,6 +826,18 @@ impl futures_util::Stream for VerifyingStream {
     }
 }
 
+/// Whether `body`, decoded from `encoding` under `limit`, is the manifest `claim` names.
+fn checked_manifest(
+    body: &Bytes,
+    encoding: Option<&str>,
+    limit: usize,
+    claim: &ecosystem::Claim,
+) -> Result<(), String> {
+    decode_for_parsing(body, encoding, limit)
+        .map_err(|e| format!("it could not be decoded: {e}"))
+        .and_then(|decoded| claim.check_manifest(&decoded))
+}
+
 async fn buffer_to_limit(mut stream: ByteStream, limit: usize) -> Buffered {
     let mut buf = BytesMut::new();
     while let Some(chunk) = stream.next().await {
@@ -3433,21 +3445,7 @@ impl Exchange<'_> {
                     }),
                 }
             }
-            Ok(_) => {
-                let ecosystem = self.repository.ecosystem();
-                let status = refusal_status(self.proxy, ecosystem, Some(&self.client));
-                warn!(url.path = %crate::http::url_path(path), http.response.status_code = status.as_u16(), byrle.package.claimed_purl = %purl, "not served: no digest of this file is published to check it against");
-                ArtifactStep::Answer(
-                    (
-                        status,
-                        format!(
-                            "byrle: {purl} cannot be assessed: no digest of {file} is \
-                             published to check it against\n"
-                        ),
-                    )
-                        .into_response(),
-                )
-            }
+            Ok(_) => self.unclaimed(purl, file),
             Err(why) => {
                 warn!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %purl, error.message = %why, "the checksum database gave no proved answer: 503");
                 ArtifactStep::Answer(NotReady::Claim { purl, why }.response())
@@ -3472,7 +3470,9 @@ impl Exchange<'_> {
                     .signature(&digest, self.repository, signer.verifier())
                     .await
                 {
-                    Some(ecosystem::Signature::Failed { why }) => {
+                    Some(ecosystem::Signature::Failed { why })
+                        if self.own_refuses("signature_failed") =>
+                    {
                         self.bad_manifest(&purl, "with a signature that does not verify", &why)
                     }
                     _ => ArtifactStep::Fetch(ArtifactFetch {
@@ -3482,9 +3482,15 @@ impl Exchange<'_> {
                     }),
                 }
             }
-            crate::analysis::run::ClaimKnown::Failed(why) => {
+            crate::analysis::run::ClaimKnown::Failed(why)
+                if self.own_refuses("digest_mismatch") =>
+            {
                 self.bad_manifest(&purl, "as bytes its claim does not describe", &why)
             }
+            crate::analysis::run::ClaimKnown::Failed(_) => ArtifactStep::Fetch(ArtifactFetch {
+                purl,
+                ..ArtifactFetch::default()
+            }),
             crate::analysis::run::ClaimKnown::Unknown => {
                 analyser.start_claim(crate::analysis::run::ClaimJob {
                     claim: claim.manifest.clone(),
@@ -3505,6 +3511,42 @@ impl Exchange<'_> {
                 )
             }
         }
+    }
+
+    /// A manifest no digest is published for: forwarded unverified when the policy weighs
+    /// `no_strong_digest` under the threshold, else refused as unassessable.
+    fn unclaimed(&self, purl: String, file: &str) -> ArtifactStep {
+        let path = &self.path;
+        if !self.own_refuses("no_strong_digest") {
+            warn!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %purl, "no digest of this file is published; forwarded unverified, as the policy weighs no_strong_digest under the threshold");
+            return ArtifactStep::Fetch(ArtifactFetch {
+                purl,
+                ..ArtifactFetch::default()
+            });
+        }
+        let ecosystem = self.repository.ecosystem();
+        let status = refusal_status(self.proxy, ecosystem, Some(&self.client));
+        warn!(url.path = %crate::http::url_path(path), http.response.status_code = status.as_u16(), byrle.package.claimed_purl = %purl, "not served: no digest of this file is published to check it against");
+        ArtifactStep::Answer(
+            (
+                status,
+                format!(
+                    "byrle: {purl} cannot be assessed: no digest of {file} is published to \
+                     check it against\n"
+                ),
+            )
+                .into_response(),
+        )
+    }
+
+    /// Whether the proxy's refusal under `rule` answers for a manifest, which no policy
+    /// decides: with no policy, or when the rule weighs the threshold alone.
+    fn own_refuses(&self, rule: &str) -> bool {
+        self.proxy
+            .config
+            .policy
+            .as_deref()
+            .is_none_or(|policy| policy.weight_of(rule) >= policy.risk_threshold)
     }
 
     /// 502 for `purl`'s manifest, served `how`, and `why`.
@@ -3621,33 +3663,40 @@ impl Exchange<'_> {
         let limit = self.proxy.config.max_metadata_bytes;
         let checked = match buffer_to_limit(body, limit).await {
             Buffered::Complete(body) => {
-                decode_for_parsing(&body, content_encoding.as_deref(), limit)
-                    .map_err(|e| format!("it could not be decoded: {e}"))
-                    .and_then(|decoded| claim.check_manifest(&decoded))
-                    .map(|()| body)
+                match checked_manifest(&body, content_encoding.as_deref(), limit, claim) {
+                    Ok(()) => Ok((body, true)),
+                    Err(why) if !self.own_refuses("digest_mismatch") => {
+                        warn!(url.path = %crate::http::url_path(&self.path), byrle.package.purl = %purl, byrle.reason = %why, "the upstream's manifest is not the one claimed; forwarded, as the policy weighs digest_mismatch under the threshold");
+                        Ok((body, false))
+                    }
+                    Err(why) => Err(why),
+                }
             }
             Buffered::Oversized { .. } => Err(format!("it is over {limit} bytes")),
             Buffered::Failed(e) => Err(format!("its body failed: {e}")),
         };
-        let path = &self.path;
-        match checked {
-            Ok(body) => {
-                info!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, byrle.artifact.claim = %claim.manifest, "manifest verified");
-                self.log_proxied(status, body.len() as u64);
-                (forward_status, headers, Body::from(body)).into_response()
-            }
-            Err(why) => {
-                warn!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, byrle.reason = %why, "refused: the upstream's manifest is not the one claimed");
-                (
-                    StatusCode::BAD_GATEWAY,
-                    format!(
-                        "byrle: the upstream served {purl}'s manifest as bytes its claim does \
-                         not describe: {why}\n"
-                    ),
-                )
-                    .into_response()
-            }
+        let (body, verified) = match checked {
+            Ok(checked) => checked,
+            Err(why) => return self.not_the_claimed(purl, &why),
+        };
+        if verified {
+            info!(url.path = %crate::http::url_path(&self.path), byrle.package.purl = %purl, byrle.artifact.claim = %claim.manifest, "manifest verified");
         }
+        self.log_proxied(status, body.len() as u64);
+        (forward_status, headers, Body::from(body)).into_response()
+    }
+
+    /// 502 for `purl`'s manifest, which is not the one claimed, and `why`.
+    fn not_the_claimed(&self, purl: &str, why: &str) -> Response {
+        warn!(url.path = %crate::http::url_path(&self.path), byrle.package.purl = %purl, byrle.reason = %why, "refused: the upstream's manifest is not the one claimed");
+        (
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "byrle: the upstream served {purl}'s manifest as bytes its claim does not \
+                 describe: {why}\n"
+            ),
+        )
+            .into_response()
     }
 
     /// Forward a body the proxy does not read, verifying a 200 against `artifact`'s digest
@@ -7700,6 +7749,21 @@ mod tests {
                 .unwrap()
                 .contains("no digest of commons-lang3-3.17.0.pom is published")
         );
+        let lowered = "version: 1\ncooldown_days: 0\nsignal_weights: { no_strong_digest: 50 }\n";
+        let forwarded = serve(
+            offline(None, Some(lowered))
+                .with_upstream(Ecosystem::Maven, &unsigned)
+                .router(),
+        )
+        .await;
+        let response = reqwest::get(format!("{forwarded}{LANG3_17_POM}"))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "no_strong_digest weighs under the threshold"
+        );
     }
 
     /// `days` ago, as a `Last-Modified` writes it.
@@ -7829,7 +7893,7 @@ mod tests {
     async fn signed_pom(
         asc: Option<&'static str>,
         sha1: bool,
-        label: &str,
+        (label, yaml): (&str, &str),
     ) -> (StatusCode, ArtifactStep) {
         let jar = crate::ecosystem::maven::fixture("signed/jakarta.annotation-api-2.1.1.jar");
         let dir = "/jakarta/annotation/jakarta.annotation-api/2.1.1";
@@ -7867,7 +7931,7 @@ mod tests {
             1 << 20,
             Arc::new(crate::analysis::store::InProcess::new(8)),
         ));
-        let proxy = offline(None, Some(NO_POLICY))
+        let proxy = offline(None, Some(yaml))
             .with_upstream(Ecosystem::Maven, &base)
             .with_client(Ecosystem::Maven, Arc::new(client))
             .with_analyser(Some(analyser.clone()));
@@ -7890,7 +7954,7 @@ mod tests {
             (Some("jakarta.annotation-api-2.1.1.jar.asc"), "pom-good"),
             (None, "pom-unsigned"),
         ] {
-            let (first, then) = signed_pom(asc, true, label).await;
+            let (first, then) = signed_pom(asc, true, (label, NO_POLICY)).await;
             assert_eq!(first, 503, "{label}");
             assert!(fetched(&then), "{label}: served against its sha256");
             let ArtifactStep::Fetch(fetch) = then else {
@@ -7915,11 +7979,32 @@ mod tests {
                 "its claim does not describe",
             ),
         ] {
-            let (first, then) = signed_pom(asc, sha1, label).await;
+            let (first, then) = signed_pom(asc, sha1, (label, NO_POLICY)).await;
             assert_eq!(first, 503, "{label}");
             let (status, body) = refused(then).await;
             assert_eq!(status, 502, "{label}: {body}");
             assert!(body.contains(said), "{label}: {body}");
+        }
+        for (asc, sha1, rule, verified) in [
+            (
+                Some("json-simple-3.0.2.jar.asc"),
+                true,
+                "signature_failed",
+                true,
+            ),
+            (
+                Some("jakarta.annotation-api-2.1.1.jar.asc"),
+                false,
+                "digest_mismatch",
+                false,
+            ),
+        ] {
+            let yaml = format!("version: 1\ncooldown_days: 0\nsignal_weights: {{ {rule}: 50 }}\n");
+            let (_, then) = signed_pom(asc, sha1, (rule, &yaml)).await;
+            let ArtifactStep::Fetch(fetch) = then else {
+                panic!("{rule} weighs under the threshold");
+            };
+            assert_eq!(fetch.digest.is_some(), verified, "{rule}");
         }
     }
 
@@ -8098,6 +8183,22 @@ mod tests {
             assert!(text.contains("its claim does not describe"), "{text}");
             assert!(text.contains(why), "{text}");
         }
+        let changed = b"module rsc.io/quote\n".to_vec();
+        let upstream = module_proxy(changed.clone(), None).await;
+        let lowered = "version: 1\ncooldown_days: 0\nsignal_weights: { digest_mismatch: 50 }\n";
+        let base = serve(
+            go_proxy(&upstream, quote_sumdb().await)
+                .with_policy(Some(policy(lowered)))
+                .router(),
+        )
+        .await;
+        let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "digest_mismatch weighs under the threshold"
+        );
+        assert_eq!(response.bytes().await.unwrap(), changed);
         let upstream = module_proxy(go_mod.clone(), None).await;
         let small = go_proxy(&upstream, quote_sumdb().await)
             .with_max_metadata_bytes(8)

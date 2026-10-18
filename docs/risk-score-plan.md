@@ -196,6 +196,12 @@ present and their score; the verdict is a refusal when the score reaches
       a mismatch found while the body streams would be tolerated, `digest_mismatch` added
       to the rest staying under the threshold; a tolerated one releases the held chunk, is
       logged, and is never recorded as verified.
+   4. The manifests, a Go `.mod` and a Maven `.pom` and `.module`, which no check decides.
+      Done 2026-10-18: each is refused only when its rule weighs the threshold alone. With
+      no claim (`no_strong_digest`) it is forwarded unverified; with bytes the claim does
+      not describe (`digest_mismatch`) forwarded as they came, not logged as verified; with
+      a signature that fails (`signature_failed`) served against the digest its bytes
+      matched.
 6. The surprise score for a dropped signature or attestation, the first item #42 names:
    P(unsigned) = (weighted unsigned + 1) / (weighted total + 2) over earlier versions,
    newest weighted most, the signal −log2 P. Its half-life and weight measured on Central's

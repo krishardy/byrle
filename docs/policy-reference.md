@@ -214,7 +214,7 @@ audit verify` weighs them again.
 | `unservable` | its artifact is on an origin the proxy does not serve, while `BYRLE_REFUSE_UNSERVABLE` is on. Under the threshold, the version stays in the document and its fetch goes on; the proxy never fetches from that origin | `risk_threshold` |
 | `no_strong_digest` | no strong digest is published for its artifact. Under the threshold, its bytes are forwarded unverified and unanalysed, so `install_scripts` and the detectors have no answer | `risk_threshold` |
 | `digest_mismatch` | its bytes are not the ones its digest or claim names. Under the threshold, a claim that fails is fetched unverified, and bytes that do not match their digest are served whole, their last chunk released rather than held; neither is recorded as verified | `risk_threshold` |
-| `signature_failed` | a Maven `.pom` or `.module` whose signature fails. Weighed from step 5 | `risk_threshold` |
+| `signature_failed` | a Maven `.pom` or `.module` whose signature fails. Under the threshold it is served against the digest its bytes matched | `risk_threshold` |
 | `new_package` | the first version was published under 30 days ago | 1 |
 | `new_publisher` | no earlier version was published by this account | 1 |
 | `no_repository` | a full npm document names no repository | 1 |
@@ -238,7 +238,10 @@ audit verify` weighs them again.
 own refusals. One that weighs the threshold alone answers as it always has. When only a sum
 reaches it, with another of them or with the checks, the refusal is the policy's, naming
 them. Observe mode still refuses a version when they weigh the threshold alone; a version
-the metadata does not list is refused whatever is weighed.
+the metadata does not list is refused whatever is weighed. A manifest, a Go `.mod` or a
+Maven `.pom` or `.module`, is decided by no check, so it is refused only when the rule
+weighs the threshold alone: with no claim (`no_strong_digest`), a claim its bytes do not
+match (`digest_mismatch`), or a signature that fails (`signature_failed`).
 
 The keys above are the rules of the policy's checks, of the proxy's refusals, of the five detectors built in,
 `metadata`, `source`, `virustotal`, `trustpub` and `signing`, and of the advisories the
