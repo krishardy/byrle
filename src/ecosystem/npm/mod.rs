@@ -74,6 +74,7 @@ pub const REGISTRY: Registry = Registry {
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
     clients: clients::CLIENTS,
+    fetched_check: None,
     setup: Setup {
         client: clients::NPM.name,
         command: |url| format!("{} {url}", clients::NPM.set_registry),

@@ -484,6 +484,9 @@ pub struct Registry {
     /// The package managers `byrle doctor` checks for this ecosystem.
     pub clients: &'static [Client],
 
+    /// A `byrle doctor` check that fetches, such as Gradle's wrapper against its releases.
+    pub fetched_check: Option<crate::doctor::FetchedCheck>,
+
     /// What the startup log tells an operator to run.
     pub setup: Setup,
 

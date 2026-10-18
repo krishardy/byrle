@@ -52,6 +52,7 @@ pub const REGISTRY: Registry = Registry {
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
     clients: clients::CLIENTS,
+    fetched_check: Some(|machine| Box::pin(gradle::wrapper_findings(machine, gradle::VERSIONS))),
     setup: Setup {
         client: "mvn",
         command: setup_line,

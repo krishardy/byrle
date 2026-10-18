@@ -48,6 +48,7 @@ pub const REGISTRY: Registry = Registry {
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
     clients: clients::CLIENTS,
+    fetched_check: None,
     setup: Setup {
         client: "go",
         command: setup_line,

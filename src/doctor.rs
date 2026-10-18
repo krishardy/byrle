@@ -851,6 +851,11 @@ pub async fn run(machine: &Machine<'_>) -> Result<Checked, env::EnvError> {
     findings.extend(registry_findings(machine, &proxy, tokens)?);
     findings.extend(lockfile_findings(machine.dir, public.as_deref(), &proxy));
     findings.extend(cache_findings(machine)?);
+    for row in crate::ecosystem::TABLE {
+        if let Some(check) = row.fetched_check {
+            findings.extend(check(machine).await);
+        }
+    }
 
     for finding in &findings {
         let _ = writeln!(report, "{finding}");
@@ -998,6 +1003,12 @@ fn lockfile_findings(dir: &std::path::Path, public: Option<&str>, proxy: &str) -
     findings
 }
 
+/// A check that fetches, and its findings.
+pub type FetchedCheck =
+    for<'a> fn(
+        &'a Machine<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Finding>> + 'a>>;
+
 /// Whether `client` is used on this machine: its `found`, else whether it runs.
 pub fn installed(machine: &Machine, client: &Client) -> bool {
     match client.found {
@@ -1099,6 +1110,21 @@ pub mod probe {
                 .ok()?
                 .to_owned(),
         )
+    }
+
+    /// How long a fetch of a list waits: services.gradle.org's 428,695 bytes took 0.1 s.
+    const FETCH: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// The body `url` answers with a success status, or why there is none.
+    pub async fn text(url: &str) -> Result<String, String> {
+        let fetched = async {
+            let client = reqwest::Client::new();
+            let response = client.get(url).timeout(FETCH).send().await?;
+            response.error_for_status()?.text().await
+        };
+        fetched
+            .await
+            .map_err(|e| format!("was not fetched: {}", causes(&e)))
     }
 
     /// Ask the proxy about itself at `path`, whatever the status, since readiness answers

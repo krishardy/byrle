@@ -269,6 +269,234 @@ pub fn settings(scripts: &[(PathBuf, String)], tokens: Option<bool>) -> Vec<Find
     findings
 }
 
+/// The Gradle releases services.gradle.org lists, for the wrapper's checks.
+pub const VERSIONS: &str = "https://services.gradle.org/versions/all";
+
+/// The wrapper's jar, beside its properties.
+const WRAPPER_JAR: &str = "gradle/wrapper/gradle-wrapper.jar";
+
+/// One release in [`VERSIONS`]. 149 of 532 had no `wrapperChecksum` on 2026-10-18.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Release {
+    pub version: String,
+    /// When it was built, as `yyyyMMddHHmmss+0000`.
+    pub build_time: String,
+    pub download_url: String,
+    /// The `-bin` zip's sha256.
+    #[serde(default)]
+    pub checksum: Option<String>,
+    #[serde(default)]
+    pub wrapper_checksum: Option<String>,
+    #[serde(default)]
+    pub nightly: bool,
+    #[serde(default)]
+    pub snapshot: bool,
+}
+
+/// What doctor reads of a project's Gradle wrapper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wrapper {
+    /// The file name `distributionUrl` ends with, such as `gradle-9.8.1-bin.zip`.
+    pub distribution: String,
+    pub sha256: Option<String>,
+    /// The jar's sha256, `None` when there is no jar.
+    pub jar: Option<String>,
+}
+
+/// The wrapper of the root project at or above `dir`, when it has one.
+pub fn wrapper(dir: &Path) -> Option<Wrapper> {
+    let root = project_root(dir)?;
+    let text = std::fs::read_to_string(root.join(WRAPPER)).ok()?;
+    let properties = super::wrapper::properties(&text);
+    let value = |key| super::wrapper::value(&properties, key).filter(|v| !v.is_empty());
+    let url = value("distributionUrl")?;
+    let jar = std::fs::read(root.join(WRAPPER_JAR)).ok().map(|bytes| {
+        use sha2::Digest as _;
+        crate::util::hex(&sha2::Sha256::digest(bytes))
+    });
+    Some(Wrapper {
+        distribution: url.rsplit('/').next().unwrap_or(url).to_owned(),
+        sha256: value("distributionSha256Sum").map(str::to_owned),
+        jar,
+    })
+}
+
+/// The release whose `-bin` zip is `distribution`'s, `-all` read as `-bin`.
+pub fn release_of<'a>(releases: &'a [Release], distribution: &str) -> Option<&'a Release> {
+    let bin = distribution.replace("-all.zip", "-bin.zip");
+    releases
+        .iter()
+        .find(|release| release.download_url.rsplit('/').next() == Some(bin.as_str()))
+}
+
+/// Where an `-all` distribution's sha256 is: only at its `.sha256` URL.
+pub fn all_checksum_url(release: &Release) -> String {
+    format!(
+        "{}.sha256",
+        release.download_url.replace("-bin.zip", "-all.zip")
+    )
+}
+
+/// What a wrapper is checked against.
+pub struct Known<'a> {
+    /// The releases, or why they were not fetched.
+    pub releases: Result<&'a [Release], &'a str>,
+    /// An `-all` distribution's sha256, when it was fetched.
+    pub all_sha256: Option<&'a str>,
+    pub today: jiff::civil::Date,
+    pub cooldown_days: u32,
+}
+
+/// Q9's four checks: the jar is a release's, the distribution's sha256 is pinned and is
+/// the release's, and the release was built outside the cooldown.
+pub fn check_wrapper(wrapper: &Wrapper, known: &Known) -> Vec<Finding> {
+    let releases = match known.releases {
+        Ok(releases) => releases,
+        Err(why) => {
+            return vec![Finding::new(
+                Severity::Warn,
+                "gradle wrapper",
+                format!("not checked: {VERSIONS} {why}"),
+            )];
+        }
+    };
+    let own = release_of(releases, &wrapper.distribution);
+    let mut findings = vec![jar_finding(wrapper.jar.as_deref(), releases, own)];
+    let Some(release) = own else {
+        findings.push(Finding::new(
+            Severity::Warn,
+            "gradle distribution",
+            format!("{} is no release {VERSIONS} lists", wrapper.distribution),
+        ));
+        return findings;
+    };
+    let expected = if wrapper.distribution.ends_with("-all.zip") {
+        known.all_sha256
+    } else {
+        release.checksum.as_deref()
+    };
+    findings.push(sum_finding(wrapper, expected));
+    findings.extend(cooldown_finding(release, known.today, known.cooldown_days));
+    findings
+}
+
+/// Whether the jar `./gradlew` runs is one Gradle released. Gradle 9.8.1 wrote its own jar
+/// for `--gradle-version 8.14.3`, so any release's `wrapperChecksum` matches: `own`'s
+/// first, then a release that is not a nightly or snapshot, which share their jars.
+fn jar_finding(jar: Option<&str>, releases: &[Release], own: Option<&Release>) -> Finding {
+    let title = "gradle wrapper jar";
+    let Some(jar) = jar else {
+        return Finding::new(Severity::Problem, title, format!("no {WRAPPER_JAR}"));
+    };
+    let matching = |release: &&Release| release.wrapper_checksum.as_deref() == Some(jar);
+    let released = |release: &&Release| !(release.nightly || release.snapshot);
+    match own
+        .filter(matching)
+        .or_else(|| releases.iter().filter(released).find(matching))
+        .or_else(|| releases.iter().find(matching))
+    {
+        Some(release) => Finding::new(
+            Severity::Ok,
+            title,
+            format!("Gradle {}'s, by its sha256", release.version),
+        ),
+        None => Finding::new(
+            Severity::Problem,
+            title,
+            format!("its sha256, {jar}, is no release's wrapperChecksum in {VERSIONS}"),
+        )
+        .with_fix("run `gradle wrapper` with a Gradle installed and checked by its sha256"),
+    }
+}
+
+/// Whether `distributionSha256Sum` pins the distribution, as `expected` says it is.
+fn sum_finding(wrapper: &Wrapper, expected: Option<&str>) -> Finding {
+    let title = "gradle distribution";
+    let name = &wrapper.distribution;
+    let fix = |sum: Option<&str>| {
+        format!(
+            "set distributionSha256Sum in {WRAPPER} to {}",
+            sum.unwrap_or("the sha256 at the distribution's .sha256 URL")
+        )
+    };
+    match (wrapper.sha256.as_deref(), expected) {
+        (None, _) => Finding::new(
+            Severity::Warn,
+            title,
+            format!("no distributionSha256Sum, so ./gradlew does not check {name}"),
+        )
+        .with_fix(fix(expected)),
+        (Some(_), None) => Finding::new(
+            Severity::Warn,
+            title,
+            format!("distributionSha256Sum is set, and {name}'s sha256 was not fetched"),
+        ),
+        (Some(sum), Some(expected)) if sum.eq_ignore_ascii_case(expected) => Finding::new(
+            Severity::Ok,
+            title,
+            format!("distributionSha256Sum is {name}'s"),
+        ),
+        (Some(sum), Some(expected)) => Finding::new(
+            Severity::Problem,
+            title,
+            format!("distributionSha256Sum is {sum}, and {name}'s is {expected}"),
+        )
+        .with_fix(fix(Some(expected))),
+    }
+}
+
+/// The distribution is not served by the proxy, so its cooldown is reported here.
+fn cooldown_finding(release: &Release, today: jiff::civil::Date, days: u32) -> Option<Finding> {
+    let built = jiff::civil::Date::strptime("%Y%m%d", release.build_time.get(..8)?).ok()?;
+    let age = (today - built).get_days();
+    (days > 0 && age < i32::try_from(days).unwrap_or(i32::MAX)).then(|| {
+        Finding::new(
+            Severity::Warn,
+            "gradle cooldown",
+            format!(
+                "Gradle {} was built {built}, inside the policy's {days}-day cooldown, which \
+                 the proxy does not apply to a distribution it does not serve",
+                release.version
+            ),
+        )
+    })
+}
+
+/// `./gradlew` downloads its distribution itself, not through the proxy, so it is checked
+/// against `versions`, Gradle's list of releases, fetched only when a wrapper is there. A
+/// policy that cannot be read is no cooldown here: doctor reports it before this runs.
+pub async fn wrapper_findings(machine: &Machine<'_>, versions: &str) -> Vec<Finding> {
+    let Some(wrapper) = wrapper(machine.dir) else {
+        return Vec::new();
+    };
+    let cooldown_days = match machine.environment.policy().ok().flatten() {
+        Some(path) => crate::policy::Policy::load(&path).map_or(0, |policy| policy.cooldown_days),
+        None => 0,
+    };
+    let releases = crate::doctor::probe::text(versions).await.and_then(|body| {
+        serde_json::from_str::<Vec<Release>>(&body)
+            .map_err(|e| format!("answered what is not a list of releases: {e}"))
+    });
+    let mut all_sha256 = None;
+    if let Ok(releases) = &releases
+        && wrapper.distribution.ends_with("-all.zip")
+        && let Some(release) = release_of(releases, &wrapper.distribution)
+    {
+        all_sha256 = crate::doctor::probe::text(&all_checksum_url(release))
+            .await
+            .ok()
+            .map(|sum| sum.trim().to_owned());
+    }
+    let known = Known {
+        releases: releases.as_deref().map_err(String::as_str),
+        all_sha256: all_sha256.as_deref(),
+        today: crate::policy::today(),
+        cooldown_days,
+    };
+    check_wrapper(&wrapper, &known)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -656,5 +884,416 @@ allprojects {
         let found = gradle_settings(&machine, None);
         assert_eq!(found[1].severity, Severity::Ok);
         assert_eq!(project_root(&root), None);
+    }
+
+    fn releases() -> Vec<Release> {
+        serde_json::from_slice(&super::super::fixture("gradle-versions.json")).expect("parses")
+    }
+
+    /// 9.8.1's jar, which its own `wrapper --gradle-version 8.14.3` wrote.
+    const JAR_981: &str = "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98";
+
+    const BIN_981: &str = "dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f";
+
+    fn wrapped(distribution: &str, sha256: Option<&str>, jar: Option<&str>) -> Wrapper {
+        Wrapper {
+            distribution: distribution.to_owned(),
+            sha256: sha256.map(str::to_owned),
+            jar: jar.map(str::to_owned),
+        }
+    }
+
+    fn date(text: &str) -> jiff::civil::Date {
+        text.parse().unwrap()
+    }
+
+    fn checked(
+        wrapper: &Wrapper,
+        all: Option<&str>,
+        today: &str,
+        days: u32,
+    ) -> Vec<(Severity, String)> {
+        let releases = releases();
+        let known = Known {
+            releases: Ok(&releases),
+            all_sha256: all,
+            today: date(today),
+            cooldown_days: days,
+        };
+        check_wrapper(wrapper, &known)
+            .into_iter()
+            .map(|finding| (finding.severity, finding.detail))
+            .collect()
+    }
+
+    #[test]
+    fn a_release_is_found_by_its_bin_zip_s_name() {
+        let releases = releases();
+        assert_eq!(releases.len(), 4);
+        let version = |name| release_of(&releases, name).map(|r| r.version.as_str());
+        assert_eq!(version("gradle-9.8.1-bin.zip"), Some("9.8.1"));
+        assert_eq!(version("gradle-9.8.1-all.zip"), Some("9.8.1"));
+        assert_eq!(version("gradle-9.8.0-rc-3-bin.zip"), Some("9.8.0-rc-3"));
+        assert_eq!(version("gradle-1.0-bin.zip"), None);
+        let rc5 = release_of(&releases, "gradle-5.0-rc-5-bin.zip").unwrap();
+        assert_eq!(rc5.wrapper_checksum, None);
+        assert_eq!(
+            all_checksum_url(release_of(&releases, "gradle-9.8.1-bin.zip").unwrap()),
+            "https://services.gradle.org/distributions/gradle-9.8.1-all.zip.sha256"
+        );
+    }
+
+    #[test]
+    fn a_pinned_jar_and_distribution_of_a_release_are_ok() {
+        let wrapper = wrapped("gradle-9.8.1-bin.zip", Some(BIN_981), Some(JAR_981));
+        assert_eq!(
+            checked(&wrapper, None, "2026-10-18", 0),
+            [
+                (Severity::Ok, "Gradle 9.8.1's, by its sha256".to_owned()),
+                (
+                    Severity::Ok,
+                    "distributionSha256Sum is gradle-9.8.1-bin.zip's".to_owned()
+                ),
+            ]
+        );
+        let upper = wrapped(
+            "gradle-9.8.1-bin.zip",
+            Some(&BIN_981.to_uppercase()),
+            Some(JAR_981),
+        );
+        assert_eq!(checked(&upper, None, "2026-10-18", 0)[1].0, Severity::Ok);
+    }
+
+    /// A nightly shares its jar with the release before it, as 9.9.0's did with 9.8.1's.
+    #[test]
+    fn a_jar_is_named_by_its_own_release_then_a_final_one() {
+        let mut releases = releases();
+        let nightly = Release {
+            version: "9.9.0-20261018002219+0000".to_owned(),
+            download_url: "https://services.gradle.org/distributions-snapshots/n-bin.zip"
+                .to_owned(),
+            nightly: true,
+            ..releases[0].clone()
+        };
+        releases.insert(0, nightly.clone());
+        let named = |own: Option<&Release>, releases: &[Release]| {
+            jar_finding(Some(JAR_981), releases, own).detail
+        };
+        assert_eq!(named(None, &releases), "Gradle 9.8.1's, by its sha256");
+        assert_eq!(
+            named(Some(&releases[2]), &releases),
+            "Gradle 9.8.1's, by its sha256",
+            "8.14.3's own jar is another"
+        );
+        assert_eq!(
+            named(Some(&nightly), &releases),
+            "Gradle 9.9.0-20261018002219+0000's, by its sha256"
+        );
+        let snapshot = Release {
+            nightly: false,
+            snapshot: true,
+            ..nightly.clone()
+        };
+        assert_eq!(
+            named(None, &[nightly.clone(), snapshot]),
+            "Gradle 9.9.0-20261018002219+0000's, by its sha256",
+            "only unreleased ones match"
+        );
+    }
+
+    /// 9.8.1's jar beside 8.14.3's distribution is what `wrapper --gradle-version` writes.
+    #[test]
+    fn a_jar_is_any_release_s() {
+        let wrapper = wrapped("gradle-8.14.3-bin.zip", None, Some(JAR_981));
+        let found = checked(&wrapper, None, "2026-10-18", 0);
+        assert_eq!(
+            found[0],
+            (Severity::Ok, "Gradle 9.8.1's, by its sha256".to_owned())
+        );
+        assert_eq!(
+            found[1],
+            (
+                Severity::Warn,
+                "no distributionSha256Sum, so ./gradlew does not check gradle-8.14.3-bin.zip"
+                    .to_owned()
+            )
+        );
+        let releases = releases();
+        let known = Known {
+            releases: Ok(&releases),
+            all_sha256: None,
+            today: date("2026-10-18"),
+            cooldown_days: 0,
+        };
+        assert_eq!(
+            check_wrapper(&wrapper, &known)[1].fix.as_deref(),
+            Some(
+                "set distributionSha256Sum in gradle/wrapper/gradle-wrapper.properties to \
+                 bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531"
+            )
+        );
+    }
+
+    #[test]
+    fn a_jar_or_sum_no_release_has_is_a_problem() {
+        let wrapper = wrapped("gradle-9.8.1-bin.zip", Some("00"), Some("ab"));
+        assert_eq!(
+            checked(&wrapper, None, "2026-10-18", 0),
+            [
+                (
+                    Severity::Problem,
+                    "its sha256, ab, is no release's wrapperChecksum in \
+                     https://services.gradle.org/versions/all"
+                        .to_owned()
+                ),
+                (
+                    Severity::Problem,
+                    format!("distributionSha256Sum is 00, and gradle-9.8.1-bin.zip's is {BIN_981}")
+                ),
+            ]
+        );
+        let jarless = wrapped("gradle-1.0-bin.zip", None, None);
+        assert_eq!(
+            checked(&jarless, None, "2026-10-18", 0),
+            [
+                (
+                    Severity::Problem,
+                    "no gradle/wrapper/gradle-wrapper.jar".to_owned()
+                ),
+                (
+                    Severity::Warn,
+                    "gradle-1.0-bin.zip is no release https://services.gradle.org/versions/all \
+                     lists"
+                        .to_owned()
+                ),
+            ]
+        );
+    }
+
+    /// An `-all` zip's sha256 is only at its `.sha256` URL, not in the list.
+    #[test]
+    fn an_all_distribution_is_checked_against_its_fetched_sum() {
+        let pinned = wrapped("gradle-9.8.1-all.zip", Some("a11"), Some(JAR_981));
+        assert_eq!(
+            checked(&pinned, Some("a11"), "2026-10-18", 0)[1],
+            (
+                Severity::Ok,
+                "distributionSha256Sum is gradle-9.8.1-all.zip's".to_owned()
+            )
+        );
+        assert_eq!(
+            checked(&pinned, None, "2026-10-18", 0)[1],
+            (
+                Severity::Warn,
+                "distributionSha256Sum is set, and gradle-9.8.1-all.zip's sha256 was not fetched"
+                    .to_owned()
+            )
+        );
+        let unpinned = wrapped("gradle-9.8.1-all.zip", None, Some(JAR_981));
+        let releases = releases();
+        let known = Known {
+            releases: Ok(&releases),
+            all_sha256: None,
+            today: date("2026-10-18"),
+            cooldown_days: 0,
+        };
+        assert_eq!(
+            check_wrapper(&unpinned, &known)[1].fix.as_deref(),
+            Some(
+                "set distributionSha256Sum in gradle/wrapper/gradle-wrapper.properties to the \
+                 sha256 at the distribution's .sha256 URL"
+            )
+        );
+    }
+
+    /// 9.8.1 was built 2026-10-07.
+    #[test]
+    fn a_release_built_inside_the_cooldown_is_a_warning() {
+        let wrapper = wrapped("gradle-9.8.1-bin.zip", Some(BIN_981), Some(JAR_981));
+        let inside = checked(&wrapper, None, "2026-10-18", 14);
+        assert_eq!(
+            inside[2],
+            (
+                Severity::Warn,
+                "Gradle 9.8.1 was built 2026-10-07, inside the policy's 14-day cooldown, which \
+                 the proxy does not apply to a distribution it does not serve"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            checked(&wrapper, None, "2026-10-21", 14).len(),
+            2,
+            "14 days on"
+        );
+        assert_eq!(
+            checked(&wrapper, None, "2026-10-20", 14).len(),
+            3,
+            "13 days on"
+        );
+        assert_eq!(
+            checked(&wrapper, None, "2026-10-08", 0).len(),
+            2,
+            "no cooldown"
+        );
+        let bad = Release {
+            build_time: "2026".to_owned(),
+            ..releases()[0].clone()
+        };
+        assert_eq!(cooldown_finding(&bad, date("2026-10-18"), 14), None);
+        let unparsed = Release {
+            build_time: "2026xx07165746+0000".to_owned(),
+            ..releases()[0].clone()
+        };
+        assert_eq!(cooldown_finding(&unparsed, date("2026-10-18"), 14), None);
+    }
+
+    #[test]
+    fn a_list_not_fetched_is_a_warning() {
+        let wrapper = wrapped("gradle-9.8.1-bin.zip", None, None);
+        let known = Known {
+            releases: Err("answered 503 Service Unavailable"),
+            all_sha256: None,
+            today: date("2026-10-18"),
+            cooldown_days: 0,
+        };
+        let found = check_wrapper(&wrapper, &known);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].severity, Severity::Warn);
+        assert_eq!(
+            found[0].detail,
+            "not checked: https://services.gradle.org/versions/all answered 503 Service \
+             Unavailable"
+        );
+    }
+
+    /// Gradle writes `https\://`, and the jar's sha256 is read from the file.
+    #[test]
+    fn the_wrapper_is_read_from_the_root_project() {
+        let (root, project) = project("gradle-wrapper");
+        assert_eq!(wrapper(&project), None, "no root project");
+        std::fs::write(root.join("work/settings.gradle"), "").unwrap();
+        assert_eq!(wrapper(&project), None, "a root project with no wrapper");
+        let dir = root.join("work/gradle/wrapper");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gradle-wrapper.properties"), "distributionUrl=\n").unwrap();
+        assert_eq!(wrapper(&project), None, "no distribution");
+        std::fs::write(
+            dir.join("gradle-wrapper.properties"),
+            "distributionBase=PROJECT\n\
+             distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.1-bin.zip\n\
+             distributionSha256Sum=\n",
+        )
+        .unwrap();
+        assert_eq!(
+            wrapper(&project),
+            Some(wrapped("gradle-9.8.1-bin.zip", None, None))
+        );
+        std::fs::write(dir.join("gradle-wrapper.jar"), b"").unwrap();
+        std::fs::write(
+            dir.join("gradle-wrapper.properties"),
+            format!("distributionUrl=gradle.zip\ndistributionSha256Sum={BIN_981}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            wrapper(&project),
+            Some(wrapped(
+                "gradle.zip",
+                Some(BIN_981),
+                Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+            ))
+        );
+    }
+
+    /// The list and an `-all` zip's sha256 are fetched only for a project with a wrapper.
+    #[tokio::test]
+    async fn a_gradle_wrapper_is_checked_against_the_releases_fetched() {
+        use axum::Router;
+        use axum::routing::get;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port should bind");
+        let url = format!("http://{}", listener.local_addr().expect("bound"));
+        let built = crate::policy::today()
+            .strftime("%Y%m%d120000+0000")
+            .to_string();
+        let list = format!(
+            r#"[{{"version": "9.8.1", "buildTime": "{built}",
+                 "downloadUrl": "{url}/gradle-9.8.1-bin.zip", "checksum": "b1",
+                 "wrapperChecksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}]"#
+        );
+        let router = Router::new()
+            .route("/versions", get(move || async move { list }))
+            .route("/gradle-9.8.1-all.zip.sha256", get(|| async { "a11\n" }))
+            .route("/broken", get(|| async { "[" }));
+        tokio::spawn(axum::serve(listener, router).into_future());
+
+        let dir = crate::util::test_support::tempdir("doctor-gradle-wrapper");
+        let policy = dir.join("policy.yaml");
+        std::fs::write(&policy, "version: 1\ncooldown_days: 7\n").expect("writes");
+        let environment =
+            crate::env::testing::with(&[(crate::env::POLICY, policy.to_str().unwrap())]);
+        let machine = Machine {
+            environment: &environment,
+            dir: &dir,
+            run: &|_, _| None,
+        };
+        let versions = format!("{url}/versions");
+        assert!(wrapper_findings(&machine, &versions).await.is_empty());
+
+        std::fs::create_dir_all(dir.join("gradle/wrapper")).expect("creates");
+        std::fs::write(dir.join("gradle/wrapper/gradle-wrapper.jar"), b"").expect("writes");
+        std::fs::write(
+            dir.join("gradle/wrapper/gradle-wrapper.properties"),
+            "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.1-all.zip\n\
+             distributionSha256Sum=a11\n",
+        )
+        .expect("writes");
+        let severities = |findings: Vec<Finding>| -> Vec<(Severity, String)> {
+            findings
+                .into_iter()
+                .map(|f| (f.severity, f.title))
+                .collect()
+        };
+        assert_eq!(
+            severities(wrapper_findings(&machine, &versions).await),
+            [
+                (Severity::Ok, "gradle wrapper jar".to_owned()),
+                (Severity::Ok, "gradle distribution".to_owned()),
+                (Severity::Warn, "gradle cooldown".to_owned()),
+            ]
+        );
+        let unset = crate::env::testing::empty();
+        let without = Machine {
+            environment: &unset,
+            ..machine
+        };
+        assert_eq!(
+            wrapper_findings(&without, &versions).await.len(),
+            2,
+            "no policy, no cooldown"
+        );
+        for (at, why) in [
+            ("/broken", "answered what is not a list of releases"),
+            ("/absent", "404 Not Found"),
+        ] {
+            let found = wrapper_findings(&machine, &format!("{url}{at}")).await;
+            assert_eq!(found.len(), 1);
+            assert!(found[0].detail.contains(why), "{}", found[0].detail);
+        }
+        let silent = crate::util::test_support::closing_server().await;
+        let found = wrapper_findings(&machine, &format!("http://{silent}/versions")).await;
+        assert!(
+            found[0].detail.contains("was not fetched"),
+            "{}",
+            found[0].detail
+        );
+        let unreadable = crate::env::testing::with_unreadable(&[], crate::env::POLICY);
+        let broken = Machine {
+            environment: &unreadable,
+            ..machine
+        };
+        assert_eq!(wrapper_findings(&broken, &versions).await.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

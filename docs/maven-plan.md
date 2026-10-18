@@ -532,6 +532,15 @@ Q2, Q7 and Q9 otherwise.
    `src/ecosystem/maven/wrapper.rs`, as the client `mvnw`. A client with a `found` hook that
    is not found here, as `mvnw` and `gradle` are without their files, is no longer reported.
 
+   Done 2026-10-18 for Q9's four checks, in `src/ecosystem/maven/gradle.rs`, run only for a
+   project with `gradle/wrapper/gradle-wrapper.properties`. `versions/all` was 428,695
+   bytes, fetched in 0.1 s; 149 of its 532 releases have no `wrapperChecksum`. The
+   distribution is matched by file name to a release's `downloadUrl`, `-all` read as
+   `-bin`, and an `-all` zip's sha256 is fetched from its `.sha256` URL. The jar is matched
+   to the distribution's own release first, then to one not a nightly or snapshot: on
+   2026-10-18 a 9.9.0 nightly listed first had 9.8.1's jar. A release built within the
+   policy's `cooldown_days` is a warning. A list not fetched is a warning, not a problem.
+
    `services.gradle.org/versions/all` lists 532 versions on 2026-10-17. Each has a
    `checksum`, the `-bin` zip's sha256, a `wrapperChecksum` and a `buildTime`. An `-all`
    zip's sha256 is only at its `.sha256` URL. Gradle 9.8.1's `wrapper --gradle-version
