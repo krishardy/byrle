@@ -77,8 +77,9 @@ period is not in `artifact_disposition`, and `byrle artifact show` exits 1 for i
 
 ## A row without a digest is kept, and not in the view
 
-A version whose metadata publishes no strong digest is refused with `no-strong-digest` and
-never analysed. Its row has `digest: null`. It is in the export and not in
+A version whose metadata publishes no strong digest is never analysed. While the policy
+weighs `no_strong_digest` at the threshold it is refused with `no-strong-digest`; by
+default, since 2026-10-18, it is forwarded unverified. Its row has `digest: null`. It is in the export and not in
 `artifact_disposition`, which is keyed by the digest.
 
 ## Measured

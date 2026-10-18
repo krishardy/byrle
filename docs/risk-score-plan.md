@@ -85,7 +85,7 @@ present and their score; the verdict is a refusal when the score reaches
 | yanked | `yanked` | as `kev` |
 | deprecated | `deprecated` | as `kev`, so 0 by default |
 | provenance contradicted | `provenance_unverified`, `provenance_dropped`, `provenance_identity_changed` | as `kev` |
-| no strong digest, no claim | `no_strong_digest` | the threshold |
+| no strong digest, no claim | `no_strong_digest` | the threshold; 0 since 2026-10-18 |
 | origin not served | `unservable` | the threshold, 0 with `BYRLE_REFUSE_UNSERVABLE=0` |
 | bytes not as claimed or digested | `digest_mismatch` | the threshold |
 | a `.pom` or `.module` signature that fails | `signature_failed` | the threshold |
@@ -190,6 +190,9 @@ present and their score; the verdict is a refusal when the score reaches
       words only when its rule weighs the threshold alone; one reached by a sum is refused
       in the policy's words, naming the rules. An audit line answered `no-strong-digest`
       records `block` where it recorded `allow`, as the signal now weighs in its decision.
+      The user set its default weight to 0 on 2026-10-18: by default such an artifact is
+      forwarded unverified and unanalysed, logged at WARN, and its audit line records
+      `allow`.
    3. `digest_mismatch`. Done 2026-10-18: raised when a claim job's bytes are not the
       claim's or the analysis fetch's bytes do not match the digest. Under the threshold,
       the first is fetched unverified and the second served. The decision also says whether

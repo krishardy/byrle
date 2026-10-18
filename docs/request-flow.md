@@ -99,7 +99,7 @@ flowchart TD
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
-| refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version |
+| refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
 | 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
 
@@ -116,7 +116,8 @@ A Maven file's claim is the first of the `.sha512`, `.sha256` and `.sha1` beside
 ([maven-digests](engineering_decisions/0112-maven-digests.md)). A `.pom` and a `.module`
 are checked in the request against theirs, and are never refused by policy. A jar's
 first fetch is 503 `artifact-analysis` while a job reads its sidecar, its `.asc` and the
-key; a jar with none of the three sidecars is refused as no strong digest. A sidecar, an
+key; a jar with none of the three sidecars has no strong digest, and is forwarded unverified
+unless `no_strong_digest` weighs the threshold. A sidecar, an
 `.asc` and a `HEAD` are forwarded, and `maven-metadata.xml` is filtered as a metadata
 document. Under `/gradle-plugins/`, a portal 303 to `plugins-artifacts.gradle.org` names
 the file's sha256 in its path, which is the claim; one to Central is decided as under

@@ -234,7 +234,7 @@ pub const NAME: &str = "policy";
 /// The detector the proxy's own refusals are reported under.
 pub const PROXY: &str = "proxy";
 
-/// The rules of the proxy's own refusals, each weighing the threshold unless weighed.
+/// The rules of the proxy's own refusals, each weighing the threshold unless weighed or passed.
 pub const PROXY_RULES: [&str; 4] = [
     "no_strong_digest",
     "unservable",
@@ -256,6 +256,38 @@ pub const RULES: [&str; 11] = [
     "provenance_dropped",
     "provenance_identity_changed",
 ];
+
+/// The proxy's rules that weigh 0 unless weighed, so pass by default.
+pub const PASSED_RULES: [&str; 1] = ["no_strong_digest"];
+
+/// What `key` adds to a risk score when the policy weighs it not at all: 0 for
+/// [`PASSED_RULES`], `threshold` for the checks' and the proxy's others, else its default.
+pub fn default_weight(key: &str, threshold: u32) -> u32 {
+    if PASSED_RULES.contains(&key) {
+        0
+    } else if RULES.contains(&key) || PROXY_RULES.contains(&key) {
+        threshold
+    } else {
+        crate::signal::default_weight(key)
+    }
+}
+
+/// Whether `keys`, summed, reach the threshold: `policy`'s, or the defaults' with none.
+pub fn weighs(policy: Option<&crate::policy::Policy>, keys: &[String]) -> bool {
+    let (weight, threshold): (u32, u32) = match policy {
+        Some(policy) => (
+            keys.iter().map(|key| policy.weight_of(key)).sum(),
+            policy.risk_threshold,
+        ),
+        None => (
+            keys.iter()
+                .map(|key| default_weight(key, DEFAULT_RISK_THRESHOLD))
+                .sum(),
+            DEFAULT_RISK_THRESHOLD,
+        ),
+    };
+    !keys.is_empty() && weight >= threshold
+}
 
 impl Decision {
     /// The weights of the checks that failed and of the other signals, summed.

@@ -370,16 +370,12 @@ impl Policy {
         Self::parse(&source)
     }
 
-    /// What the rule `key` adds to a risk score: its `signal_weights` entry, else the
-    /// threshold for a check's or the proxy's rule, so it refuses alone, else its default.
+    /// What the rule `key` adds to a risk score: its `signal_weights` entry, else
+    /// [`decide::default_weight`] against this threshold.
     pub fn weight_of(&self, key: &str) -> u32 {
-        self.signal_weights.set(key).unwrap_or_else(|| {
-            if decide::RULES.contains(&key) || decide::PROXY_RULES.contains(&key) {
-                self.risk_threshold
-            } else {
-                crate::signal::default_weight(key)
-            }
-        })
+        self.signal_weights
+            .set(key)
+            .unwrap_or_else(|| decide::default_weight(key, self.risk_threshold))
     }
 
     /// A threshold of at least 1, and no weight for a check the policy sets to `allow`,
@@ -962,6 +958,20 @@ mod tests {
         let set = parse("risk_threshold: 40\nsignal_weights: { install_scripts: 25 }\n").unwrap();
         assert_eq!(set.weight_of("install_scripts"), 25);
         assert_eq!(set.weight_of("kev"), 40);
+        assert_eq!(
+            set.weight_of("no_strong_digest"),
+            0,
+            "passed unless weighed"
+        );
+        assert_eq!(set.weight_of("unservable"), 40);
+        let digest = ["no_strong_digest".to_owned()];
+        let unservable = ["unservable".to_owned()];
+        assert!(!decide::weighs(None, &digest));
+        assert!(decide::weighs(None, &unservable));
+        assert!(!decide::weighs(None, &[]));
+        let weighed = parse("signal_weights: { no_strong_digest: 100 }\n").unwrap();
+        assert!(decide::weighs(Some(&weighed), &digest));
+        assert!(!decide::weighs(Some(&set), &digest));
     }
 
     /// A threshold of 0 refuses everything, and a weight on a check turned off adds nothing.

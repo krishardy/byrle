@@ -1246,11 +1246,7 @@ async fn filtered_document(
 /// [`crate::env::REFUSE_UNSERVABLE`] is on and the policy weighs `unservable` to the threshold.
 fn refuses_unservable(proxy: &Proxy) -> bool {
     proxy.config.refuse_unservable
-        && proxy
-            .config
-            .policy
-            .as_deref()
-            .is_none_or(|policy| policy.weight_of("unservable") >= policy.risk_threshold)
+        && crate::policy::decide::weighs(proxy.config.policy.as_deref(), &["unservable".to_owned()])
 }
 
 /// A cooldown longer than this, a century, dates a document as this one does.
@@ -1919,12 +1915,7 @@ impl<'a> Deciding<'a> {
         };
         let refusal = decided(&keys);
         let own_keys: Vec<String> = own.iter().map(Signal::key).collect();
-        let weighs = |keys: &[String]| {
-            policy.map_or(!keys.is_empty(), |policy| {
-                let weight: u32 = keys.iter().map(|key| policy.weight_of(key)).sum();
-                !keys.is_empty() && weight >= policy.risk_threshold
-            })
-        };
+        let weighs = |keys: &[String]| crate::policy::decide::weighs(policy, keys);
         let each: Vec<String> = own_keys
             .iter()
             .filter(|key| weighs(std::slice::from_ref(key)))
@@ -2352,6 +2343,7 @@ impl<'a> Deciding<'a> {
         }
         let Some(digest) = fetch.digest.clone() else {
             if !own.answers("no_strong_digest") {
+                warn!(url.path = %crate::http::url_path(self.request.path), byrle.package.claimed_purl = %self.purl, "forwarded unverified and unanalysed: no strong digest is published to check its bytes against");
                 return (audit::Answered::Served, ArtifactStep::Fetch(fetch));
             }
             return (
@@ -3540,13 +3532,9 @@ impl Exchange<'_> {
     }
 
     /// Whether the proxy's refusal under `rule` answers for a manifest, which no policy
-    /// decides: with no policy, or when the rule weighs the threshold alone.
+    /// decides: when the rule weighs the threshold alone, by default with no policy.
     fn own_refuses(&self, rule: &str) -> bool {
-        self.proxy
-            .config
-            .policy
-            .as_deref()
-            .is_none_or(|policy| policy.weight_of(rule) >= policy.risk_threshold)
+        crate::policy::decide::weighs(self.proxy.config.policy.as_deref(), &[rule.to_owned()])
     }
 
     /// 502 for `purl`'s manifest, served `how`, and `why`.
@@ -5826,6 +5814,25 @@ mod tests {
         }
     }
 
+    /// The fetch of an artifact forwarded with no digest to verify it against.
+    fn unverified(step: ArtifactStep) -> ArtifactFetch {
+        let ArtifactStep::Fetch(fetch) = step else {
+            panic!("forwarded unverified");
+        };
+        assert!(fetch.digest.is_none(), "nothing to verify against");
+        fetch
+    }
+
+    /// `no_strong_digest` weighed at the default threshold, so it refuses alone.
+    const WEIGHS_NO_DIGEST: &str = "signal_weights: { no_strong_digest: 100 }\n";
+
+    /// A policy with no cooldown and [`WEIGHS_NO_DIGEST`].
+    fn weighs_no_digest() -> Option<Arc<Policy>> {
+        Some(policy(&format!(
+            "version: 1\ncooldown_days: 0\n{WEIGHS_NO_DIGEST}"
+        )))
+    }
+
     /// Fetched and verified against a digest from a record the store held. A store that
     /// missed would answer 502, after its metadata fetch to [`NO_UPSTREAM`] failed.
     fn fetched(step: &ArtifactStep) -> bool {
@@ -6235,8 +6242,8 @@ mod tests {
         assert_eq!(events[0]["removed"], serde_json::json!(["4.17.21"]));
     }
 
-    /// Observe mode never serves what the proxy cannot assess: an artifact on an origin it
-    /// does not serve, one with no strong digest, or one whose analysis has not finished.
+    /// Observe mode never serves what the proxy cannot assess: an origin it does not serve,
+    /// no strong digest while weighed at the threshold, or an analysis not finished.
     #[tokio::test]
     async fn observe_mode_still_refuses_what_cannot_be_assessed() {
         let unservable = offline(None, Some(ALLOW_ALL))
@@ -6260,7 +6267,8 @@ mod tests {
             refused(pinned(&unservable, "/npm/widget/-/widget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
-        let undigested = offline(None, Some(ALLOW_ALL)).with_mode(Mode::Observe);
+        let weighing = format!("{ALLOW_ALL}{WEIGHS_NO_DIGEST}");
+        let undigested = offline(None, Some(&weighing)).with_mode(Mode::Observe);
         hold_document(
             &undigested,
             br#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0",
@@ -6518,11 +6526,8 @@ mod tests {
             OFFSITE_PACKUMENT.as_bytes(),
             crate::record::DocumentDetail::Abbreviated,
         );
-        let (_, body) = refused(pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await).await;
-        assert!(
-            !body.contains("elsewhere.example") && body.contains("no strong digest"),
-            "past its origin, to its digest: {body}"
-        );
+        let fetch = unverified(pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await);
+        assert_eq!(fetch.origin, None, "past its origin");
 
         let with_denial = "version: 1\ncooldown_days: 0\n\
                            signal_weights: { unservable: 50, denied: 50, no_strong_digest: 0 }\n\
@@ -6552,20 +6557,23 @@ mod tests {
                 OFFSITE_PACKUMENT.as_bytes(),
                 crate::record::DocumentDetail::Abbreviated,
             );
-            let (_, body) =
-                refused(pinned(&observing, "/npm/widget/-/widget-1.0.0.tgz").await).await;
-            assert_eq!(
-                body.contains("elsewhere.example"),
-                refuses,
-                "weight {weight}: {body}"
-            );
+            let step = pinned(&observing, "/npm/widget/-/widget-1.0.0.tgz").await;
+            if refuses {
+                let (_, body) = refused(step).await;
+                assert!(
+                    body.contains("elsewhere.example"),
+                    "weight {weight}: {body}"
+                );
+            } else {
+                unverified(step);
+            }
         }
     }
 
-    /// `no_strong_digest` weighed under the threshold forwards the bytes unverified and
-    /// unanalysed. Observe mode still refuses it when it weighs the threshold.
+    /// `no_strong_digest` under the threshold, as it is by default, forwards the bytes
+    /// unverified and unanalysed. Observe mode still refuses it when it weighs the threshold.
     #[tokio::test]
-    async fn no_strong_digest_weighed_under_the_threshold_is_forwarded_unverified() {
+    async fn no_strong_digest_under_the_threshold_is_forwarded_unverified() {
         let undigested =
             OFFSITE_PACKUMENT.replace("elsewhere.example", "registry.npmjs.org/widget/-");
         for (yaml, mode, served) in [
@@ -6574,13 +6582,10 @@ mod tests {
                 Mode::Enforce,
                 true,
             ),
-            ("", Mode::Enforce, false),
-            ("", Mode::Observe, false),
-            (
-                "signal_weights: { no_strong_digest: 50 }\n",
-                Mode::Observe,
-                true,
-            ),
+            ("", Mode::Enforce, true),
+            ("", Mode::Observe, true),
+            (WEIGHS_NO_DIGEST, Mode::Enforce, false),
+            (WEIGHS_NO_DIGEST, Mode::Observe, false),
         ] {
             let yaml = format!("version: 1\ncooldown_days: 0\n{yaml}");
             let proxy = offline(None, Some(&yaml)).with_mode(mode);
@@ -7164,7 +7169,7 @@ mod tests {
     }
 
     /// A refused version leaves `maven-metadata.xml`, and `<release>` names the one below
-    /// it. Its jar is refused, and so is a jar with no sidecar: it has no strong digest.
+    /// it. Its jar is refused; a jar with no sidecar, which has no strong digest, is not.
     #[tokio::test]
     async fn a_maven_version_the_policy_refuses_leaves_the_metadata() {
         let proxy =
@@ -7184,16 +7189,13 @@ mod tests {
         let (status, body) = refused(pinned(&proxy, LANG3_JAR).await).await;
         assert_eq!(status, 403);
         assert!(body.contains("denials"), "{body}");
-        let (status, body) = refused(
+        unverified(
             pinned(
                 &proxy,
                 "/maven/org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0-sources.jar",
             )
             .await,
-        )
-        .await;
-        assert_eq!(status, 403);
-        assert!(body.contains("no strong digest"), "{body}");
+        );
     }
 
     /// Gradle reuses a jar it cached from another repository after a `HEAD` alone, so a
@@ -7682,8 +7684,8 @@ mod tests {
         }
     }
 
-    /// A `.pom` is served once checked against its sidecar, and is never refused by policy.
-    /// One its sidecar does not describe is 502, and one with no sidecar is not served.
+    /// A `.pom` is served once checked against its sidecar, never refused by policy. One its
+    /// sidecar does not describe is 502; one with no sidecar is refused once weighed.
     #[tokio::test]
     async fn a_pom_is_served_once_its_sidecar_describes_it() {
         let pom = b"<project><artifactId>commons-lang3</artifactId></project>".to_vec();
@@ -7737,6 +7739,7 @@ mod tests {
         let none = serve(
             offline(None, Some(NO_POLICY))
                 .with_upstream(Ecosystem::Maven, &unsigned)
+                .with_policy(weighs_no_digest())
                 .router(),
         )
         .await;
@@ -8230,14 +8233,20 @@ mod tests {
         assert!(text.contains("it is over 8 bytes"), "{text}");
     }
 
-    /// A version sum.golang.org does not know is refused, one it cannot prove is 503, and a
-    /// body that fails or an answer other than 200 is passed on as it came.
+    /// A version sum.golang.org does not know is forwarded, refused once weighed; one it
+    /// cannot prove is 503. A failed body or an answer other than 200 is passed on as it came.
     #[tokio::test]
     async fn a_go_mod_with_no_proved_claim_is_not_served() {
         let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
         let upstream = module_proxy(go_mod, None).await;
         let base = serve(go_proxy(&upstream, quote_sumdb().await).router()).await;
         let unknown = reqwest::get(format!("{base}/go/rsc.io/quote/@v/v9.0.0.mod"))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), 404, "the module proxy's answer");
+        let weighing = go_proxy(&upstream, quote_sumdb().await).with_policy(weighs_no_digest());
+        let base_weighing = serve(weighing.router()).await;
+        let unknown = reqwest::get(format!("{base_weighing}/go/rsc.io/quote/@v/v9.0.0.mod"))
             .await
             .unwrap();
         assert_eq!(unknown.status(), 403);
@@ -8276,14 +8285,16 @@ mod tests {
         }
     }
 
-    /// A zip's claim is asked before its fetch is planned. Until its `h1:` is checked
-    /// against its bytes it has no strong digest; a claim that cannot be proved is 503.
+    /// A zip's claim is asked before its fetch is planned. Until its `h1:` is checked it has
+    /// no strong digest, forwarded unverified unless weighed; an unprovable claim is 503.
     #[tokio::test]
     async fn a_go_zip_asks_the_checksum_database_first() {
         let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
         let upstream = module_proxy(go_mod, None).await;
         let proxy = go_proxy(&upstream, quote_sumdb().await);
-        let (status, body) = refused(pinned(&proxy, QUOTE_ZIP).await).await;
+        unverified(pinned(&proxy, QUOTE_ZIP).await);
+        let weighing = go_proxy(&upstream, quote_sumdb().await).with_policy(weighs_no_digest());
+        let (status, body) = refused(pinned(&weighing, QUOTE_ZIP).await).await;
         assert_eq!(status, 403);
         assert!(body.contains("no strong digest"), "{body}");
 
@@ -8381,12 +8392,7 @@ mod tests {
         let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
         let upstream = module_proxy(go_mod, None).await;
         let proxy = go_proxy(&upstream, quote_sumdb().await);
-        let (_, body) = refused(pinned(&proxy, QUOTE_ZIP).await).await;
-        assert!(!body.contains("does not list"), "{body}");
-        assert!(
-            body.contains("no strong digest"),
-            "no analyser checks the claim: {body}"
-        );
+        unverified(pinned(&proxy, QUOTE_ZIP).await);
         let denying = go_proxy(&upstream, quote_sumdb().await).with_policy(Some(policy(
             "version: 1\ncooldown_days: 0\n\
              denials:\n  - purl: pkg:golang/rsc.io/quote@v1.5.2\n    reason: test\n",
@@ -9761,20 +9767,36 @@ mod tests {
         assert!(response.bytes().await.unwrap().is_empty());
     }
 
-    /// Two versions in 24,852 publish only SHA-1, which is collision-broken.
+    /// Two versions in 24,852 publish only SHA-1, which is collision-broken: forwarded
+    /// unverified, and refused once `no_strong_digest` is weighed.
     #[tokio::test]
-    async fn a_version_with_only_a_sha1_digest_is_refused() {
+    async fn a_version_with_only_a_sha1_digest_is_not_verified() {
         let tarball = vec![3u8; 500];
-        let base = registry_with("sha1-2KoFEwbCVDvbCxC5dXgvFkSlpwc=", tarball.clone()).await;
-        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
-
-        let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let body = response.text().await.unwrap();
-        assert!(body.contains("no strong digest"), "{body}");
-        assert!(!body.as_bytes().windows(tarball.len()).any(|w| w == tarball));
+        let upstream = serve(widget_registry(
+            "sha1-2KoFEwbCVDvbCxC5dXgvFkSlpwc=",
+            tarball.clone(),
+        ))
+        .await;
+        for (policy, status) in [
+            (None, StatusCode::OK),
+            (weighs_no_digest(), StatusCode::FORBIDDEN),
+        ] {
+            let base = serve(
+                Proxy::new(reqwest::Client::new())
+                    .with_upstream(Ecosystem::Npm, &upstream)
+                    .with_policy(policy)
+                    .router(),
+            )
+            .await;
+            reqwest::get(format!("{base}/npm/widget")).await.unwrap();
+            let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+            let body = response.bytes().await.unwrap();
+            let served = body.windows(tarball.len()).any(|w| w == tarball);
+            assert_eq!(served, status == StatusCode::OK, "{body:?}");
+        }
     }
 
     /// A packument stored on one request answers the tarball request that follows it.
@@ -10638,24 +10660,20 @@ mod tests {
         assert_eq!(served.bytes().await.unwrap().as_ref(), tarball.as_slice());
     }
 
-    /// No strong digest, so nothing can be stored or checked against: refused under any
-    /// policy, and with none.
+    /// No strong digest, so nothing can be stored or checked against: forwarded unanalysed,
+    /// under `install_scripts: block` and with no policy, and refused once weighed.
     #[tokio::test]
-    async fn an_artifact_with_no_strong_digest_is_refused_under_any_policy() {
+    async fn an_artifact_with_no_strong_digest_is_refused_only_once_weighed() {
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
-        let yaml = BLOCK;
-        let (base, _) = analysing(
-            "analyse-nodigest-block",
-            "",
-            "",
-            tarball.clone(),
-            Some(yaml),
-        )
-        .await;
-        assert_eq!(tarball_request(&base).await.status(), 403);
-
-        let (base, _) = analysing("analyse-nodigest", "", "", tarball, None).await;
-        assert_eq!(tarball_request(&base).await.status(), 403);
+        let weighed = format!("{BLOCK}{WEIGHS_NO_DIGEST}");
+        for (label, yaml, status) in [
+            ("analyse-nodigest-weighed", Some(weighed.as_str()), 403),
+            ("analyse-nodigest-block", Some(BLOCK), 200),
+            ("analyse-nodigest", None, 200),
+        ] {
+            let (base, _) = analysing(label, "", "", tarball.clone(), yaml).await;
+            assert_eq!(tarball_request(&base).await.status(), status, "{label}");
+        }
     }
 
     /// A script the artifact runs and the metadata did not declare is a warning whatever the policy
@@ -11553,7 +11571,8 @@ mod tests {
             refused(pinned(&unservable, "/npm/widget/-/widget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
-        let undigested = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log.clone()));
+        let weighing = format!("{ALLOW_ALL}{WEIGHS_NO_DIGEST}");
+        let undigested = offline(None, Some(&weighing)).with_audit_log(Some(log.clone()));
         hold_document(
             &undigested,
             br#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0",
@@ -12762,7 +12781,7 @@ mod tests {
                 Abbreviated,
                 &full,
                 off,
-                "block",
+                "allow",
                 &signals,
                 one(),
             ),
@@ -12771,17 +12790,17 @@ mod tests {
                 Abbreviated,
                 &full,
                 cooldown,
-                "block",
+                "quarantine",
                 &signals,
                 one(),
             ),
-            (&full, Full, &full, cooldown, "block", &signals, vec![]),
+            (&full, Full, &full, cooldown, "quarantine", &signals, vec![]),
             (
                 &abbreviated,
                 Abbreviated,
                 &unnamed,
                 cooldown,
-                "block",
+                "quarantine",
                 &only_undigested,
                 one(),
             ),

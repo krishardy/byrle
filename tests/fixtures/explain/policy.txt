@@ -24,7 +24,7 @@ signal weights, for the risk score
   provenance_unverified        100
   provenance_dropped           100
   provenance_identity_changed  100
-  no_strong_digest             100
+  no_strong_digest             0
   unservable                   100
   digest_mismatch              100
   signature_failed             100
@@ -84,7 +84,7 @@ signal weights, for the risk score
   provenance_unverified        100
   provenance_dropped           100
   provenance_identity_changed  100
-  no_strong_digest             100
+  no_strong_digest             0
   unservable                   100
   digest_mismatch              100
   signature_failed             100
@@ -144,7 +144,7 @@ signal weights, for the risk score
   provenance_unverified        100
   provenance_dropped           100
   provenance_identity_changed  100
-  no_strong_digest             100
+  no_strong_digest             0
   unservable                   100
   digest_mismatch              100
   signature_failed             100
@@ -214,7 +214,7 @@ signal weights, for the risk score
   provenance_unverified        100
   provenance_dropped           100
   provenance_identity_changed  100
-  no_strong_digest             100
+  no_strong_digest             0
   unservable                   100
   digest_mismatch              100
   signature_failed             100
