@@ -260,11 +260,20 @@ present and their score; the verdict is a refusal when the score reaches
       its numeric prefix. The provenance check, failed as dropped, weighs
       `provenance_dropped` plus `provenance_surprise` times the bits, and the audit line's
       facts record the history. npm and PyPI, from the document.
+      Done 2026-10-18, `e7ebe9d`, after `ac978be` recorded each check's and signal's weight
+      in the audit line's inputs, so a line written before replays on the weights it was
+      decided on. `make mutants`: 83 mutants, 58 caught, 25 unviable.
    2. Maven: once an earlier version was signed, the signer asks the `.asc` of those of
       the `BYRLE_PROVENANCE_HISTORY` versions before it in its line, at most 64, eight at a
-      time, and `Signature::Dropped` stores the history. A row
+      time, and `Signature::Dropped` stores the history. Done 2026-10-18, `17549be`, with migration 0029.
+      `make mutants`: 29 mutants, 9 caught, 17 unviable, and 3 in `PgAnalyses` missed, as
+      only `make test-integration` reaches them; applied by hand, it fails under each. A row
       stored before it is asked again, not read as no history.
-   3. smoke-maven without its gradle-versions-plugin exception.
+   3. smoke-maven without its gradle-versions-plugin exception. Done 2026-10-18: 0.52.0 has
+      no earlier version in its line, `0.52`, so it weighs `provenance_dropped` alone, 50,
+      and is served; with `provenance_dropped: 100` it is 403 naming provenance. The five
+      smoke runs' audit outcomes were the same but that line, which records `provenance`
+      failed where the exception excused it.
 7. Docs: policy-reference, request-flow, threat-model, quickstart §4, the README.
 
 Raised beside this plan, and not part of it: the PyPI index keeps a version whose files are

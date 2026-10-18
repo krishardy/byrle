@@ -9,9 +9,9 @@
 #      left out of maven-metadata.xml, and its jar answers 403
 #   3. a cooldown covering commons-lang3's newest version resolves an older one
 #   4. ./gradlew, with an init script, resolves a plugin from the portal and
-#      commons-lang3 from Central through the proxy, the plugin refused by provenance
-#      until an exception allows it; doctor finds the init script and the wrapper's jar
-#      and distribution checked
+#      commons-lang3 from Central through the proxy, the plugin's dropped signature
+#      weighed under the threshold, and refused naming provenance once weighed at it;
+#      doctor finds the init script and the wrapper's jar and distribution checked
 #   5. install_scripts refuses lombok, an annotation processor, and Gradle compiles with
 #      it under allow
 #   6. with Postgres, after a refresh: commons-text 1.9, which osv/maven scores over
@@ -283,18 +283,13 @@ for line in sys.stdin:
         print(email.utils.parsedate_to_datetime(value.strip()).isoformat())')"
 [[ -n "$published" ]] || fail "Central sent no Last-Modified for commons-lang3 $newest"
 lang3_age="$(cooldown_covering "$published")"
-# gradle-versions-plugin 0.52.0 is unsigned after a signed 0.11.1, which provenance: block
-# refuses until TODO.md #42 makes it a signal.
+# gradle-versions-plugin 0.52.0 is unsigned after a signed 0.11.1. No earlier version is in
+# its line, 0.52, so it weighs provenance_dropped alone, half the threshold.
 plugin="com/github/ben-manes/gradle-versions-plugin/0.52.0/gradle-versions-plugin-0.52.0.jar"
-printf 'version: 1\ncooldown_days: 0\n' >"$workdir/bare.yaml"
-exception='packages:
-  - match: { ecosystem: maven, name: "com.github.ben-manes:gradle-versions-plugin", version: "0.52.0" }
-    set: { provenance: allow }
-    reason: "unsigned after a signed 0.11.1"
-    permanent: true
-'
-printf 'version: 1\ncooldown_days: 0\n%s' "$exception" >"$workdir/default.yaml"
-printf 'version: 1\ncooldown_days: 0\ninstall_scripts: allow\n%s' "$exception" >"$workdir/allow.yaml"
+printf 'version: 1\ncooldown_days: 0\n' >"$workdir/default.yaml"
+printf 'version: 1\ncooldown_days: 0\nsignal_weights: { provenance_dropped: 100 }\n' \
+    >"$workdir/dropped.yaml"
+printf 'version: 1\ncooldown_days: 0\ninstall_scripts: allow\n' >"$workdir/allow.yaml"
 
 echo "==> 1/7  mvn resolves through the proxy on TLS, each 503 run again, the jar verified"
 start_proxy "$workdir/default.yaml"
@@ -336,9 +331,9 @@ echo "    ok (cooldown_days: $lang3_age; resolved $cooled_to, not $newest)"
 stop_proxy
 
 echo "==> 4/7  ./gradlew resolves a portal plugin and Central's jars through the init script"
-start_proxy "$workdir/bare.yaml"
+start_proxy "$workdir/dropped.yaml"
 [[ "$(fetched "/gradle-plugins/$plugin")" == "403" ]] \
-    || fail "gradle-versions-plugin 0.52.0 was not refused with no exception"
+    || fail "gradle-versions-plugin 0.52.0 was not refused with provenance_dropped at 100"
 grep -q "provenance" "$workdir/fetched.out" \
     || fail "the refusal of gradle-versions-plugin 0.52.0 does not name provenance"
 stop_proxy
@@ -356,7 +351,7 @@ for line in "ok  gradle registry: $front/maven/" "ok  gradle extra indexes: none
     grep -qF "$line" "$workdir/doctor.out" || fail "doctor did not report \"$line\":
 $(grep gradle "$workdir/doctor.out")"
 done
-echo "    ok (the plugin 403 naming provenance, then resolved under an exception in $runs runs;"
+echo "    ok (the plugin 403 naming provenance at 100, then resolved by default in $runs runs;"
 echo "       doctor read the init script and the wrapper)"
 stop_proxy
 
@@ -412,7 +407,7 @@ stop_proxy
 echo "==> 7/7  a token is required, and mvn, Gradle and ./mvnw send it"
 # maven-dependency-plugin 3.11.0 depends on commons-beanutils 1.9.4, over the default
 # max_cvss once advisories are loaded.
-printf 'version: 1\ncooldown_days: 0\nmax_cvss: 10\n%s' "$exception" >"$workdir/token.yaml"
+printf 'version: 1\ncooldown_days: 0\nmax_cvss: 10\n' >"$workdir/token.yaml"
 account=smoke-maven
 issued="$(issue_token "$database_url" "$account")"
 require_token=1
