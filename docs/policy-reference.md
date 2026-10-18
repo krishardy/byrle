@@ -78,7 +78,7 @@ One value each for the whole deployment.
 | `kev` | `block` or `allow` | `block` | a version with an advisory in CISA's known-exploited catalogue | `allow` |
 | `yanked` | `block` or `allow` | `block` | a PyPI file its publisher yanked; npm has no yank, and Go's `retract` is not read | `allow` |
 | `deprecated` | `block` or `allow` | `allow` | an npm version its publisher deprecated; PyPI has no marker, and Go's `// Deprecated:` is not read | `allow` |
-| `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a repository and workflow no version from before the window used ([provenance-check](engineering_decisions/0066-provenance-check.md)) | `allow` |
+| `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a repository and workflow no version from before the window used ([provenance-check](engineering_decisions/0066-provenance-check.md)); for a Maven jar, an `.asc` that does not verify, or none after a version with one ([maven-signatures](engineering_decisions/0113-maven-signatures.md)) | `allow` |
 | `provenance_window_days` | a whole number of days | 7 | | a shorter window establishes a new repository or workflow sooner |
 
 - **`max_cvss`:** a score at or below it is allowed. A value above 10.0 loads, and allows
@@ -116,7 +116,7 @@ Exceptions: a setting loosened for the packages a selector matches.
 
 | Key | Value |
 |---|---|
-| `ecosystem` | `npm`, `pypi`, `cargo` or `golang`. Required: npm `requests` and PyPI `requests` are different projects. Any other is refused, as it would match nothing |
+| `ecosystem` | `npm`, `pypi`, `cargo`, `golang` or `maven`. Required: npm `requests` and PyPI `requests` are different projects. Any other is refused, as it would match nothing |
 | `name` | a name, `prefix*`, or `*`. A `*` anywhere else is refused |
 | `purl` | the package as a purl, with `@version` for one version. Not with `name` |
 | `version` | an exact version, or a VERS range |
@@ -126,7 +126,23 @@ Names and versions compare the ecosystem's way: a PyPI name by PEP 503, so `Djan
 `django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`. A Go module path compares as
 written, case included, and its purl is `pkg:golang/rsc.io/quote@v1.5.2`. A Go range may
 write its versions with or without the `v`: `vers:golang/>=v1.5.0|<v1.6.0` and
-`vers:golang/>=1.5.0|<1.6.0` both denied `rsc.io/quote@v1.5.2` on 2026-10-16.
+`vers:golang/>=1.5.0|<1.6.0` both denied `rsc.io/quote@v1.5.2` on 2026-10-16. A Maven
+name is `groupId:artifactId`, and its purl `pkg:maven/org.projectlombok/lombok@1.18.42`.
+An exception applies to the plugin portal's versions as to Central's: `make smoke-maven`
+released gradle-versions-plugin 0.52.0 from `/gradle-plugins/` with `ecosystem: maven`.
+
+maven-dependency-plugin 3.11.0, which `mvn dependency:resolve` runs, depends on
+commons-beanutils 1.9.4, which the default `max_cvss` refused on 2026-10-18 for
+GHSA-wxr5-93ph-8wr9. This entry releases that advisory for that version; `byrle policy
+check` loaded it:
+
+```yaml
+packages:
+  - match: { ecosystem: maven, name: "commons-beanutils:commons-beanutils", version: "1.9.4" }
+    set: { vuln_advisory_ids: ["GHSA-wxr5-93ph-8wr9"] }
+    reason: "maven-dependency-plugin 3.11.0 depends on it; not called by our builds"
+    expires: "2026-12-31"
+```
 
 ### `set`
 

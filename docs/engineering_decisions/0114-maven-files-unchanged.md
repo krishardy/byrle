@@ -2,9 +2,10 @@
 
 - **Number:** 0114
 - **Status:** Decided by the user 2026-10-17, as step 2.3 of
-  [maven-plan](../maven-plan.md). Today the proxy changes only a `maven-metadata.xml` it
-  filters (step 4.1). That file's `.sha1` and `.md5` are written in step 4.2, and the
-  checks below land in steps 4.3, 7, 8 and 9.
+  [maven-plan](../maven-plan.md). Implemented 2026-10-18: the proxy changes only a
+  `maven-metadata.xml` it filters (`src/ecosystem/maven/wire.rs`), and that file's
+  `.sha1` and `.md5`, written from the filtered body (`digest.rs`). `byrle doctor` reports
+  a Gradle build without `<verify-signatures>` (`gradle.rs`).
 - **Related:** [maven-digests](0112-maven-digests.md),
   [maven-signatures](0113-maven-signatures.md),
   [artifact-digest-verification](0017-artifact-digest-verification.md)

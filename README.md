@@ -22,10 +22,10 @@ does nothing is worse than no tool at all. Rationale and the evidence behind it 
 
 ## Status
 
-**Pre-release, enforcing for npm, PyPI, crates.io and Go.** The proxy runs, decides on every
+**Pre-release, enforcing for npm, PyPI, crates.io, Go and Maven.** The proxy runs, decides on every
 metadata document and artifact, and refuses what its policy refuses. No outside team has
 run it yet: that is the exit criterion of the current stage. v0.1.0 serves npm and PyPI;
-crates.io and Go are on `main`, after it. Build with `cargo build --release` and follow
+crates.io, Go and Maven are on `main`, after it. Build with `cargo build --release` and follow
 [docs/quickstart.md](docs/quickstart.md). See
 [TODO.md](TODO.md) for the staged plan and current position.
 
@@ -35,7 +35,7 @@ crates.io and Go are on `main`, after it. Build with `cargo build --release` and
 | PyPI | **enforcing** | pip, uv |
 | crates.io | **enforcing**, provenance not checked: crates.io serves no attestations; its unsigned `trustpub_data` is a signal | cargo |
 | Go | **enforcing**, provenance not checked: the module proxy serves no attestations; each zip and `go.mod` is checked against sum.golang.org's proved `h1:` | go |
-| Maven | not built | |
+| Maven | **enforcing**: each jar's PGP signature checked under `provenance`, its bytes against the strongest sidecar digest Central publishes; the Gradle plugin portal served beside Central | mvn, Gradle, `./mvnw` |
 
 A tier is what the proxy does for the ecosystem today:
 
@@ -109,7 +109,7 @@ package, the verdict and each check that produced it.
 | PyPI | `--index-url`, under `/pypi/simple/`, PEP 691 and PEP 503 | enforcing |
 | cargo | source replacement, sparse index under `/cargo/`; `config.json`'s `dl` points at the proxy | enforcing |
 | Go | `GOPROXY`, under `/go/`; sum.golang.org relayed under `/go/sumdb/` | enforcing |
-| Maven | mirror in `settings.xml` | not built |
+| Maven | a mirror in `settings.xml` for mvn, an init script for Gradle, under `/maven/`; the Gradle plugin portal under `/gradle-plugins/` | enforcing |
 
 npm and PyPI carry effectively all the malware volume, so they ship first. Breadth buys
 far less security than the ecosystem count implies.
@@ -238,8 +238,8 @@ adapter contributions are the scarce resource.
 
 ## Documentation
 
-* [docs/quickstart.md](docs/quickstart.md) takes npm, PyPI, cargo and Go installs from observe mode to
-  enforcing.
+* [docs/quickstart.md](docs/quickstart.md) takes npm, PyPI, cargo, Go and Maven installs from
+  observe mode to enforcing.
 * [docs/project_plan.md](docs/project_plan.md) covers detection strategy, policy
   semantics, the threat model, and milestones.
 * [docs/request-flow.md](docs/request-flow.md) charts how the proxy answers a request,

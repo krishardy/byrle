@@ -6,7 +6,8 @@ decided.
 
 ## What it protects
 
-A developer's or CI machine's installs from npm, PyPI, crates.io and the Go module proxy. byrle sits between the
+A developer's or CI machine's installs from npm, PyPI, crates.io, the Go module proxy, Maven
+Central and the Gradle plugin portal. byrle sits between the
 package manager and the registry, and serves an artifact only after deciding on it:
 
 - a version the policy refuses is removed from the metadata document, so the resolver
@@ -20,7 +21,9 @@ package manager and the registry, and serves an artifact only after deciding on 
 | Party | Trusted for | Not trusted for |
 |---|---|---|
 | The operator | the policy file, the environment, the host | |
-| The registry (npm, PyPI, crates.io, the Go module proxy, or a mirror) | serving the metadata a publisher uploaded | the bytes: each artifact is checked against the digest the metadata published, or for Go the one sum.golang.org holds |
+| The registry (npm, PyPI, crates.io, the Go module proxy, Maven Central, the Gradle plugin portal, or a mirror) | serving the metadata a publisher uploaded | the bytes: each artifact is checked against the digest the metadata published, for Go the one sum.golang.org holds, and for Maven the strongest of the `.sha512`, `.sha256` and `.sha1` beside it ([maven-digests](engineering_decisions/0112-maven-digests.md)). A Maven sidecar comes from the repository that serves the file, so it checks the path, not the repository; the PGP signature checks the repository |
+| keys.openpgp.org and keyserver.ubuntu.com | the public key for a fingerprint that made a Maven `.asc` | whether the key is the publisher's: a key neither holds fails verification, and a key no earlier version used is the `signing_key_new` signal ([maven-signatures](engineering_decisions/0113-maven-signatures.md)) |
+| services.gradle.org | nothing: `byrle doctor` reads its list of releases to check a project's Gradle wrapper | the wrapper's download, which does not pass through byrle |
 | sum.golang.org | each Go module version's `h1:` for its zip and its `go.mod`, once its signed tree head verifies with the Go team's key and the record's inclusion and the tree's consistency are proved ([go-plan](go-plan.md) Q3) | a version it holds no record of: refused, as no strong digest is |
 | A package's publisher | nothing | everything: this is who the policy and the analysis are about |
 | The intel streams (OSV, GitHub advisories, CISA KEV, Datadog) | what they report | completeness: a package no stream reports is not known to be clean |
@@ -37,7 +40,7 @@ package manager and the registry, and serves an artifact only after deciding on 
 | A known-malicious version | `known_malware` refuses it, with no exception | `policy::decide`, [intel-in-decisions](engineering_decisions/0026-intel-in-decisions.md) |
 | A version published minutes ago by a hijacked account | `cooldown_days` quarantines it | [quarantine-filter-metadata](engineering_decisions/0013-quarantine-filter-metadata.md) |
 | An install script, declared or not | `install_scripts: block`, decided from the artifact's own `package.json`, sdist, a `.crate`'s `Cargo.toml`: a build script or a proc-macro, or a Maven jar's annotation processors. Before a `.crate` or a `.jar` is read, its version's is `not analyzed`. A Go build runs no module's code, so the check has no meaning for Go | [install-scripts-from-the-artifact](engineering_decisions/0062-install-scripts-from-the-artifact.md) |
-| A release published outside the project's CI | `provenance: block` refuses a dropped attestation, a changed identity, and one that does not verify. crates.io and the Go module proxy serve no attestations, so it decides nothing for a crate or a module. Its unsigned `trustpub_data` is read for the `trustpub_dropped` and `trustpub_repository_changed` signals ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)) | [provenance-check](engineering_decisions/0066-provenance-check.md) |
+| A release published outside the project's CI | `provenance: block` refuses a dropped attestation, a changed identity, and one that does not verify; for a Maven jar, an `.asc` that does not verify, or none after a version with one. crates.io and the Go module proxy serve no attestations, so it decides nothing for a crate or a module. Its unsigned `trustpub_data` is read for the `trustpub_dropped` and `trustpub_repository_changed` signals ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)) | [provenance-check](engineering_decisions/0066-provenance-check.md) |
 | A known vulnerability, or one being exploited | `max_cvss`, `kev` | `policy::decide` |
 | A registry, mirror or network path serving other bytes than the metadata describes | the digest is checked on the way through; the last chunk is held until it matches | [artifact-digest-verification](engineering_decisions/0017-artifact-digest-verification.md) |
 | An artifact on an origin the proxy does not serve, which the client would fetch directly | the version is removed from the metadata, and a pinned fetch is refused | [enforcement-tiers](engineering_decisions/0019-enforcement-tiers.md), tier 3 |
@@ -45,6 +48,14 @@ package manager and the registry, and serves an artifact only after deciding on 
 | The intel store cannot answer | 503, not a serve | [uncovered-ecosystem-fails-closed](engineering_decisions/0048-uncovered-ecosystem-fails-closed.md) |
 | An artifact built from other code than its repository holds | reported, not refused: each npm tarball, PyPI wheel and sdist is compared with GitHub's archive of the commit or tag it names, and what it adds is a signal in the log and the audit line. The publisher chooses the repository and the commit, so a publisher can name a repository that matches, which is why it is a signal | [source-diff](engineering_decisions/0091-source-diff.md) |
 | A verdict that cannot be explained later | each pinned audit line records every input; `byrle audit verify` decides it again | [reproducible-verdicts](engineering_decisions/0070-reproducible-verdicts.md) |
+
+A client can check byrle from outside it. byrle passes each Maven file and sidecar through
+byte for byte, but a `maven-metadata.xml` it filters and that file's `.sha1` and `.md5`
+([maven-files-unchanged](engineering_decisions/0114-maven-files-unchanged.md)). Gradle's
+`verification-metadata.xml`, with `<verify-signatures>` and keys from key servers, then
+catches byrle changing a jar: with `slf4j-api-2.0.17.jar` answered with 2.0.16's bytes,
+Gradle failed, "One artifact failed verification". `byrle doctor` warns of a build with no
+such file, or one that checks digests only.
 
 ## Attacks on the proxy itself
 
@@ -123,6 +134,14 @@ Each of these is a way for a package to be installed without byrle deciding on i
 | `GONOPROXY`, which `GOPRIVATE` sets | go fetches the modules it matches from their origin | `byrle doctor` warns |
 | `-mod=vendor`, or a `vendor/` directory | go builds from the vendored copies and fetches no module | `byrle doctor` warns of `-mod=vendor` in `GOFLAGS` |
 | `go.sum` | records a hash and no URL, so it cannot evidence that the proxy was used | `byrle doctor` reads `go env` |
+| A Maven mirror of `central` alone | mvn asks each other repository a pom declares at its own URL | `byrle doctor` reports it as a PROBLEM |
+| mvn's local repository | mvn keeps it by the mirror's id, so a mirror repointed at the proxy under the id it had serves everything cached before: 0 requests on 2026-10-17 | `byrle doctor` warns; give the mirror a new id, or clear `~/.m2/repository` |
+| `-s` in `MAVEN_ARGS` or `.mvn/maven.config` | mvn reads that settings file in place of `~/.m2/settings.xml` | `byrle doctor` reads the file each names |
+| A Gradle build without the init script, or a repository it does not replace | Gradle asks the repository the build declares | `byrle doctor` reports an init script that names no `/maven/` or `/gradle-plugins/` URL |
+| Gradle's module cache | a jar cached from the proxy is used without asking: 0 requests on 2026-10-18 | `byrle doctor` warns; `--refresh-dependencies` asks again |
+| `./gradlew`'s download of Gradle | it fetches the distribution from `services.gradle.org` itself, not through the proxy, and runs it | `byrle doctor` checks `gradle-wrapper.jar` against every release's `wrapperChecksum`, `distributionSha256Sum` against the release's, and the release's build time against `cooldown_days` |
+| `./mvnw`'s download of mvn | from the `distributionUrl` in `.mvn/wrapper/maven-wrapper.properties`, or `MVNW_REPOURL` | `byrle doctor` reports one not at the proxy's `/maven`, and no `distributionSha256Sum` |
+| Gradle's lockfiles, and mvn, which writes none | record no URL, so they cannot evidence that the proxy was used | `byrle doctor` reads the init scripts and `settings.xml` |
 | A dependency named by URL, git or path | npm fetches it from where it points | logged `BYPASS` and counted: [bypass-self-detection](engineering_decisions/0069-bypass-self-detection.md) |
 
 ## Out of scope
@@ -134,4 +153,4 @@ Each of these is a way for a package to be installed without byrle deciding on i
 - Code that runs when a package is imported rather than installed. The install-script
   check does not see it: of the 2025 npm incidents measured, chalk/debug and xrpl.js ran
   their payloads on import ([incident-benchmark](engineering_decisions/0068-incident-benchmark.md)).
-- Ecosystems other than npm, PyPI, crates.io and Go.
+- Ecosystems other than npm, PyPI, crates.io, Go and Maven.

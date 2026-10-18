@@ -2,7 +2,8 @@
 
 - **Number:** 0113
 - **Status:** Decided by the user 2026-10-16, as Q2 of [maven-plan](../maven-plan.md) and
-  the three cases below. Not yet implemented: step 4.5 of the plan.
+  the three cases below. Implemented 2026-10-17, step 4.5 of the plan:
+  `src/ecosystem/maven/signature.rs`, `signer.rs`, `signing.rs` and `keys.rs`.
 - **Related:** [provenance-check](0066-provenance-check.md),
   [maven-digests](0112-maven-digests.md)
 

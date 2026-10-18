@@ -574,6 +574,12 @@ Q2, Q7 and Q9 otherwise.
    threat-model (the wrapper download as a bypass, and byrle checked from outside by
    PGP signatures whose keys come from key servers, per step 2.3), request-flow, and the
    README.
+   Done 2026-10-18. The quickstart has mvn's mirror and `<server>`, Gradle's init script
+   with `credentials { }`, `MVNW_REPOURL`, and the Bearer forms marked as not run. The
+   policy reference has the `maven` selector and an exception for commons-beanutils
+   1.9.4, which `byrle policy check` loaded. The threat model has the Maven bypasses,
+   the wrapper downloads among them, and Gradle's `verification-metadata.xml` as the
+   check from outside.
 
 ## Exit
 

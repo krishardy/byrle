@@ -1,9 +1,10 @@
 # Quickstart
 
-From a checkout to installs through byrle in enforcing mode, for npm, PyPI, cargo and Go.
-Every command here was run on 2026-09-29, and each excerpt below is that run's output,
-except for tokens: §3, the token table in §6 and `BYRLE_TOKEN` in §8 were run on
-2026-10-11, cargo's lines on 2026-10-14, and Go's on 2026-10-16.
+From a checkout to installs through byrle in enforcing mode, for npm, PyPI, cargo, Go and
+Maven. Every command here was run on 2026-09-29, and each excerpt below is that run's
+output, except for tokens: §3, the token table in §6 and `BYRLE_TOKEN` in §8 were run on
+2026-10-11, cargo's lines on 2026-10-14, Go's on 2026-10-16, and mvn's and Gradle's on
+2026-10-17 and 2026-10-18.
 
 The order is: run the proxy in observe mode, point clients at it, check with `doctor`,
 warm the lockfiles, then enforce.
@@ -61,9 +62,11 @@ version: 1
 ```
 
 That refuses known malware, a version published in the last 7 days, install scripts (for a
-crate, a build script or a proc-macro, which `serde` and `rustls` have), an advisory scored
-above 6.9, a known-exploited vulnerability, a yanked PyPI file, and
-contradicted provenance. [policy-reference](policy-reference.md) lists every key.
+crate, a build script or a proc-macro, which `serde` and `rustls` have; for a jar, an
+annotation processor javac runs, which `lombok` and `log4j-core` declare), an advisory
+scored above 6.9, a known-exploited vulnerability, a yanked PyPI file, and
+contradicted provenance (for Maven, a version unsigned after a signed one, as
+`gradle-versions-plugin` 0.52.0 is after 0.11.1). [policy-reference](policy-reference.md) lists every key.
 `byrle policy check policy.yaml` loads it as the proxy does.
 
 ## 5. Run the proxy in observe mode
@@ -94,11 +97,12 @@ INFO point a client at the proxy byrle.client.name="npm" byrle.client.command=np
 INFO point a client at the proxy byrle.client.name="pip" byrle.client.command=pip config set global.index-url http://127.0.0.1:18990/pypi/simple/
 ```
 
-and cargo's, from a run on 2026-10-14, and go's, on 2026-10-16:
+and cargo's, from a run on 2026-10-14, go's, on 2026-10-16, and mvn's, on 2026-10-18:
 
 ```
 INFO point a client at the proxy byrle.client.name="cargo" byrle.client.command=in ~/.cargo/config.toml: [registries.byrle] index = "sparse+http://127.0.0.1:18081/cargo/" and credential-provider = "cargo:token", [source.crates-io] replace-with = "byrle", and [net] retry = 30
 INFO point a client at the proxy byrle.client.name="go" byrle.client.command=go env -w GOPROXY=http://127.0.0.1:18471/go, or with a token GOPROXY=http://<account>:<token>@127.0.0.1:18471/go
+INFO point a client at the proxy byrle.client.name="mvn" byrle.client.command=in ~/.m2/settings.xml: <mirror><id>byrle</id><mirrorOf>*</mirrorOf><url>https://localhost:8741/maven</url></mirror>, and a <server><id>byrle</id> with the account and token
 ```
 
 `GET /-/byrle/ready` answers 200 once the store holds a snapshot. Point a readiness probe
@@ -119,6 +123,9 @@ With the proxy at `https://byrle.example.com`:
 | uv | `UV_DEFAULT_INDEX=https://byrle.example.com/pypi/simple`, or `index-url` in `uv.toml` |
 | cargo | in `~/.cargo/config.toml`, below |
 | go | `go env -w GOPROXY=https://byrle.example.com/go`, with nothing after it |
+| mvn | a mirror in `~/.m2/settings.xml`, below |
+| Gradle | an init script in `~/.gradle/init.d/`, below |
+| `./mvnw` | `MVNW_REPOURL=https://byrle.example.com/maven` |
 
 ```toml
 [source.crates-io]
@@ -142,6 +149,71 @@ second ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)). car
 at most 10 s for each retry, whatever `Retry-After` asked, and retries 3 times by default.
 A cold `cargo fetch` of 161 crates through the proxy failed after 23 s with the default,
 and completed in 164 s with `retry = 20`. `retry = 30` covers about 300 crates.
+
+```xml
+<settings>
+  <mirrors>
+    <mirror>
+      <id>byrle</id>
+      <mirrorOf>*</mirrorOf>
+      <url>https://byrle.example.com/maven</url>
+    </mirror>
+  </mirrors>
+  <servers>
+    <server>
+      <id>byrle</id>
+      <username>alice</username>
+      <password>TOKEN</password>
+    </server>
+  </servers>
+</settings>
+```
+
+```groovy
+// ~/.gradle/init.d/byrle.gradle: every repository replaced with the proxy's.
+def central = 'https://byrle.example.com/maven/'
+def portal = 'https://byrle.example.com/gradle-plugins/'
+def only = { RepositoryHandler repos, String mirror ->
+    repos.all { ArtifactRepository repo ->
+        if (!(repo instanceof MavenArtifactRepository) || !repo.url.toString().startsWith(mirror)) {
+            repos.remove(repo)
+        }
+    }
+    repos.maven {
+        url = mirror
+        credentials { username = 'alice'; password = 'TOKEN' }
+    }
+}
+beforeSettings { settings ->
+    settings.pluginManagement.repositories { only(delegate, portal) }
+}
+allprojects {
+    buildscript { only(repositories, portal) }
+    only(repositories, central)
+}
+```
+
+mvn 3.10.0 chose a mirror whose `<mirrorOf>` is the repository's id before any pattern,
+in the user's file or the global one: a `<mirrorOf>central</mirrorOf>` elsewhere beats the
+`*` above. mvn keeps its cache by the mirror's id, so a mirror renamed `byrle` fetches
+again what an earlier mirror cached, and one repointed under its old id does not. Write
+the `<url>` without a trailing `/`: `wrapper:wrapper` writes `distributionUrl` from it,
+and a `/maven//org/...` is answered 404. mvn retried a 503 itself, 4 times
+`Retry-After` apart, and `make smoke-maven` resolved through the proxy in one run.
+
+mvn's own plugins are decided as any jar. With advisories loaded on 2026-10-18,
+`dependency:resolve` failed under the default `max_cvss`: maven-dependency-plugin 3.11.0
+depends on commons-beanutils 1.9.4, refused for GHSA-wxr5-93ph-8wr9. A `packages`
+exception releases it ([policy-reference](policy-reference.md)).
+
+Gradle does not read `settings.xml`. The init script replaces the repositories each build
+and plugin block declares, and sends plugins to `/gradle-plugins/`, the Gradle plugin
+portal. Gradle 9.8.1 tried a 503 3 times in 3 s, ignoring `Retry-After`, so a cold build
+can fail on a jar still being checked and pass when run again: a cold Spring Boot build
+did, on 2026-10-17. `./gradlew` downloads Gradle itself from `services.gradle.org`, not through the
+proxy: pin `distributionSha256Sum` in `gradle/wrapper/gradle-wrapper.properties`, which
+`doctor` checks. `./mvnw` downloads mvn from a Central path, which the proxy serves under
+`MVNW_REPOURL`.
 
 go 1.27.2 asks the module's origin after a proxy entry followed by `|`, on any error, a
 refusal included; after `,` only on a 404 or 410. A `GOPROXY` ending `,direct`, go's
@@ -173,12 +245,18 @@ Each client also sends the token. `<token>` is the output of `byrle token create
 | uv | `https://alice:<token>@byrle.example.com/pypi/simple` as the index URL |
 | cargo | `CARGO_REGISTRIES_BYRLE_TOKEN=<token>`, or `cargo login --registry byrle`. cargo sends it alone in `Authorization` |
 | go | `GOPROXY=https://alice:<token>@byrle.example.com/go`. go sends it over https only: over http it refused, "refusing to pass credentials to insecure URL", to 127.0.0.1 too |
+| mvn | a `<server>` with the mirror's id, the account as `<username>` and the token as `<password>`, as above. Or `Authorization: Bearer <token>` in its `<configuration><httpHeaders>` |
+| Gradle | `credentials { username = 'alice'; password = '<token>' }` in the init script, as above. Or `credentials(HttpHeaderCredentials)` with `Authorization: Bearer <token>` |
+| `./mvnw` | `MVNW_USERNAME=alice` and `MVNW_PASSWORD=<token>` |
 | `byrle warm` | `BYRLE_TOKEN=<token>` |
 
 The username in pip's and uv's URL is the account name, not `__token__`: any other name is
 answered 401. `make smoke-npm` and `make smoke-python` installed with npm's `_authToken`,
 and pip and uv with `<account>:<token>@`, on 2026-10-11, and bun installed with the line
-above. The forms for pnpm and yarn 1 were measured on a stub registry
+above. `make smoke-maven` resolved with mvn's `<server>`, Gradle's `credentials { }` and
+`./mvnw`'s two variables on 2026-10-18. mvn and Gradle sent Basic after the first 401, and
+on every request after it. The Bearer forms are Artifactory's and were not run. The forms
+for pnpm and yarn 1 were measured on a stub registry
 ([account-identification](engineering_decisions/0054-account-identification.md)). No lockfile
 checked records the token.
 
@@ -188,7 +266,8 @@ nothing more.
 
 Then empty each client's cache once. An install supplied from the cache never asks the
 proxy: `npm cache clean --force`, `uv cache clean`, `bun pm cache rm`,
-`yarn cache clean`, `go clean -modcache`.
+`yarn cache clean`, `go clean -modcache`, and for mvn and Gradle remove `~/.m2/repository`
+and `~/.gradle/caches/modules-2`, or build once with `--refresh-dependencies`.
 
 ## 7. Check with `doctor`
 
@@ -209,6 +288,20 @@ PROBLEM  uv registry: points at https://pypi.org/simple, not the proxy at http:/
    WARN  npm cache: /home/portacot/.npm/_cacache/index-v5 holds cached packages. A warm cache supplies the whole install, so those packages never reach the proxy
          fix: npm cache clean --force
 ```
+
+For mvn it reads the `settings.xml` files mvn reads, and for Gradle the init scripts and
+the wrapper, which it checks against `services.gradle.org/versions/all`. From runs on
+2026-10-18:
+
+```
+     ok  mvn registry: http://127.0.0.1:8080/maven/
+PROBLEM  mvn extra indexes: also asks each repository a pom declares, at its own URL, whose files never reach the proxy
+     ok  gradle wrapper jar: Gradle 9.8.1's, by its sha256
+   WARN  gradle distribution: no distributionSha256Sum, so ./gradlew does not check gradle-9.8.1-bin.zip
+         fix: set distributionSha256Sum in gradle/wrapper/gradle-wrapper.properties to dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f
+```
+
+The first two are a mirror of `central` alone; `*` covers every repository.
 
 When nothing answers at the proxy URL, `doctor` says whether its host resolves on this
 machine, and to which addresses. An IP address is not looked up:
@@ -254,6 +347,13 @@ go does not retry a 503: each zip's first fetch fails the go command until it is
 again. `make smoke-go` built `rsc.io/quote` v1.5.2, 3 zips, in 6 runs, and downloaded the
 go1.26.0 toolchain in 8. `byrle warm --lockfile go.sum` asks for each zip first.
 `go.sum` records no URL, so `lockfile verify` exits 2 for each module.
+
+mvn writes no lockfile. Gradle's `dependencies --write-locks` writes `gradle.lockfile`,
+read from Central, and `buildscript-gradle.lockfile` and `settings-gradle.lockfile`, read
+from the plugin portal. `byrle warm` asks for each locked jar: over the three files of a
+project with a BOM, lombok and a portal plugin, on 2026-10-17, it warmed 32 and reported
+3 refused, lombok and two BOMs that publish no jar. Gradle's lockfiles record no URL, so
+`lockfile verify` exits 2 for each.
 
 ## 9. Read what it would refuse
 

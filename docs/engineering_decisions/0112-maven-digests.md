@@ -1,8 +1,8 @@
 # Maven: a jar's digest is its strongest sidecar, SHA-1 included
 
 - **Number:** 0112
-- **Status:** Decided by the user 2026-10-16, as Q2 of [maven-plan](../maven-plan.md). Not
-  yet implemented: step 4.3 of the plan.
+- **Status:** Decided by the user 2026-10-16, as Q2 of [maven-plan](../maven-plan.md).
+  Implemented 2026-10-17, step 4.3 of the plan: `src/ecosystem/maven/digest.rs`.
 - **Related:** [artifact-digest-verification](0017-artifact-digest-verification.md),
   [maven-signatures](0113-maven-signatures.md), [go-plan](../go-plan.md)
 

@@ -3,10 +3,12 @@
 How the proxy answers one request, and where each status code comes from. Every path
 below is read from below `BYRLE_PROXY_URL`'s path: `/registry/npm/lodash` is `/npm/lodash`
 under `https://h/registry/`. Each ecosystem is served under its own prefix, `/npm/`,
-`/pypi/`, `/cargo/` and `/go/` ([ecosystem-path-prefixes](engineering_decisions/0111-ecosystem-path-prefixes.md)).
+`/pypi/`, `/cargo/`, `/go/` and `/maven/`, and the Gradle plugin portal under
+`/gradle-plugins/` ([ecosystem-path-prefixes](engineering_decisions/0111-ecosystem-path-prefixes.md)).
 Read from
 `handle`, `admit` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document`
-in `src/proxy.rs`, on 2026-09-28, `admit` on 2026-10-11, and Go's claim on 2026-10-16.
+in `src/proxy.rs`, on 2026-09-28, `admit` on 2026-10-11, Go's claim on 2026-10-16, and
+Maven's on 2026-10-17 ([maven-plan](maven-plan.md) step 4.3).
 
 With `BYRLE_MODE=observe`, a refusal by policy is logged at WARN and the request goes on
 to the next check, and a metadata document keeps the versions the policy refuses. Every
@@ -27,7 +29,7 @@ flowchart TD
     OWN -->|/-/byrle/ready| READY{intel store configured<br/>and not loaded?}
     READY -->|no| R200[200]
     READY -->|yes| R503[503]
-    OWN -->|anything else| PREFIX{under /npm/, /pypi/,<br/>/cargo/ or /go/?}
+    OWN -->|anything else| PREFIX{under /npm/, /pypi/,<br/>/cargo/, /go/, /maven/<br/>or /gradle-plugins/?}
     PREFIX -->|no| P404[404: under no<br/>ecosystem's prefix]
     PREFIX -->|yes| TOKEN{token required?<br/>BYRLE_REQUIRE_TOKEN}
     TOKEN -->|no| KIND{what the path names}
@@ -59,7 +61,7 @@ flowchart TD
     POLICY -->|refuses: denial, cooldown,<br/>advisory, KEV, malware,<br/>install scripts, provenance,<br/>yanked, deprecated| AREF2[refusal status:<br/>refused by policy]
     POLICY -->|passes| ORIGIN{artifact on an origin<br/>the proxy does not serve?}
     ORIGIN -->|yes| AREF3[refusal status]
-    ORIGIN -->|no| DIGEST{strong digest published,<br/>or for Go claimed?}
+    ORIGIN -->|no| DIGEST{strong digest published,<br/>or for Go and Maven claimed?}
     DIGEST -->|no| AREF4[refusal status:<br/>cannot be assessed]
     DIGEST -->|yes| ANALYSIS{analysis of these bytes}
 
@@ -98,7 +100,7 @@ flowchart TD
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
 | refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version |
-| 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read |
+| 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
 
 An artifact whose bytes do not match the digest has already been sent a 200. The last
@@ -110,6 +112,16 @@ With no stream covering PyPI, a simple index is filtered without intel rather th
 answered 503, because pip reports an index 503 as `No matching distribution found`. Its
 files are answered 503 ([pypi-index-filtering](engineering_decisions/0050-pypi-index-filtering.md)).
 
+A Maven file's claim is the first of the `.sha512`, `.sha256` and `.sha1` beside it
+([maven-digests](engineering_decisions/0112-maven-digests.md)). A `.pom` and a `.module`
+are checked in the request against theirs, and are never refused by policy. A jar's
+first fetch is 503 `artifact-analysis` while a job reads its sidecar, its `.asc` and the
+key; a jar with none of the three sidecars is refused as no strong digest. A sidecar, an
+`.asc` and a `HEAD` are forwarded, and `maven-metadata.xml` is filtered as a metadata
+document. Under `/gradle-plugins/`, a portal 303 to `plugins-artifacts.gradle.org` names
+the file's sha256 in its path, which is the claim; one to Central is decided as under
+`/maven/`.
+
 ## Tokens
 
 Unless `BYRLE_REQUIRE_TOKEN=0`, every request except `/-/byrle/health` and
@@ -119,8 +131,8 @@ these it finds, and only that one:
 | Order | Form | Sent by |
 |---|---|---|
 | 1 | `X-Byrle-Token: <token>` | a client that sets a custom header; `byrle warm` with `BYRLE_TOKEN` |
-| 2 | `Authorization: Bearer <token>` | npm, pnpm, yarn 1 and bun with `_authToken` or `token` |
-| 3 | `Authorization: Basic`, the account as username and the token as password | pip and uv with `account:token@` in the index URL; go with it in `GOPROXY`, over https only |
+| 2 | `Authorization: Bearer <token>` | npm, pnpm, yarn 1 and bun with `_authToken` or `token`; mvn and Gradle with an `Authorization` header, which was not run |
+| 3 | `Authorization: Basic`, the account as username and the token as password | pip and uv with `account:token@` in the index URL; go with it in `GOPROXY`, over https only; mvn from a `<server>`, Gradle from `credentials { }` and `./mvnw` from `MVNW_USERNAME` and `MVNW_PASSWORD`, each after the 401's `WWW-Authenticate` |
 | 4 | `Authorization: <token>`, the token alone, starting `byrle_` | cargo, with `auth-required` in the proxy's `config.json` |
 
 Each request asks the account store, and keeps no answer: a revoked token or a disabled

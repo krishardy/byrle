@@ -123,7 +123,7 @@ Implemented means it is in the code, and the file names where.
 | 0109 | [Every advisory is read, and its kind is a signal of its own weight](0109-advisory-kinds.md) | Implemented |  |
 | 0110 | [cargo provenance: what crates.io publishes about who published a version](0110-cargo-provenance.md) | Measured 2026-10-15 |  |
 | 0111 | [Each ecosystem is served under a prefix of its own](0111-ecosystem-path-prefixes.md) | Decided by the user 2026-10-15 |  |
-| 0112 | [Maven: a jar's digest is its strongest sidecar, SHA-1 included](0112-maven-digests.md) | Decided by the user 2026-10-16 |  |
-| 0113 | [Maven: PGP signatures are decided by `provenance`, a key as the identity](0113-maven-signatures.md) | Decided by the user 2026-10-16 |  |
-| 0114 | [Maven: byrle passes every file through unchanged, so a client can check byrle](0114-maven-files-unchanged.md) | Decided by the user 2026-10-17 |  |
+| 0112 | [Maven: a jar's digest is its strongest sidecar, SHA-1 included](0112-maven-digests.md) | Implemented 2026-10-17 |  |
+| 0113 | [Maven: PGP signatures are decided by `provenance`, a key as the identity](0113-maven-signatures.md) | Implemented 2026-10-17 |  |
+| 0114 | [Maven: byrle passes every file through unchanged, so a client can check byrle](0114-maven-files-unchanged.md) | Implemented 2026-10-18 |  |
 | 0115 | [Maven: the Gradle plugin portal is a second repository of the Maven row](0115-gradle-plugin-portal.md) | Decided by the user 2026-10-17 |  |
