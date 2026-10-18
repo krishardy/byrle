@@ -2817,7 +2817,7 @@ async fn attested(
         Some(to_verify) => result_of(analyser, to_verify).await,
     };
     let priors: Vec<_> = match &previous {
-        attestation::Previous::Known(priors) => priors
+        attestation::Previous::Known(priors, _) => priors
             .iter()
             .map(|prior| {
                 verifiable(
@@ -7840,7 +7840,7 @@ mod tests {
             1 << 20,
             Arc::new(crate::analysis::store::InProcess::new(8)),
         ));
-        let proxy = offline(None, Some(NO_POLICY))
+        let proxy = offline(None, Some(DROP_REFUSES))
             .with_upstream(Ecosystem::Maven, &base)
             .with_client(Ecosystem::Maven, Arc::new(client))
             .with_analyser(Some(analyser.clone()));
@@ -7851,6 +7851,10 @@ mod tests {
         analyser.ended(1).await;
         pinned(&proxy, JAKARTA_JAR).await
     }
+
+    /// A policy with no cooldown that refuses a dropped attestation alone.
+    const DROP_REFUSES: &str =
+        "version: 1\ncooldown_days: 0\nsignal_weights: { provenance_dropped: 100 }\n";
 
     /// A jar whose signature verifies is served; one signed by a key that did not make it,
     /// and one with no `.asc` after a version with one, are refused naming `provenance`.
@@ -10726,7 +10730,9 @@ mod tests {
         assert_eq!(analyser.in_flight(), 0, "no job was started");
     }
 
-    const PROVENANCE: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n";
+    /// Install scripts allowed, and a dropped attestation weighed to refuse alone.
+    const PROVENANCE: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n\
+                              signal_weights: { provenance_dropped: 100 }\n";
 
     fn widget_digest(version: &str) -> Sri {
         Sri::parse(&sri_of(version.as_bytes())).expect("parses")
@@ -10911,9 +10917,9 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         analyser.ended(2).await;
 
-        let allow = format!("{PROVENANCE}provenance: allow\n");
+        let allow = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\nprovenance: allow\n";
         let (proxy, analyser) =
-            provenance_proxy("provenance-allowed", &allow, &["1.0.0", "2.0.0"], &[]).await;
+            provenance_proxy("provenance-allowed", allow, &["1.0.0", "2.0.0"], &[]).await;
         let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         analyser.ended(1).await;

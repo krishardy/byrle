@@ -248,6 +248,22 @@ present and their score; the verdict is a refusal when the score reaches
    (commons-lang3, guava, slf4j-api, jackson-databind, okhttp, kotlin-stdlib, netty-handler,
    junit), every version after each one's first signed version has a `.pom.asc`, except
    kotlin-stdlib 1.5.10 to 1.5.30-RC, seven versions.
+
+   Decided by the user 2026-10-18: the surprise sits beside `provenance_dropped`, which
+   weighs 50 by default; the half-life is a policy key. In parts:
+   1. `provenance_surprise`, weighed per bit, 25 by default, and `provenance_half_life`,
+      16 by default, in version 1. `Provenance::Dropped` carries its line's history: the
+      versions published before it in its release line, newest first, at most
+      `BYRLE_PROVENANCE_HISTORY` of them, each attested or not. The line and whether a
+      version is a prerelease come from the ecosystem's `VersionOrder`: the first number of
+      the version, or `0.` and the second when the first is 0; a prerelease orders below
+      its numeric prefix. The provenance check, failed as dropped, weighs
+      `provenance_dropped` plus `provenance_surprise` times the bits, and the audit line's
+      facts record the history. npm and PyPI, from the document.
+   2. Maven: the signer asks the `.asc` of the earlier versions in the line, at most
+      `BYRLE_PROVENANCE_HISTORY`, and `Signature::Dropped` stores the history. A row
+      stored before it is asked again, not read as no history.
+   3. smoke-maven without its gradle-versions-plugin exception.
 7. Docs: policy-reference, request-flow, threat-model, quickstart §4, the README.
 
 Raised beside this plan, and not part of it: the PyPI index keeps a version whose files are

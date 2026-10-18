@@ -40,6 +40,12 @@ its false positives can only be answered by an exception per package.
 `gradle-versions-plugin` 0.52.0 is refused today as `Dropped { previous: 0.11.1 }` after
 44 unsigned versions; a score can say that 44 versions make a 45th unsigned unsurprising.
 
+A dropped attestation is weighed on that history ([risk-score-plan](../risk-score-plan.md)
+step 6). Decided by the user 2026-10-18: `provenance_dropped` weighs half the threshold,
+and `provenance_surprise` sits beside it, a quarter of the threshold per bit of how
+unexpected an unattested version is after its release line's earlier versions, at a
+half-life the policy sets as `provenance_half_life`.
+
 The proxy's own refusals were recommended to stay outside the score, as they refuse bytes
 that cannot be checked rather than judging a package. The user chose to include them, and
 observe mode still refuses them.

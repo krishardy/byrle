@@ -159,6 +159,10 @@ impl Inputs {
             weights: crate::policy::decide::Check::ALL
                 .iter()
                 .map(|check| check.rule(&facts.provenance))
+                .chain(
+                    matches!(facts.provenance, Provenance::Dropped { .. })
+                        .then_some(crate::policy::decide::PER_BIT),
+                )
                 .map(|rule| (rule.to_owned(), policy.weight_of(rule)))
                 .collect(),
         }
@@ -218,6 +222,9 @@ pub enum RecordedProvenance {
     },
     Dropped {
         previous: String,
+        /// Its line's history, newest first, `1` attested and `0` not; absent before 2026-10-18.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        history: String,
     },
     IdentityChanged {
         previous: String,
@@ -265,8 +272,13 @@ impl RecordedFacts {
                 Provenance::Unverified { why } => {
                     RecordedProvenance::Unverified { why: why.clone() }
                 }
-                Provenance::Dropped { previous } => RecordedProvenance::Dropped {
+                Provenance::Dropped { previous, history } => RecordedProvenance::Dropped {
                     previous: previous.clone(),
+                    history: history
+                        .0
+                        .iter()
+                        .map(|&attested| if attested { '1' } else { '0' })
+                        .collect(),
                 },
                 Provenance::IdentityChanged { previous, from, to } => {
                     RecordedProvenance::IdentityChanged {
@@ -325,8 +337,11 @@ impl RecordedFacts {
                 RecordedProvenance::Unverified { why } => {
                     Provenance::Unverified { why: why.clone() }
                 }
-                RecordedProvenance::Dropped { previous } => Provenance::Dropped {
+                RecordedProvenance::Dropped { previous, history } => Provenance::Dropped {
                     previous: previous.clone(),
+                    history: crate::policy::decide::History(
+                        history.chars().map(|c| c == '1').collect(),
+                    ),
                 },
                 RecordedProvenance::IdentityChanged { previous, from, to } => {
                     Provenance::IdentityChanged {
@@ -1590,6 +1605,7 @@ not json
             },
             Provenance::Dropped {
                 previous: "1.0.0".to_owned(),
+                history: crate::policy::decide::History(vec![true, false]),
             },
             Provenance::IdentityChanged {
                 previous: "1.0.0".to_owned(),

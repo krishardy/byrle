@@ -42,8 +42,8 @@ pub enum Provenance {
     Consistent,
     /// An attestation it publishes failed verification.
     Unverified { why: String },
-    /// It publishes no attestation, and `previous`, published before it, did.
-    Dropped { previous: String },
+    /// It publishes no attestation, `previous` before it did, and its line's `history`.
+    Dropped { previous: String, history: History },
     /// Its attestation names `to`, and `previous`'s names `from`.
     IdentityChanged {
         previous: String,
@@ -62,13 +62,39 @@ impl Provenance {
             Self::Unknown(why) => (*why).to_owned(),
             Self::Consistent => "its attestations agree with the version before it".to_owned(),
             Self::Unverified { why } => format!("an attestation failed verification: {why}"),
-            Self::Dropped { previous } => {
+            Self::Dropped { previous, .. } => {
                 format!("publishes no attestation, and {previous}, published before it, did")
             }
             Self::IdentityChanged { previous, from, to } => {
                 format!("built by {to}, and {previous} was built by {from}")
             }
         }
+    }
+}
+
+/// Whether each version before one in its release line was attested, newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct History(pub Vec<bool>);
+
+impl History {
+    /// How surprising an unattested version is after these, in thousandths of a bit:
+    /// −log2 of (unattested + 1) / (all + 2), each weighing half `half_life` versions on.
+    /// 0 when none was attested.
+    pub fn surprise(&self, half_life: u32) -> u32 {
+        if !self.0.contains(&true) {
+            return 0;
+        }
+        let decay = 0.5_f64.powf(1.0 / f64::from(half_life));
+        let (mut unattested, mut all, mut weight) = (0.0, 0.0, 1.0);
+        for &attested in &self.0 {
+            all += weight;
+            if !attested {
+                unattested += weight;
+            }
+            weight *= decay;
+        }
+        let bits = -((unattested + 1.0) / (all + 2.0)).log2();
+        (bits * 1000.0).round() as u32
     }
 }
 
@@ -243,7 +269,7 @@ pub const PROXY_RULES: [&str; 4] = [
 ];
 
 /// The rules of the checks' signals, as [`Check::rule`] names them.
-pub const RULES: [&str; 11] = [
+pub const RULES: [&str; 12] = [
     "denied",
     "known_malware",
     "cooldown",
@@ -255,16 +281,25 @@ pub const RULES: [&str; 11] = [
     "provenance_unverified",
     "provenance_dropped",
     "provenance_identity_changed",
+    PER_BIT,
 ];
+
+/// The rule weighed per bit of a dropped attestation's surprise, beside `provenance_dropped`.
+pub const PER_BIT: &str = "provenance_surprise";
 
 /// The proxy's rules that weigh 0 unless weighed, so pass by default.
 pub const PASSED_RULES: [&str; 1] = ["no_strong_digest"];
 
 /// What `key` adds to a risk score when the policy weighs it not at all: 0 for
-/// [`PASSED_RULES`], `threshold` for the checks' and the proxy's others, else its default.
+/// [`PASSED_RULES`], half `threshold` for a dropped attestation and a quarter per bit of its
+/// surprise, `threshold` for the checks' and the proxy's others, else its default.
 pub fn default_weight(key: &str, threshold: u32) -> u32 {
     if PASSED_RULES.contains(&key) {
         0
+    } else if key == "provenance_dropped" {
+        threshold / 2
+    } else if key == PER_BIT {
+        threshold / 4
     } else if RULES.contains(&key) || PROXY_RULES.contains(&key) {
         threshold
     } else {
@@ -372,7 +407,7 @@ pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
         .iter()
         .map(|&check| {
             let outcome = run(policy, facts, check, entry, as_of);
-            let weight = weight(&outcome, policy.weight_of(check.rule(&facts.provenance)));
+            let weight = weight(&outcome, check_weight(policy, check, &facts.provenance));
             Result {
                 check,
                 outcome,
@@ -386,6 +421,19 @@ pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
         entry,
         threshold,
         signals: Vec::new(),
+    }
+}
+
+/// What `check` weighs when it fails: its rule's weight, and for a dropped attestation
+/// [`PER_BIT`]'s for each bit of its surprise, rounded to the nearest point.
+pub fn check_weight(policy: &Policy, check: Check, provenance: &Provenance) -> u32 {
+    let weight = policy.weight_of(check.rule(provenance));
+    match (check, provenance) {
+        (Check::Provenance, Provenance::Dropped { history, .. }) => {
+            let millibits = history.surprise(policy.provenance_half_life);
+            weight + (policy.weight_of(PER_BIT) * millibits + 500) / 1000
+        }
+        _ => weight,
     }
 }
 
@@ -692,6 +740,59 @@ mod tests {
         assert_eq!(both.reasons().len(), 2);
     }
 
+    /// An unattested version's surprise, in thousandths of a bit, after its line's history;
+    /// none when no version in it was attested.
+    #[test]
+    fn a_drop_is_as_surprising_as_its_lines_history_says() {
+        let h = |attested: &[bool]| History(attested.to_vec());
+        assert_eq!(h(&[true; 8]).surprise(16), 3155);
+        assert_eq!(h(&[false, true]).surprise(16), 985);
+        assert_eq!(h(&[true]).surprise(1), 1585);
+        assert_eq!(h(&[true, false, false]).surprise(2), 931);
+        assert_eq!(h(&[true; 64]).surprise(16), 4592);
+        assert_eq!(h(&[false; 8]).surprise(16), 0);
+        assert_eq!(h(&[]).surprise(16), 0);
+    }
+
+    /// A dropped attestation weighs `provenance_dropped` and `provenance_surprise` for each
+    /// bit, to the nearest point; it refuses when its line was attested throughout.
+    #[test]
+    fn a_drop_weighs_its_rule_and_its_surprise() {
+        let policy = Policy::parse("version: 1\ncooldown_days: 0\n").unwrap();
+        let dropped = |attested: Vec<bool>| Provenance::Dropped {
+            previous: "1".to_owned(),
+            history: History(attested),
+        };
+        let weighs = |policy: &Policy, attested: Vec<bool>| {
+            check_weight(policy, Check::Provenance, &dropped(attested))
+        };
+        assert_eq!(weighs(&policy, vec![true; 8]), 50 + 79);
+        assert_eq!(weighs(&policy, vec![false, true]), 50 + 25);
+        assert_eq!(weighs(&policy, vec![]), 50);
+        assert_eq!(
+            check_weight(&policy, Check::Kev, &dropped(vec![true; 8])),
+            100
+        );
+        let set = Policy::parse(
+            "version: 1\nprovenance_half_life: 1\nsignal_weights: { provenance_surprise: 2 }\n",
+        )
+        .unwrap();
+        assert_eq!(weighs(&set, vec![true]), 50 + 3);
+        let facts = |attested: Vec<bool>| Facts {
+            provenance: dropped(attested),
+            ..clean()
+        };
+        let today = jiff::civil::date(2026, 10, 18);
+        assert_eq!(
+            decide(&policy, &facts(vec![true; 8]), today).action(),
+            Action::Block
+        );
+        assert_eq!(
+            decide(&policy, &facts(vec![true]), today).action(),
+            Action::Allow
+        );
+    }
+
     /// Each check's signal is named for `signal_weights`, provenance by what it says.
     #[test]
     fn each_check_names_its_rule() {
@@ -702,6 +803,7 @@ mod tests {
         assert_eq!(named, expected);
         let dropped = Provenance::Dropped {
             previous: "1".to_owned(),
+            history: History::default(),
         };
         assert_eq!(Check::Provenance.rule(&dropped), "provenance_dropped");
         let changed = Provenance::IdentityChanged {

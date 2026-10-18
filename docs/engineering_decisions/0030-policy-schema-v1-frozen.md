@@ -47,16 +47,21 @@ changes what version 1's `block` and `allow` mean, to a signal weighing `risk_th
 or 0, and adds `risk_threshold` and the new rules of `signal_weights`. With the defaults, a
 file written before refuses the versions it refused.
 
+Amended again 2026-10-18, decided by the user: `provenance_surprise` and
+`provenance_half_life` are added, and `provenance_dropped` weighs half `risk_threshold`, so
+a dropped attestation refuses only with the surprise of its release line's history
+([risk-score-plan](../risk-score-plan.md) step 6).
+
 ## The keys
 
 | Level | Keys |
 |---|---|
-| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `deprecated`, `yanked`, `provenance`, `provenance_window_days`, `denials`, `packages`, `advisory_scores`, `signal_weights`, `risk_threshold` |
+| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `deprecated`, `yanked`, `provenance`, `provenance_window_days`, `provenance_half_life`, `denials`, `packages`, `advisory_scores`, `signal_weights`, `risk_threshold` |
 | a `denials` entry | `purl`, `version`, `reason` |
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
-| `signal_weights` | `denied`, `known_malware`, `cooldown`, `kev`, `max_cvss`, `install_scripts`, `yanked`, `deprecated`, `provenance_unverified`, `provenance_dropped`, `provenance_identity_changed`, `no_strong_digest`, `unservable`, `digest_mismatch`, `signature_failed`, `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `trustpub_dropped`, `trustpub_repository_changed`, `signing_key_new`, `signing_key_expired`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
+| `signal_weights` | `denied`, `known_malware`, `cooldown`, `kev`, `max_cvss`, `install_scripts`, `yanked`, `deprecated`, `provenance_unverified`, `provenance_dropped`, `provenance_identity_changed`, `provenance_surprise`, `no_strong_digest`, `unservable`, `digest_mismatch`, `signature_failed`, `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `trustpub_dropped`, `trustpub_repository_changed`, `signing_key_new`, `signing_key_expired`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
 | `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `ignored_vuln_advisory_ids` |
 
 | Key | Value | Default |
@@ -64,6 +69,7 @@ file written before refuses the versions it refused.
 | `version` | `1` | required |
 | `cooldown_days` | whole days, 0 or more | 7 |
 | `provenance_window_days` | whole days, 0 or more | 7 |
+| `provenance_half_life` | whole versions, 1 or more | 16 |
 | `max_cvss` | a number. At or below is allowed | 6.9 |
 | `install_scripts`, `kev`, `yanked`, `provenance` | `block` or `allow` | `block` |
 | `deprecated` | `block` or `allow` | `allow` |
@@ -81,7 +87,7 @@ file written before refuses the versions it refused.
 | `set.ignored_vuln_advisory_ids` | advisory ids, each matched against an advisory's id and its aliases | empty |
 | `advisory_scores[].advisory_id` | an advisory id, matched against an advisory's id and its aliases | required |
 | `advisory_scores[].cvss` | a number, 0.0 to 10.0 | required |
-| `signal_weights.*` | a whole number, 0 or more | 1; the `advisory_` keys 8, 4, 3, 2 and 1; a check's or the proxy's rule `risk_threshold` |
+| `signal_weights.*` | a whole number, 0 or more | 1; the `advisory_` keys 8, 4, 3, 2 and 1; a check's or the proxy's rule `risk_threshold`, but `provenance_dropped` half of it, `provenance_surprise` a quarter of it per bit, and `no_strong_digest` 0 |
 | `risk_threshold` | a whole number, 1 or more | 100 |
 
 The rules the keys obey are fixed with them: every key refused when unknown, at every level;

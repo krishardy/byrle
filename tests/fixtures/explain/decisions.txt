@@ -580,7 +580,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
-  provenance       FAIL block        publishes no attestation, and 4.17.20, published before it, did
+  provenance       FAIL block        publishes no attestation, and 4.17.20, published before it, did; 8 of the 8 versions before it in its line were attested, 3.15 bits
 
   verdict: block
 

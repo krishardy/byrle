@@ -3,6 +3,7 @@
 //! See docs/engineering_decisions/0066-provenance-check.md and
 //! docs/engineering_decisions/0065-sigstore-verifier.md.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use sigstore_verify::trust_root::{SIGSTORE_PRODUCTION_TRUSTED_ROOT, TrustedRoot};
@@ -10,7 +11,8 @@ use sigstore_verify::types::{Artifact, ArtifactDigest, Bundle, HashAlgorithm};
 use sigstore_verify::{VerificationPolicy, Verifier};
 
 use crate::integrity::{Algorithm, Sri};
-use crate::policy::decide::Provenance;
+use crate::intel::range::Line;
+use crate::policy::decide::{History, Provenance};
 use crate::policy::facts::PublishTimes;
 use crate::record::PackageRecord;
 
@@ -100,8 +102,8 @@ fn identity(san: &str) -> String {
 pub enum Previous {
     /// The version has no publish time, so nothing can be said to come before it.
     Unknown,
-    /// Most recent first: those in the window, then the established ones.
-    Known(Vec<Prior>),
+    /// Most recent first, the window's then the established ones; and its line's history.
+    Known(Vec<Prior>, History),
 }
 
 /// A version published before, as a whole: which it is, its attestations, and their digest.
@@ -146,6 +148,16 @@ fn published(record: &PackageRecord, times: Option<&PublishTimes>) -> Option<jif
 /// Established versions compared by default: [`crate::env::PROVENANCE_HISTORY`].
 pub const DEFAULT_HISTORY: usize = 64;
 
+/// The versions of its release line a version's [`History`] holds, most recent first.
+pub const LINE_HISTORY: usize = 64;
+
+/// The release line `record` is in, by its ecosystem's order.
+fn line_of(record: &PackageRecord) -> Option<Line> {
+    crate::ecosystem::of(record.package.ecosystem())
+        .versions
+        .line(record.package.version())
+}
+
 /// The history [`from_metadata`] needs: it reads only the most recent attested version.
 pub const METADATA_HISTORY: usize = 1;
 
@@ -157,10 +169,10 @@ pub fn previous(
     times: Option<&PublishTimes>,
     (window, history): (jiff::SignedDuration, usize),
 ) -> Previous {
-    let Some(at) = records
+    let Some((this, at)) = records
         .iter()
         .find(|r| r.package.version() == version)
-        .and_then(|r| published(r, times))
+        .and_then(|r| Some((r, published(r, times)?)))
     else {
         return Previous::Unknown;
     };
@@ -169,7 +181,25 @@ pub fn previous(
         .filter_map(|r| Some((published(r, times).filter(|t| *t < at)?, Prior::of(r)?)))
         .collect();
     before.sort_by_key(|(t, _)| *t);
-    Previous::Known(chosen(&before, at, window, history))
+    let line = line_of(this);
+    let mut in_line: Vec<(jiff::Timestamp, bool)> = records
+        .iter()
+        .filter(|r| line.is_some() && line_of(r) == line)
+        .filter_map(|r| {
+            Some((
+                published(r, times).filter(|t| *t < at)?,
+                Prior::of(r).is_some(),
+            ))
+        })
+        .collect();
+    in_line.sort_by_key(|(t, _)| *t);
+    let line_history = in_line
+        .iter()
+        .rev()
+        .take(LINE_HISTORY)
+        .map(|(_, attested)| *attested)
+        .collect();
+    Previous::Known(chosen(&before, at, window, history), History(line_history))
 }
 
 /// [`previous`] for each of `records`, in their order: one sort, then a walk, for a
@@ -189,10 +219,25 @@ pub fn predecessors(
     dated.sort();
     let mut out = vec![Previous::Unknown; records.len()];
     let mut before: Vec<(jiff::Timestamp, Prior)> = Vec::new();
+    let lines: Vec<Option<Line>> = records.iter().map(line_of).collect();
+    let mut by_line: HashMap<&Line, Vec<bool>> = HashMap::new();
     for group in dated.chunk_by(|a, b| a.0 == b.0) {
         let priors = chosen(&before, group[0].0, window, history);
         for &(_, i) in group {
-            out[i] = Previous::Known(priors.clone());
+            let line_history = lines[i]
+                .as_ref()
+                .and_then(|line| by_line.get(line))
+                .map(|attested| attested.iter().rev().take(LINE_HISTORY).copied().collect())
+                .unwrap_or_default();
+            out[i] = Previous::Known(priors.clone(), History(line_history));
+        }
+        for &(_, i) in group {
+            if let Some(line) = &lines[i] {
+                by_line
+                    .entry(line)
+                    .or_default()
+                    .push(Prior::of(&records[i]).is_some());
+            }
         }
         before.extend(
             group
@@ -231,7 +276,7 @@ fn chosen(
 /// `policy diff` decide on.
 pub fn from_metadata(this: &PackageRecord, previous: &Previous) -> Provenance {
     let unverified = match previous {
-        Previous::Known(priors) => vec![None; priors.len()],
+        Previous::Known(priors, _) => vec![None; priors.len()],
         Previous::Unknown => Vec::new(),
     };
     match provenance(this, previous, None, &unverified) {
@@ -262,18 +307,19 @@ pub fn provenance(
     this_result: Option<&Attested>,
     prior_results: &[Option<&Attested>],
 ) -> Answer {
-    let priors = match previous {
+    let (priors, history) = match previous {
         Previous::Unknown => {
             return Answer::Known(Provenance::Unknown(
                 "it has no publish time, so the versions before it are not known",
             ));
         }
-        Previous::Known(priors) => priors,
+        Previous::Known(priors, history) => (priors, history),
     };
     if this.provenance.attestation_url.is_none() {
         return Answer::Known(match priors.first() {
             Some(prior) => Provenance::Dropped {
                 previous: prior.version.clone(),
+                history: history.clone(),
             },
             None => Provenance::Consistent,
         });
@@ -483,10 +529,15 @@ mod tests {
 
     const COMPARED: (jiff::SignedDuration, usize) = (WEEK, DEFAULT_HISTORY);
 
+    /// Dropped after `previous`, with whatever history its line has.
+    fn dropped_after(previous: &str) -> impl Fn(&Provenance) -> bool + '_ {
+        move |fact| matches!(fact, Provenance::Dropped { previous: p, .. } if p == previous)
+    }
+
     /// The versions in the window, then the established ones, each most recent first.
     fn versions(previous: Previous) -> Option<(Vec<String>, Vec<String>)> {
         match previous {
-            Previous::Known(priors) => {
+            Previous::Known(priors, _) => {
                 let (old, recent): (Vec<_>, Vec<_>) =
                     priors.into_iter().partition(|p| p.established);
                 let names = |priors: Vec<Prior>| priors.into_iter().map(|p| p.version).collect();
@@ -542,6 +593,68 @@ mod tests {
                 "{version}"
             );
         }
+    }
+
+    /// 1.x and 2.0.0, with a prerelease and a backport between them.
+    const LINES: &[(&str, &str)] = &[
+        ("1.0.0", "2026-01-01"),
+        ("2.0.0", "2026-01-02"),
+        ("1.0.1", "2026-01-03"),
+        ("1.1.0-rc.1", "2026-01-04"),
+        ("1.1.0", "2026-01-05"),
+        ("1.2.0", "2026-01-06"),
+        ("nightly", "2026-01-07"),
+    ];
+
+    /// A version's history is its line's: the same first number, and stable or prerelease
+    /// as it is, newest first, whatever the window.
+    #[test]
+    fn the_history_is_of_the_versions_line() {
+        let records = records(LINES, &["1.0.0", "2.0.0", "1.1.0-rc.1", "1.1.0"]);
+        let history = |version: &str| match previous(&records, version, None, (WEEK, 1)) {
+            Previous::Known(_, history) => history.0,
+            Previous::Unknown => panic!("{version} has a publish time"),
+        };
+        assert_eq!(history("1.2.0"), [true, false, true]);
+        assert_eq!(history("1.1.0-rc.1"), Vec::<bool>::new());
+        assert_eq!(history("2.0.0"), Vec::<bool>::new());
+        assert_eq!(history("nightly"), Vec::<bool>::new(), "in no line");
+        let each = predecessors(&records, None, (WEEK, 1));
+        for (record, previous_of) in records.iter().zip(each) {
+            let version = record.package.version();
+            assert_eq!(
+                previous_of,
+                previous(&records, version, None, (WEEK, 1)),
+                "{version}"
+            );
+        }
+    }
+
+    /// At most [`LINE_HISTORY`] versions are in a history, the most recent.
+    #[test]
+    fn a_history_holds_the_most_recent_of_its_line() {
+        let days: Vec<(String, String)> = (0..70)
+            .map(|i| {
+                let day = jiff::civil::date(2026, 1, 1)
+                    .checked_add(jiff::Span::new().days(i))
+                    .expect("in range");
+                (format!("1.0.{i}"), day.to_string())
+            })
+            .collect();
+        let schedule: Vec<(&str, &str)> =
+            days.iter().map(|(v, d)| (v.as_str(), d.as_str())).collect();
+        let attested: Vec<&str> = schedule.iter().skip(5).map(|(v, _)| *v).collect();
+        let records = records(&schedule, &attested);
+        let each = predecessors(&records, None, (WEEK, 1));
+        let Previous::Known(_, history) = previous(&records, "1.0.69", None, (WEEK, 1)) else {
+            panic!("1.0.69 has a publish time");
+        };
+        assert_eq!(history.0, vec![true; LINE_HISTORY]);
+        let at = records
+            .iter()
+            .position(|r| r.package.version() == "1.0.69")
+            .expect("listed");
+        assert_eq!(each[at], previous(&records, "1.0.69", None, (WEEK, 1)));
     }
 
     /// Only versions claiming attestations are compared against.
@@ -629,13 +742,8 @@ mod tests {
             ("3.0.2", (jiff::SignedDuration::ZERO, METADATA_HISTORY)),
         ] {
             let previous = previous(&records, version, None, compared);
-            assert_eq!(
-                from_metadata(&find(&records, version), &previous),
-                Provenance::Dropped {
-                    previous: "3.0.0".to_owned()
-                },
-                "{version}"
-            );
+            let fact = from_metadata(&find(&records, version), &previous);
+            assert!(dropped_after("3.0.0")(&fact), "{version}: {fact:?}");
         }
     }
 
@@ -646,13 +754,8 @@ mod tests {
         let burst = records(SCHEDULE, &["2.0.0"]);
         for version in ["1.0.1", "3.0.0", "3.0.1", "3.0.2"] {
             let previous = previous(&burst, version, None, (WEEK, METADATA_HISTORY));
-            assert_eq!(
-                from_metadata(&find(&burst, version), &previous),
-                Provenance::Dropped {
-                    previous: "2.0.0".to_owned()
-                },
-                "{version}"
-            );
+            let fact = from_metadata(&find(&burst, version), &previous);
+            assert!(dropped_after("2.0.0")(&fact), "{version}: {fact:?}");
         }
     }
 
@@ -802,14 +905,14 @@ mod tests {
             _ => verified("release"),
         };
         let decided = |version: &str| {
-            let Previous::Known(priors) = previous(&all, version, None, COMPARED) else {
+            let Previous::Known(priors, history) = previous(&all, version, None, COMPARED) else {
                 panic!("{version} has a publish time");
             };
             let results: Vec<Attested> = priors.iter().map(|p| identity(&p.version)).collect();
             let results: Vec<Option<&Attested>> = results.iter().map(Some).collect();
             match provenance(
                 &find(&all, version),
-                &Previous::Known(priors),
+                &Previous::Known(priors, history),
                 Some(&identity(version)),
                 &results,
             ) {

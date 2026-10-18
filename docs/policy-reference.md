@@ -24,6 +24,7 @@ yanked: block
 deprecated: allow
 provenance: block
 provenance_window_days: 7
+provenance_half_life: 16
 
 denials:
   - purl: "pkg:npm/event-stream@3.3.6"
@@ -80,6 +81,7 @@ One value each for the whole deployment.
 | `deprecated` | `block` or `allow` | `allow` | an npm version its publisher deprecated; PyPI has no marker, and Go's `// Deprecated:` is not read | `allow` |
 | `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a repository and workflow no version from before the window used ([provenance-check](engineering_decisions/0066-provenance-check.md)); for a Maven jar, an `.asc` that does not verify, or none after a version with one ([maven-signatures](engineering_decisions/0113-maven-signatures.md)) | `allow` |
 | `provenance_window_days` | a whole number of days | 7 | | a shorter window establishes a new repository or workflow sooner |
+| `provenance_half_life` | a whole number of versions, 1 or more | 16 | | neither way alone: shorter weighs the latest versions more, and caps `provenance_surprise` at fewer bits, log2(1.44 × half-life + 2) |
 | `risk_threshold` | a whole number, 1 or more | 100 | a version whose checks' weights sum to it or more ([every-refusal-a-signal](engineering_decisions/0116-every-refusal-a-signal.md)) | higher, where a check is weighed under it in `signal_weights` |
 
 - **`max_cvss`:** a score at or below it is allowed. A value above 10.0 loads, and allows
@@ -209,7 +211,8 @@ audit verify` weighs them again.
 | `yanked` | its file was yanked | `risk_threshold` |
 | `deprecated` | its publisher deprecated it; weighed only with `deprecated: block` | `risk_threshold` |
 | `provenance_unverified` | an attestation or signature failed verification | `risk_threshold` |
-| `provenance_dropped` | it has none, after a version with one | `risk_threshold` |
+| `provenance_dropped` | it has none, after a version with one | half `risk_threshold` |
+| `provenance_surprise` | per bit of surprise, beside `provenance_dropped`: −log2 of (unattested + 1) / (all + 2) over the 64 versions before it in its release line, each weighing half `provenance_half_life` versions on. The line is the first number, or `0.` and the second, stable or prerelease as it is. 0 bits when none in the line was attested | a quarter of `risk_threshold` |
 | `provenance_identity_changed` | its attestation names another repository or workflow than the version before it | `risk_threshold` |
 | `unservable` | its artifact is on an origin the proxy does not serve, while `BYRLE_REFUSE_UNSERVABLE` is on. Under the threshold, the version stays in the document and its fetch goes on; the proxy never fetches from that origin | `risk_threshold` |
 | `no_strong_digest` | no strong digest is published for its artifact. Under the threshold, its bytes are forwarded unverified and unanalysed, so `install_scripts` and the detectors have no answer | 0 |

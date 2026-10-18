@@ -35,12 +35,17 @@ pub const DEFAULT_COOLDOWN_DAYS: u32 = 7;
 pub const DEFAULT_MAX_CVSS: f64 = 6.9;
 /// The shipped default for `provenance_window_days`, the cooldown's own.
 pub const DEFAULT_PROVENANCE_WINDOW_DAYS: u32 = 7;
+/// The shipped default for `provenance_half_life`, from docs/risk-score-plan.md step 6.
+pub const DEFAULT_PROVENANCE_HALF_LIFE: u32 = 16;
 
 fn default_cooldown_days() -> u32 {
     DEFAULT_COOLDOWN_DAYS
 }
 fn default_provenance_window_days() -> u32 {
     DEFAULT_PROVENANCE_WINDOW_DAYS
+}
+fn default_provenance_half_life() -> u32 {
+    DEFAULT_PROVENANCE_HALF_LIFE
 }
 fn default_risk_threshold() -> u32 {
     decide::DEFAULT_RISK_THRESHOLD
@@ -112,6 +117,8 @@ pub enum PolicyError {
     },
     /// `risk_threshold` is 0, at which every version would be refused.
     ZeroThreshold,
+    /// `provenance_half_life` is 0, under which no earlier version weighs.
+    ZeroHalfLife,
     /// `signal_weights` weighs the rule of a check `setting` turns off.
     WeighedButAllowed { setting: &'static str, rule: String },
 }
@@ -171,6 +178,11 @@ impl fmt::Display for PolicyError {
             Self::ZeroThreshold => write!(
                 f,
                 "risk_threshold is 0, at which every version would be refused; it is at \
+                 least 1"
+            ),
+            Self::ZeroHalfLife => write!(
+                f,
+                "provenance_half_life is 0, under which no earlier version weighs; it is at \
                  least 1"
             ),
             Self::WeighedButAllowed { setting, rule } => write!(
@@ -314,6 +326,9 @@ pub struct Policy {
     /// How far back `provenance` looks for versions to compare with, in days.
     #[serde(default = "default_provenance_window_days")]
     pub provenance_window_days: u32,
+    /// How many versions back a version's attestation weighs half in `provenance_surprise`.
+    #[serde(default = "default_provenance_half_life")]
+    pub provenance_half_life: u32,
 
     #[serde(default)]
     pub denials: Vec<Denial>,
@@ -395,6 +410,9 @@ impl Policy {
         if self.risk_threshold == 0 {
             return Err(PolicyError::ZeroThreshold);
         }
+        if self.provenance_half_life == 0 {
+            return Err(PolicyError::ZeroHalfLife);
+        }
         let off = [
             (
                 "install_scripts",
@@ -411,6 +429,7 @@ impl Policy {
                     "provenance_unverified",
                     "provenance_dropped",
                     "provenance_identity_changed",
+                    "provenance_surprise",
                 ],
             ),
         ];
@@ -974,6 +993,22 @@ mod tests {
             0,
             "passed unless weighed"
         );
+        assert_eq!(
+            (
+                policy.weight_of("provenance_dropped"),
+                policy.weight_of("provenance_surprise")
+            ),
+            (50, 25),
+            "half the threshold, and a quarter per bit"
+        );
+        assert_eq!(
+            (
+                set.weight_of("provenance_dropped"),
+                set.weight_of("provenance_surprise")
+            ),
+            (20, 10)
+        );
+        assert_eq!(policy.provenance_half_life, 16);
         assert_eq!(set.weight_of("unservable"), 40);
         let digest = ["no_strong_digest".to_owned()];
         let unservable = ["unservable".to_owned()];
@@ -992,6 +1027,16 @@ mod tests {
             parse("risk_threshold: 0\n").unwrap_err().to_string(),
             "risk_threshold is 0, at which every version would be refused; it is at least 1"
         );
+        assert_eq!(
+            parse("provenance_half_life: 0\n").unwrap_err().to_string(),
+            "provenance_half_life is 0, under which no earlier version weighs; it is at least 1"
+        );
+        assert_eq!(
+            parse("provenance_half_life: 4\n")
+                .unwrap()
+                .provenance_half_life,
+            4
+        );
         for (setting, rule) in [
             ("install_scripts", "install_scripts"),
             ("kev", "kev"),
@@ -1000,6 +1045,7 @@ mod tests {
             ("provenance", "provenance_unverified"),
             ("provenance", "provenance_dropped"),
             ("provenance", "provenance_identity_changed"),
+            ("provenance", "provenance_surprise"),
         ] {
             let error = parse(&format!(
                 "{setting}: allow\nsignal_weights: {{ {rule}: 50 }}\n"
@@ -1040,6 +1086,7 @@ mod tests {
                     "yanked",
                     "provenance",
                     "provenance_window_days",
+                    "provenance_half_life",
                     "denials",
                     "packages",
                     "advisory_scores",
@@ -1111,6 +1158,7 @@ mod tests {
                     "provenance_unverified",
                     "provenance_dropped",
                     "provenance_identity_changed",
+                    "provenance_surprise",
                     "no_strong_digest",
                     "unservable",
                     "digest_mismatch",

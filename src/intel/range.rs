@@ -23,6 +23,14 @@ pub enum VersionOrder {
     Maven,
 }
 
+/// A version's release line: its first number, or `0.` and its second, and if prerelease.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Line {
+    pub release: String,
+    /// It orders below the numbers it starts with: `1.0.0-rc.1`, `1.0rc1`, `1.0-M1`.
+    pub prerelease: bool,
+}
+
 /// A version as its ecosystem orders it. Only versions of one ecosystem are compared.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ordered {
@@ -59,6 +67,27 @@ impl VersionOrder {
             Self::Go => toolchain(s).or_else(|| padded(unprefixed(s))),
             Self::Maven => Some(s.to_owned()),
         }
+    }
+
+    /// The release line `s` is in, or `None` when it is not a version or starts with no
+    /// number: [`Line`].
+    pub fn line(self, s: &str) -> Option<Line> {
+        let s = self.normalised(s)?;
+        let end = s
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(s.len());
+        let numbers = s[..end].trim_end_matches('.');
+        let mut parts = numbers.split('.').map(str::parse::<u64>);
+        let first = parts.next().and_then(Result::ok)?;
+        let release = match (first, parts.next()) {
+            (0, Some(second)) => format!("0.{}", second.ok()?),
+            _ => first.to_string(),
+        };
+        let prerelease = self.parse(&s) < self.parse(numbers);
+        Some(Line {
+            release,
+            prerelease,
+        })
     }
 
     /// The order as `byrle status` names it.
@@ -463,6 +492,45 @@ mod tests {
     fn an_introduced_with_no_end_is_everything_from_it() {
         assert!(!affected(&[("introduced", "1.2.2")], "1.2.1"));
         assert!(affected(&[("introduced", "1.2.2")], "99.0.0"));
+    }
+
+    /// A line is the first number, or `0.` and the second; a prerelease orders below the
+    /// numbers it starts with, in each ecosystem's own order.
+    #[test]
+    fn each_order_reads_a_versions_line() {
+        let line = |order: VersionOrder, s: &str| {
+            order.line(s).map(|line| (line.release, line.prerelease))
+        };
+        let cases = [
+            (VersionOrder::SemVer, "1.2.3", Some(("1", false))),
+            (VersionOrder::SemVer, "1.0.0-rc.1", Some(("1", true))),
+            (VersionOrder::SemVer, "0.30.4", Some(("0.30", false))),
+            (VersionOrder::SemVer, "0", Some(("0.0", false))),
+            (VersionOrder::SemVer, "13.0", Some(("13", false))),
+            (VersionOrder::SemVer, "latest", None),
+            (VersionOrder::Pep440, "1.0rc1", Some(("1", true))),
+            (VersionOrder::Pep440, "2.0.dev0", Some(("2", true))),
+            (VersionOrder::Pep440, "1.0.post1", Some(("1", false))),
+            (VersionOrder::Go, "v1.5.2", Some(("1", false))),
+            (
+                VersionOrder::Go,
+                "v0.0.0-20200101000000-abcdef123456",
+                Some(("0.0", true)),
+            ),
+            (VersionOrder::Maven, "33.0-jre", Some(("33", false))),
+            (VersionOrder::Maven, "1.0-M1", Some(("1", true))),
+            (VersionOrder::Maven, "2.1-SNAPSHOT", Some(("2", true))),
+            (VersionOrder::Maven, "0.52.0", Some(("0.52", false))),
+            (VersionOrder::Maven, "RELEASE", None),
+            (VersionOrder::Maven, "0..1", None),
+        ];
+        for (order, version, expected) in cases {
+            assert_eq!(
+                line(order, version),
+                expected.map(|(release, pre)| (release.to_owned(), pre)),
+                "{order:?} {version}"
+            );
+        }
     }
 
     #[test]

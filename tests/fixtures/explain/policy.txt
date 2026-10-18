@@ -6,7 +6,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
-  provenance       block, over 7 days
+  provenance       block, over 7 days, half-life 16 versions
   risk_threshold   100
   denials          0
   packages         0
@@ -22,8 +22,9 @@ signal weights, for the risk score
   yanked                       100
   deprecated                   100
   provenance_unverified        100
-  provenance_dropped           100
+  provenance_dropped           50
   provenance_identity_changed  100
+  provenance_surprise          25 per bit
   no_strong_digest             0
   unservable                   100
   digest_mismatch              100
@@ -66,7 +67,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
-  provenance       block, over 7 days
+  provenance       block, over 7 days, half-life 16 versions
   risk_threshold   100
   denials          0
   packages         0
@@ -82,8 +83,9 @@ signal weights, for the risk score
   yanked                       100
   deprecated                   100
   provenance_unverified        100
-  provenance_dropped           100
+  provenance_dropped           50
   provenance_identity_changed  100
+  provenance_surprise          25 per bit
   no_strong_digest             0
   unservable                   100
   digest_mismatch              100
@@ -126,7 +128,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
-  provenance       block, over 7 days
+  provenance       block, over 7 days, half-life 16 versions
   risk_threshold   100
   denials          4
   packages         5
@@ -142,8 +144,9 @@ signal weights, for the risk score
   yanked                       100
   deprecated                   100
   provenance_unverified        100
-  provenance_dropped           100
+  provenance_dropped           50
   provenance_identity_changed  100
+  provenance_surprise          25 per bit
   no_strong_digest             0
   unservable                   100
   digest_mismatch              100
@@ -196,7 +199,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
-  provenance       block, over 7 days
+  provenance       block, over 7 days, half-life 16 versions
   risk_threshold   100
   denials          4
   packages         5
@@ -212,8 +215,9 @@ signal weights, for the risk score
   yanked                       100
   deprecated                   100
   provenance_unverified        100
-  provenance_dropped           100
+  provenance_dropped           50
   provenance_identity_changed  100
+  provenance_surprise          25 per bit
   no_strong_digest             0
   unservable                   100
   digest_mismatch              100

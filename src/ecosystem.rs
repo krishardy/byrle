@@ -153,6 +153,7 @@ impl Signature {
             Self::Failed { why } => Provenance::Unverified { why: why.clone() },
             Self::Dropped { previous } => Provenance::Dropped {
                 previous: previous.clone(),
+                history: crate::policy::decide::History::default(),
             },
         }
     }

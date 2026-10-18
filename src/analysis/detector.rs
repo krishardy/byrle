@@ -52,8 +52,8 @@ pub const BUILT_IN: [&str; 8] = [
 ];
 
 /// The rules of the detectors built in, as a policy names them.
-pub const BUILT_IN_RULES: [&str; 33] = joined(
-    &joined::<15>(
+pub const BUILT_IN_RULES: [&str; 34] = joined(
+    &joined::<16>(
         &crate::policy::decide::RULES,
         &crate::policy::decide::PROXY_RULES,
     ),
@@ -519,14 +519,14 @@ esac
         assert!(!knows("metadata.new_package"));
         assert_eq!(key("source", "source_differing"), "source_differing");
         assert_eq!(key("guarddog", "bundled_binary"), "guarddog.bundled_binary");
-        assert_eq!(BUILT_IN_RULES[..11], crate::policy::decide::RULES);
-        assert_eq!(BUILT_IN_RULES[11..15], crate::policy::decide::PROXY_RULES);
-        assert_eq!(BUILT_IN_RULES[15..19], metadata::RULES);
-        assert_eq!(BUILT_IN_RULES[19..23], source::RULES);
-        assert_eq!(BUILT_IN_RULES[23..24], virustotal::RULES);
-        assert_eq!(BUILT_IN_RULES[24..26], trustpub::RULES);
-        assert_eq!(BUILT_IN_RULES[26..28], signing::RULES);
-        assert_eq!(BUILT_IN_RULES[28..], crate::signal::ADVISORY_RULES);
+        assert_eq!(BUILT_IN_RULES[..12], crate::policy::decide::RULES);
+        assert_eq!(BUILT_IN_RULES[12..16], crate::policy::decide::PROXY_RULES);
+        assert_eq!(BUILT_IN_RULES[16..20], metadata::RULES);
+        assert_eq!(BUILT_IN_RULES[20..24], source::RULES);
+        assert_eq!(BUILT_IN_RULES[24..25], virustotal::RULES);
+        assert_eq!(BUILT_IN_RULES[25..27], trustpub::RULES);
+        assert_eq!(BUILT_IN_RULES[27..29], signing::RULES);
+        assert_eq!(BUILT_IN_RULES[29..], crate::signal::ADVISORY_RULES);
         assert!(knows("provenance_dropped"), "a check's rule is built in");
         assert!(knows("signing_key_new"));
         assert!(knows("virustotal_detected"));

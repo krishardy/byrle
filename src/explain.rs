@@ -158,7 +158,16 @@ fn found(
             Some(reason) if !reason.is_empty() => format!("withdrawn by the registry: {reason}"),
             _ => "withdrawn by the registry".to_owned(),
         },
-        Check::Provenance => facts.provenance.describe(),
+        Check::Provenance => match &facts.provenance {
+            decide::Provenance::Dropped { history, .. } => format!(
+                "{}; {} of the {} versions before it in its line were attested, {:.2} bits",
+                facts.provenance.describe(),
+                history.0.iter().filter(|attested| **attested).count(),
+                history.0.len(),
+                f64::from(history.surprise(policy.provenance_half_life)) / 1000.0
+            ),
+            provenance => provenance.describe(),
+        },
     }
 }
 
@@ -193,9 +202,10 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
         policy.deprecated.as_str()
     ));
     out.push_str(&format!(
-        "  provenance       {}, over {} days\n",
+        "  provenance       {}, over {} days, half-life {} versions\n",
         policy.provenance.as_str(),
-        policy.provenance_window_days
+        policy.provenance_window_days,
+        policy.provenance_half_life
     ));
     out.push_str(&format!("  risk_threshold   {}\n", policy.risk_threshold));
     out.push_str(&format!("  denials          {}\n", policy.denials.len()));
@@ -213,7 +223,15 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
         .max()
         .unwrap_or_default();
     for rule in rules {
-        out.push_str(&format!("  {rule:width$}  {}\n", policy.weight_of(rule)));
+        let per = if rule == decide::PER_BIT {
+            " per bit"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "  {rule:width$}  {}{per}\n",
+            policy.weight_of(rule)
+        ));
     }
 
     out.push_str("\nchecks\n");
@@ -1432,6 +1450,7 @@ mod tests {
                 Facts {
                     provenance: Provenance::Dropped {
                         previous: "4.17.20".to_owned(),
+                        history: crate::policy::decide::History(vec![true; 8]),
                     },
                     ..consulted()
                 },
