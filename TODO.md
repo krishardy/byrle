@@ -432,7 +432,15 @@ Items that I've added that are not stage-bound.
     histories first. `gradle-versions-plugin` 0.52.0 is the case: signed 0.1 to 0.4, 0.11
     and 0.11.1, unsigned for the 44 versions since, and refused today as
     `Dropped { previous: 0.11.1 }`.
-    Decided 2026-10-17.
+    Decided 2026-10-17. Planned 2026-10-18 in [risk-score-plan](docs/risk-score-plan.md):
+    every refusal, the proxy's own integrity refusals included, a signal; one
+    `risk_threshold`; known malware and `denials` weighing it by default; `version: 1`
+    changed.
+43. The PyPI index keeps a version whose files are on an origin the proxy does not serve:
+    `pypi/mod.rs:165` passes no `refuse_unservable`, as npm's rewrite does, so only the
+    pinned fetch is refused. Raised 2026-10-18.
+44. Go's `@latest` is 404 for a module with no versions: `Latest::names_none`
+    (`go/inspect.rs:90`) is `all()` over the records, true for none. Raised 2026-10-18.
 
 ## Architecture Refactor
 
