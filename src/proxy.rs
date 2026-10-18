@@ -2940,7 +2940,7 @@ fn pinned_line(
         )
         .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
         .answered(answered)
-        .with_inputs(audit::Inputs::of(policy, &facts, today).with_signals(keys))
+        .with_inputs(audit::Inputs::of(policy, &facts, today).with_signals(keys, policy))
         .with_signals(signals, &policy.signal_weights)
         .with_account(account)
         .with_repository(at),

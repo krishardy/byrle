@@ -285,7 +285,7 @@ impl SignalWeights {
 }
 
 /// Global settings, and per-package exceptions to them.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub version: u32,
@@ -368,6 +368,17 @@ impl Policy {
             source,
         })?;
         Self::parse(&source)
+    }
+
+    /// This policy with `weights` set in `signal_weights`, over what it sets: how a verdict
+    /// recorded with its weights is decided again after a default has moved.
+    pub fn with_weights(&self, weights: &BTreeMap<String, u32>) -> Self {
+        let mut policy = self.clone();
+        policy
+            .signal_weights
+            .0
+            .extend(weights.iter().map(|(key, weight)| (key.clone(), *weight)));
+        policy
     }
 
     /// What the rule `key` adds to a risk score: its `signal_weights` entry, else
@@ -639,7 +650,7 @@ impl<'de> Deserialize<'de> for ExpiryDate {
 }
 
 /// A denial: permanent, with no `expires` field, and no exception undoes one.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Denial {
     /// The package, with `@version` when the denial is for one version.
@@ -677,7 +688,7 @@ impl fmt::Display for Action {
 }
 
 /// One exception. May only loosen.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PackageRule {
     #[serde(rename = "match")]
@@ -694,7 +705,7 @@ pub struct PackageRule {
 }
 
 /// A CVSS score for an advisory, used only while no stream has scored it.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AdvisoryScore {
     /// Matched against an advisory's id and each of its aliases.
@@ -721,7 +732,7 @@ impl AdvisoryScore {
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Selector {
     /// Required on every selector: npm `requests` and PyPI `requests` are different projects.
@@ -737,7 +748,7 @@ pub struct Selector {
 }
 
 /// What an exception changes for the packages it matches.
-#[derive(Debug, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SetBlock {
     #[serde(default)]

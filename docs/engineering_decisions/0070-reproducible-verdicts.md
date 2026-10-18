@@ -45,6 +45,8 @@ Under `inputs`:
 | `build` | `CARGO_PKG_VERSION` |
 | `reader`, `verifier` | `analysis::READER` and `analysis::attestation::verifier_id()`, whose stored results the facts came from |
 | `facts` | every field of `Facts`: publish date, `known_malware`, each advisory with its aliases, score, band, KEV flag and sources, whether intel was consulted and with exploitation loaded, install scripts, yanked, deprecated, and provenance |
+| `signals` | the rules of the detectors' and advisories' signals present, `detector.rule` or the advisory kind; absent before 2026-10-18 |
+| `weights` | each check's rule and each signal's, with the weight it was decided on. A replay sets these over the policy's `signal_weights`, so a default a later build moves does not change the verdict. A line written before 2026-10-18 has none and replays on this build's defaults: its `no-strong-digest` lines differ, as `no_strong_digest` moved from 100 to 0 |
 
 The advisories are written out, not named by `intel_snapshot`. A kept snapshot is optional
 and pruned, so a snapshot id alone cannot be read back. A line grows with the package's

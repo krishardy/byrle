@@ -5,6 +5,7 @@
 use crate::policy::decide::{Advisory, Decision, Facts, Intel, Outcome, Provenance};
 use crate::policy::enforce::{Unanswered, Unenforceable};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Which of decision #4's two paths produced this.
@@ -139,6 +140,9 @@ pub struct Inputs {
     /// The rules of the other signals that weighed in the verdict; absent before 2026-10-18.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<String>,
+    /// The weight of each check's rule and each signal's, so a moved default replays.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub weights: BTreeMap<String, u32>,
 }
 
 impl Inputs {
@@ -152,11 +156,19 @@ impl Inputs {
             verifier: crate::analysis::attestation::verifier_id().to_owned(),
             facts: RecordedFacts::of(facts),
             signals: Vec::new(),
+            weights: crate::policy::decide::Check::ALL
+                .iter()
+                .map(|check| check.rule(&facts.provenance))
+                .map(|rule| (rule.to_owned(), policy.weight_of(rule)))
+                .collect(),
         }
     }
 
-    /// With the rules of the signals that weighed in the verdict.
-    pub fn with_signals(mut self, keys: Vec<String>) -> Self {
+    /// With the rules of the signals that weighed in the verdict, and their weights under
+    /// `policy`.
+    pub fn with_signals(mut self, keys: Vec<String>, policy: &crate::policy::Policy) -> Self {
+        self.weights
+            .extend(keys.iter().map(|key| (key.clone(), policy.weight_of(key))));
         self.signals = keys;
         self
     }
@@ -665,12 +677,13 @@ pub fn replay(file: &str, log: &str, policies: &[crate::policy::Policy]) -> Repl
         if inputs.build != env!("CARGO_PKG_VERSION") {
             out.other_build += 1;
         }
+        let weighed = policy.with_weights(&inputs.weights);
         let again = Event::pinned(
             &event.ecosystem,
             &event.name,
             version,
-            &crate::policy::decide::decide(policy, &facts, as_of)
-                .with_signals(&inputs.signals, policy),
+            &crate::policy::decide::decide(&weighed, &facts, as_of)
+                .with_signals(&inputs.signals, &weighed),
             &crate::policy::enforce::unenforceable_of(policy, &facts),
         );
         let mut differences = Vec::new();
@@ -1247,7 +1260,7 @@ not json
             &decide(&policy, &facts(), as_of).with_signals(&keys, &policy),
             &crate::policy::enforce::unenforceable_of(&policy, &facts()),
         )
-        .with_inputs(Inputs::of(&policy, &facts(), as_of).with_signals(keys));
+        .with_inputs(Inputs::of(&policy, &facts(), as_of).with_signals(keys, &policy));
         let log = serde_json::to_string(&event).expect("an event serialises");
         assert!(log.contains("\"action\":\"block\""), "{log}");
         assert!(log.contains("\"signals\":[\"near_name\"]"), "{log}");
@@ -1264,6 +1277,43 @@ not json
         );
         let unweighed = recorded(&self::policy(REPLAYED), &facts());
         assert!(!unweighed.contains("\"signals\""), "{unweighed}");
+    }
+
+    /// A line decides again on the weights it recorded, not the ones a later build defaults
+    /// to; one with none recorded takes the policy's own.
+    #[test]
+    fn a_line_replays_on_the_weights_it_recorded() {
+        let heavy = policy("version: 1\ncooldown_days: 0\nsignal_weights: { near_name: 100 }\n");
+        let light = policy("version: 1\ncooldown_days: 0\n");
+        let as_of = jiff::civil::date(2026, 9, 13);
+        let keys = vec!["near_name".to_owned()];
+        let event = Event::pinned(
+            "npm",
+            "lodash",
+            "4.17.21",
+            &decide(&heavy, &facts(), as_of).with_signals(&keys, &heavy),
+            &crate::policy::enforce::unenforceable_of(&heavy, &facts()),
+        )
+        .with_inputs(Inputs::of(&heavy, &facts(), as_of).with_signals(keys, &heavy));
+        let mut line = serde_json::to_value(&event).expect("an event serialises");
+        assert_eq!(line["inputs"]["weights"]["near_name"], 100, "{line}");
+        assert_eq!(line["inputs"]["weights"]["install_scripts"], 100, "{line}");
+        line["inputs"]["policy_digest"] = light.digest.clone().into();
+        let moved = line.to_string();
+        let replayed = replay("audit.jsonl", &moved, std::slice::from_ref(&light));
+        assert_eq!(replayed.reproduced, 1, "{replayed:?}");
+        line["inputs"]
+            .as_object_mut()
+            .expect("inputs")
+            .remove("weights");
+        let replayed = replay("audit.jsonl", &line.to_string(), &[light]);
+        assert_eq!(
+            replayed.differ,
+            [(
+                "audit.jsonl:1".to_owned(),
+                "pkg:npm/lodash@4.17.21: action block now allow".to_owned()
+            )]
+        );
     }
 
     #[test]
