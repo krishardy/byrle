@@ -1968,7 +1968,7 @@ async fn a_sha512_claim_is_kept() {
 }
 
 /// A signature's result is kept by digest, repository and verifier, and each outcome
-/// round-trips; another repository or verifier reads nothing.
+/// round-trips; a drop with no history, another repository or verifier reads nothing.
 #[tokio::test]
 async fn a_signature_s_result_is_kept_under_its_digest_repository_and_verifier() {
     use byrle::ecosystem::Signature;
@@ -1991,6 +1991,11 @@ async fn a_signature_s_result_is_kept_under_its_digest_repository_and_verifier()
         },
         Signature::Dropped {
             previous: "2.0".to_owned(),
+            history: byrle::policy::decide::History(vec![false, true]),
+        },
+        Signature::Dropped {
+            previous: "2.0".to_owned(),
+            history: byrle::policy::decide::History(Vec::new()),
         },
         Signature::Unsigned,
     ] {
@@ -2006,6 +2011,26 @@ async fn a_signature_s_result_is_kept_under_its_digest_repository_and_verifier()
             Some(signature)
         );
     }
+    let dropped = Signature::Dropped {
+        previous: "2.0".to_owned(),
+        history: byrle::policy::decide::History(vec![true]),
+    };
+    store
+        .put_signature(&sri(1), "maven", verifier, &dropped)
+        .await
+        .expect("writes");
+    sqlx::query("UPDATE artifact_signature SET history = NULL")
+        .execute(intel.pool())
+        .await
+        .expect("clears");
+    assert_eq!(
+        store
+            .signature(&sri(1), "maven", verifier)
+            .await
+            .expect("answers"),
+        None,
+        "a drop written before its history was is asked again"
+    );
     for (repository, verifier) in [("maven", "pgp 0.22.0"), ("gradle-plugins", verifier)] {
         assert_eq!(
             store

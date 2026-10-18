@@ -3,6 +3,11 @@
 //! [maven-signatures](../../../docs/engineering_decisions/0113-maven-signatures.md).
 
 use futures_util::future::BoxFuture;
+use futures_util::{StreamExt, TryStreamExt};
+
+use crate::analysis::attestation::LINE_HISTORY;
+use crate::intel::range::VersionOrder;
+use crate::policy::decide::History;
 
 use crate::ecosystem::{Material, Signature, Signer, Source};
 use crate::identity::PackageKey;
@@ -53,21 +58,43 @@ impl Signer for FileSigner {
         })
     }
 
-    fn signed_before(&self) -> BoxFuture<'_, Result<Option<String>, String>> {
+    /// The newest of the earlier versions signed, and once one is, whether each of those in
+    /// this one's line was, at most [`LINE_HISTORY`], asked eight at a time.
+    fn signed_before(&self) -> BoxFuture<'_, Result<Option<(String, History)>, String>> {
         Box::pin(async move {
             if self.history == 0 {
                 return Ok(None);
             }
-            for version in self
+            let earlier = self
                 .client
                 .earlier(&self.key, &self.version, self.history)
-                .await?
-            {
-                if self.client.signature(&self.url(&version)).await?.is_some() {
-                    return Ok(Some(version));
+                .await?;
+            let mut previous = None;
+            for version in &earlier {
+                if self.client.signature(&self.url(version)).await?.is_some() {
+                    previous = Some(version.clone());
+                    break;
                 }
             }
-            Ok(None)
+            let Some(previous) = previous else {
+                return Ok(None);
+            };
+            let line = VersionOrder::Maven.line(&self.version);
+            let in_line = earlier
+                .into_iter()
+                .filter(|version| line.is_some() && VersionOrder::Maven.line(version) == line)
+                .take(LINE_HISTORY);
+            let signed: Vec<bool> = futures_util::stream::iter(in_line)
+                .map(|version| async move {
+                    self.client
+                        .signature(&self.url(&version))
+                        .await
+                        .map(|asc| asc.is_some())
+                })
+                .buffered(8)
+                .try_collect()
+                .await?;
+            Ok(Some((previous, History(signed))))
         })
     }
 
@@ -140,24 +167,7 @@ pub(crate) mod tests {
                 &format!("{dir}/2.1.1/{JAR}.sha1"),
                 axum::routing::get(|| async { super::super::digest::sha1(&signed(JAR)) }),
             );
-        for (day, version) in versions.iter().enumerate() {
-            let at: jiff::Timestamp = "2025-06-01T00:00:00Z".parse().unwrap();
-            let at = at + jiff::SignedDuration::from_hours(24 * day as i64);
-            let modified =
-                jiff::fmt::rfc2822::to_string(&at.to_zoned(jiff::tz::TimeZone::UTC)).unwrap();
-            router = router.route(
-                &format!("{dir}/{version}/jakarta.annotation-api-{version}.pom"),
-                axum::routing::get(move || {
-                    let modified = modified.clone();
-                    async move {
-                        (
-                            [(axum::http::header::LAST_MODIFIED, modified)],
-                            "<project/>",
-                        )
-                    }
-                }),
-            );
-        }
+        router = dated(router, dir, &versions);
         for version in signed_older {
             router = router.route(
                 &format!("{dir}/{version}/jakarta.annotation-api-{version}.jar.asc"),
@@ -295,50 +305,73 @@ pub(crate) mod tests {
         let jar = signer(&base, &keys);
         let material = jar.material().await.unwrap().unwrap();
         assert!(jar.verify(&material, &mut Unseekable).is_err());
+        for signed_since in [None, Some("2.0.5")] {
+            let base = crate::proxy::testing::serve(unaskable(signed_since)).await;
+            assert!(
+                signer(&base, &keys).signed_before().await.is_err(),
+                "{signed_since:?}"
+            );
+        }
+    }
+
+    /// `router` with a `.pom` for each of `versions` under `dir`, a day apart from 2025-06-01.
+    fn dated(mut router: axum::Router, dir: &str, versions: &[&str]) -> axum::Router {
+        for (day, version) in versions.iter().enumerate() {
+            let at: jiff::Timestamp = "2025-06-01T00:00:00Z".parse().unwrap();
+            let at = at + jiff::SignedDuration::from_hours(24 * day as i64);
+            let modified =
+                jiff::fmt::rfc2822::to_string(&at.to_zoned(jiff::tz::TimeZone::UTC)).unwrap();
+            router = router.route(
+                &format!("{dir}/{version}/jakarta.annotation-api-{version}.pom"),
+                axum::routing::get(move || {
+                    let modified = modified.clone();
+                    async move {
+                        (
+                            [(axum::http::header::LAST_MODIFIED, modified)],
+                            "<project/>",
+                        )
+                    }
+                }),
+            );
+        }
+        router
+    }
+
+    /// A repository whose 2.0 `.asc` answers 500, before 2.1.1 and after `signed_since`, a
+    /// version signed, when given: asked first, or as part of 2.1.1's line.
+    fn unaskable(signed_since: Option<&'static str>) -> axum::Router {
         let dir = "/jakarta/annotation/jakarta.annotation-api";
-        let router = axum::Router::new()
+        let mut versions = vec!["2.0"];
+        versions.extend(signed_since);
+        versions.push("2.1.1");
+        let listed: String = versions
+            .iter()
+            .map(|v| format!("<version>{v}</version>"))
+            .collect();
+        let metadata = format!(
+            "<metadata><groupId>jakarta.annotation</groupId><artifactId>jakarta.annotation-api\
+             </artifactId><versioning><versions>{listed}</versions></versioning></metadata>"
+        );
+        let mut router = axum::Router::new()
             .route(
                 &format!("{dir}/maven-metadata.xml"),
-                axum::routing::get(|| async {
-                    (
-                        [(axum::http::header::CONTENT_TYPE, "text/xml")],
-                        "<metadata><groupId>jakarta.annotation</groupId><artifactId>\
-                         jakarta.annotation-api</artifactId><versioning><versions>\
-                         <version>2.0</version><version>2.1.1</version></versions>\
-                         </versioning></metadata>",
-                    )
-                }),
-            )
-            .route(
-                &format!("{dir}/2.0/jakarta.annotation-api-2.0.pom"),
-                axum::routing::get(|| async {
-                    (
-                        [(
-                            axum::http::header::LAST_MODIFIED,
-                            "Sun, 01 Jun 2025 00:00:00 GMT",
-                        )],
-                        "",
-                    )
-                }),
-            )
-            .route(
-                &format!("{dir}/2.1.1/jakarta.annotation-api-2.1.1.pom"),
-                axum::routing::get(|| async {
-                    (
-                        [(
-                            axum::http::header::LAST_MODIFIED,
-                            "Mon, 02 Jun 2025 00:00:00 GMT",
-                        )],
-                        "",
-                    )
+                axum::routing::get(move || {
+                    let metadata = metadata.clone();
+                    async move { ([(axum::http::header::CONTENT_TYPE, "text/xml")], metadata) }
                 }),
             )
             .route(
                 &format!("{dir}/2.0/jakarta.annotation-api-2.0.jar.asc"),
                 axum::routing::get(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }),
             );
-        let base = crate::proxy::testing::serve(router).await;
-        assert!(signer(&base, &keys).signed_before().await.is_err());
+        router = dated(router, dir, &versions);
+        if let Some(version) = signed_since {
+            router = router.route(
+                &format!("{dir}/{version}/jakarta.annotation-api-{version}.jar.asc"),
+                axum::routing::get(|| async { signed(&format!("{JAR}.asc")) }),
+            );
+        }
+        router
     }
 
     /// A signature made after its key expired verifies: the expiry is a signal, not a failure.
@@ -358,7 +391,7 @@ pub(crate) mod tests {
     }
 
     /// An unsigned file has no material; the newest version before it that is signed is
-    /// found, and none is `None`.
+    /// found with its line's history, and none is `None`.
     #[tokio::test]
     async fn an_unsigned_file_is_compared_with_the_versions_before_it() {
         let (base, keys) = repository(None, &["1.0", "2.0", "2.1.0"], &["1.0", "2.0"]).await;
@@ -374,8 +407,39 @@ pub(crate) mod tests {
         );
         assert!(unsigned.material().await.unwrap().is_none());
         assert_eq!(
-            unsigned.signed_before().await.unwrap().as_deref(),
-            Some("2.0")
+            unsigned.signed_before().await.unwrap(),
+            Some(("2.0".to_owned(), History(vec![false, true])))
+        );
+        let (base, keys) = repository(
+            None,
+            &["1.0", "2.0-M1", "2.0", "2.0.1", "2.1.0"],
+            &["2.0-M1", "2.0", "2.0.1", "2.1.0"],
+        )
+        .await;
+        assert_eq!(
+            signer(&base, &keys).signed_before().await.unwrap(),
+            Some(("2.1.0".to_owned(), History(vec![true, true, true]))),
+            "its line's stable versions"
+        );
+        let short = FileSigner {
+            history: 2,
+            ..signer(&base, &keys)
+        };
+        assert_eq!(
+            short.signed_before().await.unwrap(),
+            Some(("2.1.0".to_owned(), History(vec![true, true]))),
+            "of the versions its history reaches"
+        );
+        let (base, keys) = repository(None, &["1.0", "nightly"], &["1.0"]).await;
+        let lineless = FileSigner {
+            version: "nightly".to_owned(),
+            file: "jakarta.annotation-api-nightly.jar".to_owned(),
+            ..signer(&base, &keys)
+        };
+        assert_eq!(
+            lineless.signed_before().await.unwrap(),
+            Some(("1.0".to_owned(), History(Vec::new()))),
+            "in no line"
         );
         let (base, keys) = repository(None, &["1.0"], &[]).await;
         assert_eq!(signer(&base, &keys).signed_before().await.unwrap(), None);

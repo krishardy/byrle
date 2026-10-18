@@ -273,7 +273,7 @@ async fn signed(
     };
     let Some(material) = material else {
         return match signer.signed_before().await {
-            Ok(Some(previous)) => Some(Signature::Dropped { previous }),
+            Ok(Some((previous, history))) => Some(Signature::Dropped { previous, history }),
             Ok(None) => Some(Signature::Unsigned),
             Err(why) => {
                 warn!(error.message = %why, "the earlier versions' signatures could not be asked");
@@ -312,6 +312,7 @@ mod tests {
     use super::super::tests::analyser;
     use super::*;
     use crate::analysis::store::InProcess;
+    use crate::policy::decide::History;
     use crate::util::test_support::{Answer, scripted};
 
     /// sum.golang.org's `h1:` for rsc.io/quote v1.5.2's zip.
@@ -381,7 +382,7 @@ mod tests {
     #[derive(Debug)]
     struct Fake {
         material: Result<Option<Material>, String>,
-        before: Result<Option<String>, String>,
+        before: Result<Option<(String, History)>, String>,
         verdict: Option<Signature>,
     }
 
@@ -397,7 +398,8 @@ mod tests {
         }
         fn signed_before(
             &self,
-        ) -> futures_util::future::BoxFuture<'_, Result<Option<String>, String>> {
+        ) -> futures_util::future::BoxFuture<'_, Result<Option<(String, History)>, String>>
+        {
             let before = self.before.clone();
             Box::pin(async move { before })
         }
@@ -449,11 +451,12 @@ mod tests {
             (
                 Fake {
                     material: Ok(None),
-                    before: Ok(Some("1.0".to_owned())),
+                    before: Ok(Some(("1.0".to_owned(), History(vec![true, false])))),
                     verdict: None,
                 },
                 Some(Signature::Dropped {
                     previous: "1.0".to_owned(),
+                    history: History(vec![true, false]),
                 }),
             ),
             (

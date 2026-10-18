@@ -274,11 +274,7 @@ impl RecordedFacts {
                 }
                 Provenance::Dropped { previous, history } => RecordedProvenance::Dropped {
                     previous: previous.clone(),
-                    history: history
-                        .0
-                        .iter()
-                        .map(|&attested| if attested { '1' } else { '0' })
-                        .collect(),
+                    history: history.text(),
                 },
                 Provenance::IdentityChanged { previous, from, to } => {
                     RecordedProvenance::IdentityChanged {
@@ -339,9 +335,7 @@ impl RecordedFacts {
                 }
                 RecordedProvenance::Dropped { previous, history } => Provenance::Dropped {
                     previous: previous.clone(),
-                    history: crate::policy::decide::History(
-                        history.chars().map(|c| c == '1').collect(),
-                    ),
+                    history: crate::policy::decide::History::read(history),
                 },
                 RecordedProvenance::IdentityChanged { previous, from, to } => {
                     Provenance::IdentityChanged {

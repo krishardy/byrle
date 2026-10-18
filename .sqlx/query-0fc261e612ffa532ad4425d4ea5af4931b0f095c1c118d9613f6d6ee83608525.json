@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT outcome, detail FROM artifact_signature WHERE digest = $1 AND repository = $2 AND verifier = $3",
+  "query": "SELECT outcome, detail, history FROM artifact_signature WHERE digest = $1 AND repository = $2 AND verifier = $3",
   "describe": {
     "columns": [
       {
@@ -12,6 +12,11 @@
         "ordinal": 1,
         "name": "detail",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "history",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -23,8 +28,9 @@
     },
     "nullable": [
       false,
+      true,
       true
     ]
   },
-  "hash": "64bc1d6fdc112eda2320dd64661a8c4a8fcb8300eae6d55501bc60570c590332"
+  "hash": "0fc261e612ffa532ad4425d4ea5af4931b0f095c1c118d9613f6d6ee83608525"
 }

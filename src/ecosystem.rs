@@ -112,7 +112,9 @@ pub trait Signer: Send + Sync + std::fmt::Debug {
 
     /// The most recent version before this one with a signature, for a file with none.
     /// Errors when the versions or their signatures cannot be asked.
-    fn signed_before(&self) -> BoxFuture<'_, Result<Option<String>, String>>;
+    fn signed_before(
+        &self,
+    ) -> BoxFuture<'_, Result<Option<(String, crate::policy::decide::History)>, String>>;
 
     /// What `material` says of `file`. Errors when `file` cannot be read.
     fn verify(&self, material: &Material, file: &mut dyn Source) -> std::io::Result<Signature>;
@@ -137,8 +139,11 @@ pub enum Signature {
     Verified { key: String },
     /// It did not verify, and why.
     Failed { why: String },
-    /// The file has none, and this earlier version's file had one.
-    Dropped { previous: String },
+    /// The file has none, `previous`'s file had one, and its line's `history` before it.
+    Dropped {
+        previous: String,
+        history: crate::policy::decide::History,
+    },
     /// The file has none, nor did the versions before it that were asked.
     Unsigned,
 }
@@ -151,9 +156,9 @@ impl Signature {
         match self {
             Self::Verified { .. } | Self::Unsigned => Provenance::Consistent,
             Self::Failed { why } => Provenance::Unverified { why: why.clone() },
-            Self::Dropped { previous } => Provenance::Dropped {
+            Self::Dropped { previous, history } => Provenance::Dropped {
                 previous: previous.clone(),
-                history: crate::policy::decide::History::default(),
+                history: history.clone(),
             },
         }
     }

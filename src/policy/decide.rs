@@ -77,6 +77,20 @@ impl Provenance {
 pub struct History(pub Vec<bool>);
 
 impl History {
+    /// As the audit log and the analysis store write it, newest first: `1` for each attested
+    /// version and `0` for each not.
+    pub fn text(&self) -> String {
+        self.0
+            .iter()
+            .map(|&attested| if attested { '1' } else { '0' })
+            .collect()
+    }
+
+    /// [`History::text`] read back.
+    pub fn read(text: &str) -> Self {
+        Self(text.chars().map(|c| c == '1').collect())
+    }
+
     /// How surprising an unattested version is after these, in thousandths of a bit:
     /// −log2 of (unattested + 1) / (all + 2), each weighing half `half_life` versions on.
     /// 0 when none was attested.

@@ -424,19 +424,22 @@ impl PgAnalyses {
         verifier: &str,
         signature: &Signature,
     ) -> Result<(), AnalysisError> {
-        let (outcome, detail) = match signature {
-            Signature::Verified { key } => ("verified", Some(key.as_str())),
-            Signature::Failed { why } => ("failed", Some(why.as_str())),
-            Signature::Dropped { previous } => ("dropped", Some(previous.as_str())),
-            Signature::Unsigned => ("unsigned", None),
+        let (outcome, detail, history) = match signature {
+            Signature::Verified { key } => ("verified", Some(key.as_str()), None),
+            Signature::Failed { why } => ("failed", Some(why.as_str()), None),
+            Signature::Dropped { previous, history } => {
+                ("dropped", Some(previous.as_str()), Some(history.text()))
+            }
+            Signature::Unsigned => ("unsigned", None, None),
         };
         sqlx::query!(
             r#"
-            INSERT INTO artifact_signature (digest, repository, outcome, detail, verifier)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO artifact_signature (digest, repository, outcome, detail, verifier, history)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (digest, repository, verifier) DO UPDATE SET
                 outcome    = EXCLUDED.outcome,
                 detail     = EXCLUDED.detail,
+                history    = EXCLUDED.history,
                 checked_at = now()
             "#,
             digest.to_string(),
@@ -444,6 +447,7 @@ impl PgAnalyses {
             outcome,
             detail,
             verifier,
+            history,
         )
         .execute(&self.pool)
         .await
@@ -452,7 +456,7 @@ impl PgAnalyses {
     }
 
     /// What `verifier` found of the bytes with `digest` from `repository`. A row this build
-    /// cannot read is not checked yet.
+    /// cannot read is not checked yet, as is a `dropped` one written before its history was.
     async fn read_signature(
         &self,
         digest: &Sri,
@@ -460,7 +464,7 @@ impl PgAnalyses {
         verifier: &str,
     ) -> Result<Option<Signature>, AnalysisError> {
         let row = sqlx::query!(
-            "SELECT outcome, detail FROM artifact_signature \
+            "SELECT outcome, detail, history FROM artifact_signature \
              WHERE digest = $1 AND repository = $2 AND verifier = $3",
             digest.to_string(),
             repository,
@@ -469,15 +473,18 @@ impl PgAnalyses {
         .fetch_optional(&self.pool)
         .await
         .map_err(AnalysisError::Backend)?;
-        Ok(
-            row.and_then(|row| match (row.outcome.as_str(), row.detail) {
-                ("verified", Some(key)) => Some(Signature::Verified { key }),
-                ("failed", Some(why)) => Some(Signature::Failed { why }),
-                ("dropped", Some(previous)) => Some(Signature::Dropped { previous }),
-                ("unsigned", None) => Some(Signature::Unsigned),
+        Ok(row.and_then(
+            |row| match (row.outcome.as_str(), row.detail, row.history) {
+                ("verified", Some(key), None) => Some(Signature::Verified { key }),
+                ("failed", Some(why), None) => Some(Signature::Failed { why }),
+                ("dropped", Some(previous), Some(history)) => Some(Signature::Dropped {
+                    previous,
+                    history: crate::policy::decide::History::read(&history),
+                }),
+                ("unsigned", None, None) => Some(Signature::Unsigned),
                 _ => None,
-            }),
-        )
+            },
+        ))
     }
 
     /// The digest kept for `claim`. One that no longer parses is not checked yet.

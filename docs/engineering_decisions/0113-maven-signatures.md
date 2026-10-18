@@ -23,6 +23,13 @@ The artifact is `groupId:artifactId`. Its earlier versions are looked through as
 looks, most recent first, up to `BYRLE_PROVENANCE_HISTORY`, and each version's key is kept
 once read. `set: { provenance: allow }` releases all three, as for npm and PyPI.
 
+Since 2026-10-18, case 2 is weighed, not refused alone: `provenance_dropped` and
+`provenance_surprise` per bit of how unexpected the drop is after the earlier versions in
+the jar's release line ([risk-score-plan](../risk-score-plan.md) step 6). Once an earlier
+version is found signed, the `.asc` of each of the `BYRLE_PROVENANCE_HISTORY` versions
+before it that is in its line is asked, at most 64, eight at a time, and stored with the
+result.
+
 A signature verifies when all of these hold:
 
 | Check | Decided |
