@@ -36,6 +36,12 @@ Amended 2026-10-17, decided by the user: `signing_key_new` and `signing_key_expi
 added to `signal_weights`, for [maven-signatures](0113-maven-signatures.md). A file setting
 one of them does not parse under a release before it.
 
+Amended 2026-10-18, asked for by the user: `set.vuln_advisory_ids` was renamed
+`set.ignored_vuln_advisory_ids` in version 1 itself, not under `version: 2`. The list
+names advisories the exception ignores, and the new name says so. Unlike the amendments
+above, this one changes what a written file parses as: a file written for v0.1.0 with
+`vuln_advisory_ids` is refused, as an unknown key is.
+
 ## The keys
 
 | Level | Keys |
@@ -46,7 +52,7 @@ one of them does not parse under a release before it.
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
 | `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `trustpub_dropped`, `trustpub_repository_changed`, `signing_key_new`, `signing_key_expired`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
-| `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `vuln_advisory_ids` |
+| `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `ignored_vuln_advisory_ids` |
 
 | Key | Value | Default |
 |---|---|---|
@@ -67,7 +73,7 @@ one of them does not parse under a release before it.
 | `match.purl` | a purl | none |
 | `match.version` | an exact version, or a VERS range whose type is `match.ecosystem` | none |
 | `match.has_install_scripts` | `true` or `false` | none |
-| `set.vuln_advisory_ids` | advisory ids, each matched against an advisory's id and its aliases | empty |
+| `set.ignored_vuln_advisory_ids` | advisory ids, each matched against an advisory's id and its aliases | empty |
 | `advisory_scores[].advisory_id` | an advisory id, matched against an advisory's id and its aliases | required |
 | `advisory_scores[].cvss` | a number, 0.0 to 10.0 | required |
 | `signal_weights.*` | a whole number, 0 or more | 1; the `advisory_` keys 8, 4, 3, 2 and 1 |
@@ -88,7 +94,7 @@ every `advisory_scores` entry needs `expires` or `permanent: true`, and not both
 | the on/off checks refuse `quarantine` | it means refused now and allowed later, and waiting does not change whether a package has an install script or a known-exploited advisory |
 | a denial must name a version | one that names none would match nothing, and the operator would read it back and believe it in force |
 | every `advisory_scores` entry needs `expires` or `permanent` | every entry loosens: without it the advisory is refused |
-| `vuln_advisory_ids` rather than raising `max_cvss` | it ignores one named advisory, not every advisory the package has or later gets |
+| `ignored_vuln_advisory_ids` rather than raising `max_cvss` | it ignores one named advisory, not every advisory the package has or later gets |
 | `ecosystem` is required on a selector | npm `requests` and PyPI `requests` are different projects |
 | an expiry is a calendar date, judged in UTC | two replicas, `explain`, `policy check` and `policy diff` then judge an expiry on the same day |
 | selectors are checked at load | the request that would expose an unordered pair may be months away |

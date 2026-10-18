@@ -58,7 +58,7 @@ RECORD_cooldown_QUARANTINE --> Start_Advisory_KEV_Check
 
 %% Gather first, then subtract. The loop collects two sets and judges neither: every
 %% advisory, and the subset of them carrying a KEV. Exceptions are applied afterwards, as a
-%% set difference, which is what keeps a `vuln_advisory_ids` exception out of the KEV answer.
+%% set difference, which is what keeps a `ignored_vuln_advisory_ids` exception out of the KEV answer.
 %%
 %% The two chains below are independent. Neither reads the other's result, and the only
 %% thing they share is the loop that filled the sets.
@@ -196,7 +196,7 @@ packages:
     permanent: true
 
   - match: { ecosystem: npm, purl: "pkg:npm/legacy-thing@2.1.0" }
-    set: { kev: allow, vuln_advisory_ids: ["CVE-2024-1234"] }
+    set: { kev: allow, ignored_vuln_advisory_ids: ["CVE-2024-1234"] }
     reason: "mitigated by network policy"
     expires: "2026-11-30"
 
@@ -216,7 +216,7 @@ Every setting is global. Every exception is per package. Nothing is per ecosyste
 | known malware | not configurable | no |
 | `denials` | per package | no |
 | `cooldown_days` | global | yes, note 3 |
-| `kev` | global | yes, note 4 only; a `vuln_advisory_ids` exception does not reach it |
+| `kev` | global | yes, note 4 only; a `ignored_vuln_advisory_ids` exception does not reach it |
 | `max_cvss` | global | yes, per advisory id, note 5 |
 | `advisory_scores` | per advisory | no. Scores an advisory `max_cvss` would otherwise refuse as unscored; needs `expires` or `permanent: true` |
 | `install_scripts` | global | yes, note 6 |
@@ -350,7 +350,7 @@ loop rather than once per package before it. See
 **The loop judges nothing.** It collects two sets, every advisory and the subset carrying a
 KEV, and exceptions are applied afterwards as a set difference. So excepting an advisory by id
 never reaches the KEV answer: a KEV-listed advisory needs **both** exceptions to pass, the id in
-`vuln_advisory_ids` for its score and `kev: allow` for its exploitation.
+`ignored_vuln_advisory_ids` for its score and `kev: allow` for its exploitation.
 
 Gathering before subtracting is what makes that true by construction rather than by the
 order two branches happen to sit in. The two chains that follow are independent, and

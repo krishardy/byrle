@@ -10,7 +10,7 @@ pub enum Rule {
     CooldownDays,
     Kev,
     InstallScripts,
-    VulnAdvisoryIds,
+    IgnoredVulnAdvisoryIds,
     Yanked,
     Deprecated,
     Provenance,
@@ -22,7 +22,7 @@ impl Rule {
             Self::CooldownDays => "cooldown_days",
             Self::Kev => "kev",
             Self::InstallScripts => "install_scripts",
-            Self::VulnAdvisoryIds => "vuln_advisory_ids",
+            Self::IgnoredVulnAdvisoryIds => "ignored_vuln_advisory_ids",
             Self::Yanked => "yanked",
             Self::Deprecated => "deprecated",
             Self::Provenance => "provenance",
@@ -34,7 +34,7 @@ impl Rule {
         Self::CooldownDays,
         Self::Kev,
         Self::InstallScripts,
-        Self::VulnAdvisoryIds,
+        Self::IgnoredVulnAdvisoryIds,
         Self::Yanked,
         Self::Deprecated,
         Self::Provenance,
@@ -57,7 +57,7 @@ pub struct RuleValues<'a> {
     pub cooldown_days: Option<u32>,
     pub kev: Option<Action>,
     pub install_scripts: Option<Action>,
-    pub vuln_advisory_ids: Option<&'a [String]>,
+    pub ignored_vuln_advisory_ids: Option<&'a [String]>,
     pub yanked: Option<Action>,
     pub deprecated: Option<Action>,
     pub provenance: Option<Action>,
@@ -69,8 +69,8 @@ impl<'a> From<&'a SetBlock> for RuleValues<'a> {
             cooldown_days: s.cooldown_days,
             kev: s.kev,
             install_scripts: s.install_scripts,
-            vuln_advisory_ids: (!s.vuln_advisory_ids.is_empty())
-                .then_some(s.vuln_advisory_ids.as_slice()),
+            ignored_vuln_advisory_ids: (!s.ignored_vuln_advisory_ids.is_empty())
+                .then_some(s.ignored_vuln_advisory_ids.as_slice()),
             yanked: s.yanked,
             deprecated: s.deprecated,
             provenance: s.provenance,
@@ -84,7 +84,7 @@ impl From<&Policy> for RuleValues<'_> {
             cooldown_days: Some(p.cooldown_days),
             kev: Some(p.kev),
             install_scripts: Some(p.install_scripts),
-            vuln_advisory_ids: None,
+            ignored_vuln_advisory_ids: None,
             yanked: Some(p.yanked),
             deprecated: Some(p.deprecated),
             provenance: Some(p.provenance),
@@ -114,7 +114,7 @@ pub fn compare(
         Rule::Yanked => action_strictness(value.yanked, baseline.yanked),
         Rule::Deprecated => action_strictness(value.deprecated, baseline.deprecated),
         Rule::Provenance => action_strictness(value.provenance, baseline.provenance),
-        Rule::VulnAdvisoryIds => match value.vuln_advisory_ids {
+        Rule::IgnoredVulnAdvisoryIds => match value.ignored_vuln_advisory_ids {
             Some(ids) if !ids.is_empty() => Strictness::Looser,
             _ => Strictness::Unset,
         },
@@ -180,8 +180,8 @@ mod tests {
     fn naming_an_advisory_to_ignore_is_always_a_loosening() {
         assert_eq!(
             outcome(
-                &set("vuln_advisory_ids: [\"CVE-2024-1234\"]"),
-                Rule::VulnAdvisoryIds
+                &set("ignored_vuln_advisory_ids: [\"CVE-2024-1234\"]"),
+                Rule::IgnoredVulnAdvisoryIds
             ),
             Strictness::Looser
         );
@@ -192,7 +192,10 @@ mod tests {
     #[test]
     fn an_empty_advisory_list_is_not_an_exception() {
         assert_eq!(
-            outcome(&set("vuln_advisory_ids: []"), Rule::VulnAdvisoryIds),
+            outcome(
+                &set("ignored_vuln_advisory_ids: []"),
+                Rule::IgnoredVulnAdvisoryIds
+            ),
             Strictness::Unset
         );
     }
@@ -243,7 +246,7 @@ mod tests {
                 "cooldown_days",
                 "kev",
                 "install_scripts",
-                "vuln_advisory_ids",
+                "ignored_vuln_advisory_ids",
                 "yanked",
                 "deprecated",
                 "provenance",

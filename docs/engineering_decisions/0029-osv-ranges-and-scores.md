@@ -196,7 +196,7 @@ advisory_scores:
 | One entry per `advisory_id` | `PolicyError::DuplicateScore` |
 | `expires` is within the expiry ceiling | `PackageError::TooFarAhead` |
 
-A `vuln_advisory_ids` exception excuses an unscored advisory as it excuses a scored one. `kev`
+A `ignored_vuln_advisory_ids` exception excuses an unscored advisory as it excuses a scored one. `kev`
 reads an unscored advisory. Before this change an unscored advisory was left out of
 `advisories`, so `kev` never read it. `byrle policy check` lists permanent entries under
 `permanent`, and `explain --policy` lists every entry.
@@ -225,9 +225,9 @@ that excuses none of it` was added, and `cargo mutants --file src/explain.rs --r
 caught it. `run_explain` in `main.rs` returning a default exit code survived, as in
 [kev-stream](0040-kev-stream.md): no test runs the binary's `explain`.
 
-## `vuln_advisory_ids` exceptions and aliases
+## `ignored_vuln_advisory_ids` exceptions and aliases
 
-A `vuln_advisory_ids` exception names advisories by id, and operators usually know the CVE id.
+A `ignored_vuln_advisory_ids` exception names advisories by id, and operators usually know the CVE id.
 OSV stores a GitHub advisory under its `GHSA-` id, with the CVE as an alias: 5,972 of 7,052
 non-withdrawn `GHSA-` records carry one. `Intel::package` returns each advisory's aliases,
 `Advisory` carries them, and `Advisory::is_named` matches the id or any alias.
@@ -315,7 +315,7 @@ Each mutation below was caught.
 | Non-base metrics kept | `threat_and_temporal_metrics_do_not_change_the_base_score` |
 | A repeated base metric accepted | `a_base_metric_given_twice_is_unread` |
 | `GHSA` without the dash read | `the_id_prefix_decides_malware_and_whether_the_record_is_read` |
-| `vuln_advisory_ids` ignores aliases | `an_advisory_may_be_ignored_by_an_alias` |
+| `ignored_vuln_advisory_ids` ignores aliases | `an_advisory_may_be_ignored_by_an_alias` |
 | Ranges ignored by `for_version` | `a_version_sees_the_ranges_holding_it_once_each` |
 | An advisory matched twice returned twice | `a_version_sees_the_ranges_holding_it_once_each` |
 | Score not written to CSV | `a_score_is_written_as_the_number_it_is` |
@@ -349,7 +349,7 @@ Live, 2026-09-13, debug build. `byrle refresh` into Postgres 17 wrote 228,245 ad
 
 `GHSA-r5fr-rjxr-66jc` is `introduced: 4.0.0, fixed: 4.18.0`, a range with no `versions` list.
 `GHSA-xxjr-mmjv-4gpg` carries a v3 vector scoring 6.5 and a v4 vector with `E:P`, and 7.9 is
-the v4 base score. With `vuln_advisory_ids: [CVE-2021-23337]`, an alias of `GHSA-r5fr-rjxr-66jc`, the
+the v4 base score. With `ignored_vuln_advisory_ids: [CVE-2021-23337]`, an alias of `GHSA-r5fr-rjxr-66jc`, the
 verdict stays `block` on `GHSA-xxjr-mmjv-4gpg` 7.9.
 
 The audit line for the lodash refusal:

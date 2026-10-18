@@ -50,7 +50,7 @@ packages:
     permanent: true
 
   - match: { ecosystem: pypi, name: Django, version: "vers:pypi/>=4.2|<5" }
-    set: { vuln_advisory_ids: ["CVE-2024-0000"] }
+    set: { ignored_vuln_advisory_ids: ["CVE-2024-0000"] }
     reason: "the affected view is not routed"
     expires: "2026-12-01"
 
@@ -139,7 +139,7 @@ check` loaded it:
 ```yaml
 packages:
   - match: { ecosystem: maven, name: "commons-beanutils:commons-beanutils", version: "1.9.4" }
-    set: { vuln_advisory_ids: ["GHSA-wxr5-93ph-8wr9"] }
+    set: { ignored_vuln_advisory_ids: ["GHSA-wxr5-93ph-8wr9"] }
     reason: "maven-dependency-plugin 3.11.0 depends on it; not called by our builds"
     expires: "2026-12-31"
 ```
@@ -150,7 +150,7 @@ packages:
 |---|---|
 | `cooldown_days` | to a lower number |
 | `install_scripts`, `kev`, `yanked`, `deprecated`, `provenance` | to `allow` |
-| `vuln_advisory_ids` | `max_cvss` for the advisories listed, by id or alias. It does not release `kev` |
+| `ignored_vuln_advisory_ids` | `max_cvss` for the advisories listed, by id or alias. It does not release `kev` |
 
 ### Rules
 

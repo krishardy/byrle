@@ -14,7 +14,7 @@ call it:
 | Use | Names | Reaches |
 |---|---|---|
 | `Finding::enriched_by` | an `Enrichment`'s id, such as a KEV entry's `cveID` | the `GHSA-` record carrying that CVE as an alias |
-| `Advisory::is_named` | a `vuln_advisory_ids` exception | the same |
+| `Advisory::is_named` | a `ignored_vuln_advisory_ids` exception | the same |
 
 Records that share an id by aliases stay separate advisories. `explain` and a refusal
 list each.

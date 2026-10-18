@@ -1281,7 +1281,7 @@ mod tests {
             ),
             case(
                 "over max_cvss, an entry that excuses none of it",
-                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { vuln_advisory_ids: [\"CVE-2024-9\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
+                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { ignored_vuln_advisory_ids: [\"CVE-2024-9\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
                 Facts {
                     advisories: vec![advisory("CVE-2024-1", &[], 9.8, false)],
                     ..consulted()
@@ -1289,7 +1289,7 @@ mod tests {
             ),
             case(
                 "over max_cvss, excepted by id",
-                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
+                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { ignored_vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
                 Facts {
                     advisories: vec![advisory("CVE-2024-1", &[], 9.8, false)],
                     ..consulted()
@@ -1297,7 +1297,7 @@ mod tests {
             ),
             case(
                 "over max_cvss, excepted by alias",
-                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
+                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { ignored_vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
                 Facts {
                     advisories: vec![advisory("GHSA-aaaa-bbbb-cccc", &["CVE-2024-1"], 9.8, false)],
                     ..consulted()
@@ -1305,7 +1305,7 @@ mod tests {
             ),
             case(
                 "over max_cvss, one excused and one not",
-                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
+                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { ignored_vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
                 Facts {
                     advisories: vec![
                         advisory("GHSA-aaaa-bbbb-cccc", &["CVE-2024-1"], 9.8, false),
@@ -1333,7 +1333,7 @@ mod tests {
             ),
             case(
                 "max_cvss, an unscored advisory excepted by id",
-                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
+                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { ignored_vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
                 Facts {
                     advisories: vec![Advisory {
                         cvss: None,

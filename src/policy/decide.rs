@@ -107,7 +107,7 @@ pub struct Advisory {
 }
 
 impl Advisory {
-    /// Whether `id` is this advisory's id or one of its aliases. A `vuln_advisory_ids` exception
+    /// Whether `id` is this advisory's id or one of its aliases. A `ignored_vuln_advisory_ids` exception
     /// names a CVE, and OSV stores the advisory under its GHSA id.
     pub fn is_named(&self, id: &str) -> bool {
         crate::intel::is_named(&self.id, &self.aliases, id)
@@ -282,7 +282,7 @@ pub fn over_max_cvss<'a>(
     as_of: Date,
 ) -> (Vec<&'a Advisory>, Vec<&'a Advisory>) {
     let ignored = entry
-        .map(|i| policy.packages[i].set.vuln_advisory_ids.as_slice())
+        .map(|i| policy.packages[i].set.ignored_vuln_advisory_ids.as_slice())
         .unwrap_or(&[]);
     facts
         .advisories
@@ -836,7 +836,7 @@ mod tests {
     fn an_advisory_may_be_ignored_by_id() {
         let p = policy(
             "max_cvss: 6.9\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             set: { ignored_vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
              permanent: true\n",
         );
         let facts = Facts {
@@ -940,7 +940,7 @@ mod tests {
     fn an_advisory_may_be_ignored_by_an_alias() {
         let p = policy(
             "max_cvss: 6.9\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             set: { ignored_vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
              permanent: true\n",
         );
         let ghsa = |aliases: &[&str]| Facts {
@@ -970,7 +970,7 @@ mod tests {
     fn excepting_an_advisory_by_id_does_not_excuse_its_exploitation() {
         let p = policy(
             "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             set: { ignored_vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
              permanent: true\n",
         );
         let facts = Facts {
@@ -1001,7 +1001,7 @@ mod tests {
     fn a_kev_advisory_needs_both_exceptions_to_pass() {
         let p = policy(
             "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { vuln_advisory_ids: [\"CVE-2024-1234\"], kev: allow }\n    \
+             set: { ignored_vuln_advisory_ids: [\"CVE-2024-1234\"], kev: allow }\n    \
              reason: not reachable, and we accept the exploitation risk\n    \
              permanent: true\n",
         );
@@ -1158,13 +1158,13 @@ mod tests {
         );
     }
 
-    /// `vuln_advisory_ids` excuses an unscored advisory the way it excuses a scored one, and
+    /// `ignored_vuln_advisory_ids` excuses an unscored advisory the way it excuses a scored one, and
     /// `kev` reads exploitation whatever the score.
     #[test]
     fn an_unscored_advisory_is_excused_by_id_and_still_read_by_kev() {
         let p = policy(
             "max_cvss: 6.9\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: not reachable\n    \
+             set: { ignored_vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: not reachable\n    \
              permanent: true\n",
         );
         let facts = Facts {

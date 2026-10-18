@@ -1243,7 +1243,7 @@ not json
         let policy = policy(
             "version: 1\ncooldown_days: 7\nmax_cvss: 7.0\n\
              packages:\n  - match: { ecosystem: npm, name: lodash }\n\
-             \x20   set: { vuln_advisory_ids: [GHSA-1, GHSA-2] }\n    reason: t\n    permanent: true\n",
+             \x20   set: { ignored_vuln_advisory_ids: [GHSA-1, GHSA-2] }\n    reason: t\n    permanent: true\n",
         );
         let facts = Facts {
             published: None,
@@ -1551,7 +1551,7 @@ not json
         let policy = policy(
             "version: 1\ncooldown_days: 0\nmax_cvss: 7.0\n\
              packages:\n  - match: { ecosystem: npm, name: lodash }\n\
-             \x20   set: { vuln_advisory_ids: [GHSA-2] }\n    reason: t\n    permanent: true\n",
+             \x20   set: { ignored_vuln_advisory_ids: [GHSA-2] }\n    reason: t\n    permanent: true\n",
         );
         let as_of = jiff::civil::date(2026, 9, 13);
         let mut facts = refused_facts();

@@ -680,7 +680,7 @@ pub struct SetBlock {
     pub provenance: Option<Action>,
     /// Advisories to ignore for this package, by their id or any alias.
     #[serde(default)]
-    pub vuln_advisory_ids: Vec<String>,
+    pub ignored_vuln_advisory_ids: Vec<String>,
 }
 
 #[cfg(test)]
@@ -943,7 +943,7 @@ mod tests {
                     "yanked",
                     "deprecated",
                     "provenance",
-                    "vuln_advisory_ids",
+                    "ignored_vuln_advisory_ids",
                 ],
             ),
             (

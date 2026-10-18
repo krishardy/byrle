@@ -382,18 +382,34 @@ mod tests {
     #[test]
     fn ignoring_an_advisory_needs_a_justification() {
         assert!(matches!(
-            checked("vuln_advisory_ids: [\"CVE-2024-1234\"]", "").unwrap_err(),
+            checked("ignored_vuln_advisory_ids: [\"CVE-2024-1234\"]", "").unwrap_err(),
             PackageError::Unjustified {
-                rule: Rule::VulnAdvisoryIds,
+                rule: Rule::IgnoredVulnAdvisoryIds,
                 ..
             }
         ));
         assert!(
             checked(
-                "vuln_advisory_ids: [\"CVE-2024-1234\"]",
+                "ignored_vuln_advisory_ids: [\"CVE-2024-1234\"]",
                 "    permanent: true\n"
             )
             .is_ok()
+        );
+    }
+
+    /// The key's name before 2026-10-18 is refused, and the error names the new one.
+    #[test]
+    fn the_old_name_of_ignored_advisories_is_an_unknown_key() {
+        let error = parse(&entry(
+            "vuln_advisory_ids: [\"CVE-2024-1234\"]",
+            "    permanent: true\n",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unknown field `vuln_advisory_ids`")
+                && error.contains("ignored_vuln_advisory_ids"),
+            "{error}"
         );
     }
 

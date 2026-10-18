@@ -49,7 +49,7 @@ between them.
 
 `Facts::with_intel` sets `known_malware` from the malware rows and `intel` to `Consulted`,
 even when nothing is known against the version, because the store was asked. `advisories`
-holds one entry per advisory id, each with its aliases so a `vuln_advisory_ids` exception
+holds one entry per advisory id, each with its aliases so a `ignored_vuln_advisory_ids` exception
 can name it by CVE. Two streams reporting one advisory are one entry listing both sources:
 the highest score stands, the direction `max_cvss` reads, and either stream's exploitation
 marks it. A record with no score is kept with `cvss` `None`, and `max_cvss` refuses it. A

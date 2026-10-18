@@ -395,7 +395,7 @@ packages:
     added_by: alice
 
   - match: { ecosystem: npm, purl: "pkg:npm/legacy-thing@2.1.0" }
-    set: { kev: allow, vuln_advisory_ids: ["CVE-2024-1234"] }
+    set: { kev: allow, ignored_vuln_advisory_ids: ["CVE-2024-1234"] }
     reason: "mitigated by network policy"
     expires: "2026-11-30"
     added_by: bob
@@ -810,7 +810,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [KEV stream](engineering_decisions/0040-kev-stream.md) | CISA's CVE ids are source `cisa/kev` in `exploited_cve`, joined at lookup; a failed fetch keeps the last load and exits 1 |
 | n/a | [Datadog stream](engineering_decisions/0041-datadog-stream.md) | every npm manifest entry is one `DATADOG-npm-<name>` malware record, source `datadog`, beside OSV's; refresh prints each package Datadog flags at every version and OSV only at some |
 | n/a | [Ingestion history](engineering_decisions/0042-ingestion-history.md) | `intel_ingestion` appends a row per stream per refresh, loaded or not, never pruned; `byrle intel history` prints it |
-| n/a | [OSV ranges and scores](engineering_decisions/0029-osv-ranges-and-scores.md) | `GHSA-` records loaded; ranges stored as intervals and compared as SemVer 2.0 at lookup; v4 base score over v3; `vuln_advisory_ids` matches aliases |
+| n/a | [OSV ranges and scores](engineering_decisions/0029-osv-ranges-and-scores.md) | `GHSA-` records loaded; ranges stored as intervals and compared as SemVer 2.0 at lookup; v4 base score over v3; `ignored_vuln_advisory_ids` matches aliases |
 | n/a | [Environment variables](engineering_decisions/0033-environment-variables.md) | Every name, default, help line and parser in `src/env.rs`; a value that does not parse refuses to start |
 | n/a | [Command line parser](engineering_decisions/0032-cli-parser-clap.md) | clap 4 with default features off, 4 crates; parsing in `src/cli.rs`, help pinned by golden files |
 | n/a | [Intel schema keys and types](engineering_decisions/0031-intel-schema-keys-and-types.md) | Every table keyed by a `BIGINT` identity; publisher ids and digests are sized unique columns; `TIMESTAMPTZ`; `TEXT` only for `summary`. An over-long value fails the refresh |

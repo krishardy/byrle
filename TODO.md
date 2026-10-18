@@ -397,9 +397,11 @@ Items that I've added that are not stage-bound.
     `duplication-catalogue.md`. Done 2026-10-18: the target and
     `scripts/make/smoke-npm-clients.sh`, and every reference outside this file's history,
     `src/main.rs`, `src/proxy.rs`, the README and 0018 among them.
-37. In `policy.yaml`'s `packages`, rename `vuln_advisory_ids` to `ignored_vuln_advisory_ids`.
+37. [x] In `policy.yaml`'s `packages`, rename `vuln_advisory_ids` to `ignored_vuln_advisory_ids`.
     Raised 2026-10-16. [policy-schema-v1-frozen](docs/engineering_decisions/0030-policy-schema-v1-frozen.md)
     closes `version: 1` to a renamed key, so the new name is `version: 2`'s.
+    Done 2026-10-18 in `version: 1` itself, as the user asked, and 0030 amended: a file
+    with the old name is refused as an unknown key, naming the new one.
 38. In `policy.yaml`'s `packages`, when more than one entry matches a package, apply the
     union of their `set` blocks, in order from entry 0 to n. Raised 2026-10-16. Today one
     whole entry applies, the most specific by strict subset containment

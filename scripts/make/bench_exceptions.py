@@ -45,7 +45,7 @@ def main():
     for (ecosystem, name, version), (checks, ids) in sorted(refused(audit).items()):
         loosened = {LOOSENED[c][0]: LOOSENED[c][1] for c in checks if c in LOOSENED}
         if "max_cvss" in checks:
-            loosened["vuln_advisory_ids"] = sorted(ids)
+            loosened["ignored_vuln_advisory_ids"] = sorted(ids)
         unloosened = sorted(c for c in checks if c not in LOOSENED and c != "max_cvss")
         if unloosened:
             sys.exit(f"{ecosystem} {name} {version}: no exception loosens {unloosened}")
