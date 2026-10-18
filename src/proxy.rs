@@ -1482,10 +1482,17 @@ struct Weighing {
 enum Own {
     /// Their weights, with the rest, are under the threshold: each is passed over.
     Passed,
-    /// Their weights alone reach it: the first present answers as it always has.
-    Refused,
-    /// Only with the policy's do they reach it: refused in the policy's words.
+    /// These rules each weigh the threshold alone, and answer as they always have.
+    Refused(Vec<String>),
+    /// Only summed, with each other or the policy's, do they reach it: in the policy's words.
     WithPolicy(enforce::Refusal),
+}
+
+impl Own {
+    /// Whether the proxy's refusal under `rule` answers.
+    fn answers(&self, rule: &str) -> bool {
+        matches!(self, Self::Refused(rules) if rules.iter().any(|r| r == rule))
+    }
 }
 
 /// Look up the record for an artifact GET, decide on it before a byte is fetched, and
@@ -1532,7 +1539,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         state,
     } = deciding.analysed(&record, &fetch, times.as_ref()).await;
     let today = crate::policy::today();
-    let own = deciding.own_signals(unservable.as_ref());
+    let own = deciding.own_signals(unservable.as_ref(), &fetch, claiming.as_ref());
     let weighing = match deciding
         .refusal(
             &record,
@@ -1878,13 +1885,21 @@ impl<'a> Deciding<'a> {
         };
         let refusal = decided(&keys);
         let own_keys: Vec<String> = own.iter().map(Signal::key).collect();
-        let alone = policy.map_or(!own.is_empty(), |policy| {
-            let weight: u32 = own_keys.iter().map(|key| policy.weight_of(key)).sum();
-            !own.is_empty() && weight >= policy.risk_threshold
-        });
-        let own_answer = if alone {
-            Own::Refused
-        } else if own.is_empty() || self.proxy.config.mode == Mode::Observe {
+        let weighs = |keys: &[String]| {
+            policy.map_or(!keys.is_empty(), |policy| {
+                let weight: u32 = keys.iter().map(|key| policy.weight_of(key)).sum();
+                !keys.is_empty() && weight >= policy.risk_threshold
+            })
+        };
+        let each: Vec<String> = own_keys
+            .iter()
+            .filter(|key| weighs(std::slice::from_ref(key)))
+            .cloned()
+            .collect();
+        let own_answer = if !each.is_empty() {
+            Own::Refused(each)
+        } else if own.is_empty() || (self.proxy.config.mode == Mode::Observe && !weighs(&own_keys))
+        {
             Own::Passed
         } else {
             match decided(&[keys, own_keys].concat()) {
@@ -1910,18 +1925,35 @@ impl<'a> Deciding<'a> {
         ArtifactStep::Answer(unavailable.response())
     }
 
-    /// The proxy's own refusals of what `fetch` would serve, as signals: today an origin the
-    /// proxy does not serve, while [`crate::env::REFUSE_UNSERVABLE`] is on.
-    fn own_signals(&self, unservable: Option<&String>) -> Vec<Signal> {
-        unservable
+    /// The proxy's own refusals of what `fetch` would serve, as signals: an origin the proxy
+    /// does not serve, while [`crate::env::REFUSE_UNSERVABLE`] is on, and no strong digest,
+    /// once no claim is being checked.
+    fn own_signals(
+        &self,
+        unservable: Option<&String>,
+        fetch: &ArtifactFetch,
+        claiming: Option<&Claiming>,
+    ) -> Vec<Signal> {
+        let own = |rule: &str, detail: String| Signal {
+            detector: crate::policy::decide::PROXY.to_owned(),
+            rule: rule.to_owned(),
+            detail,
+        };
+        let unservable = unservable
             .filter(|_| self.proxy.config.refuse_unservable)
-            .map(|origin| Signal {
-                detector: crate::policy::decide::PROXY.to_owned(),
-                rule: "unservable".to_owned(),
-                detail: format!("published at {origin}, which the proxy does not serve"),
-            })
-            .into_iter()
-            .collect()
+            .map(|origin| {
+                own(
+                    "unservable",
+                    format!("published at {origin}, which the proxy does not serve"),
+                )
+            });
+        let undigested = (fetch.digest.is_none() && claiming.is_none()).then(|| {
+            own(
+                "no_strong_digest",
+                "its metadata publishes no strong digest".to_owned(),
+            )
+        });
+        unservable.into_iter().chain(undigested).collect()
     }
 
     /// The record for the requested file, from the metadata held or fetched now.
@@ -2239,8 +2271,7 @@ impl<'a> Deciding<'a> {
         if let Own::WithPolicy(refusal) = own {
             return (audit::Answered::Refused, self.refused_by_policy(refusal));
         }
-        let own_refuses = matches!(own, Own::Refused);
-        if let Some(origin) = unservable.filter(|_| own_refuses) {
+        if let Some(origin) = unservable.filter(|_| own.answers("unservable")) {
             return (audit::Answered::Unservable, self.unservable(&origin));
         }
         match held.claiming {
@@ -2264,6 +2295,9 @@ impl<'a> Deciding<'a> {
             None => {}
         }
         let Some(digest) = fetch.digest.clone() else {
+            if !own.answers("no_strong_digest") {
+                return (audit::Answered::Served, ArtifactStep::Fetch(fetch));
+            }
             return (
                 audit::Answered::NoStrongDigest,
                 self.unassessable(
@@ -6396,7 +6430,7 @@ mod tests {
         );
 
         let with_denial = "version: 1\ncooldown_days: 0\n\
-                           signal_weights: { unservable: 50, denied: 50 }\n\
+                           signal_weights: { unservable: 50, denied: 50, no_strong_digest: 0 }\n\
                            denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: t\n";
         let proxy = offline(None, Some(with_denial)).with_refuse_unservable(true);
         hold_document(
@@ -6429,6 +6463,74 @@ mod tests {
                 body.contains("elsewhere.example"),
                 refuses,
                 "weight {weight}: {body}"
+            );
+        }
+    }
+
+    /// `no_strong_digest` weighed under the threshold forwards the bytes unverified and
+    /// unanalysed. Observe mode still refuses it when it weighs the threshold.
+    #[tokio::test]
+    async fn no_strong_digest_weighed_under_the_threshold_is_forwarded_unverified() {
+        let undigested =
+            OFFSITE_PACKUMENT.replace("elsewhere.example", "registry.npmjs.org/widget/-");
+        for (yaml, mode, served) in [
+            (
+                "signal_weights: { no_strong_digest: 50 }\n",
+                Mode::Enforce,
+                true,
+            ),
+            ("", Mode::Enforce, false),
+            ("", Mode::Observe, false),
+            (
+                "signal_weights: { no_strong_digest: 50 }\n",
+                Mode::Observe,
+                true,
+            ),
+        ] {
+            let yaml = format!("version: 1\ncooldown_days: 0\n{yaml}");
+            let proxy = offline(None, Some(&yaml)).with_mode(mode);
+            hold_document(
+                &proxy,
+                undigested.as_bytes(),
+                crate::record::DocumentDetail::Abbreviated,
+            );
+            match pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await {
+                ArtifactStep::Fetch(fetch) => {
+                    assert!(served, "{yaml} {mode:?}");
+                    assert!(fetch.digest.is_none(), "nothing to verify against");
+                }
+                answer => {
+                    let (_, body) = refused(answer).await;
+                    assert!(
+                        !served && body.contains("no strong digest"),
+                        "{yaml} {mode:?}: {body}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Two of the proxy's signals that reach the threshold only together are refused in the
+    /// policy's words, naming both, in observe mode too.
+    #[tokio::test]
+    async fn the_proxys_signals_summed_to_the_threshold_are_refused_by_name() {
+        let yaml = "version: 1\ncooldown_days: 0\n\
+                    signal_weights: { unservable: 50, no_strong_digest: 50 }\n";
+        for mode in [Mode::Enforce, Mode::Observe] {
+            let proxy = offline(None, Some(yaml))
+                .with_refuse_unservable(true)
+                .with_mode(mode);
+            hold_document(
+                &proxy,
+                OFFSITE_PACKUMENT.as_bytes(),
+                crate::record::DocumentDetail::Abbreviated,
+            );
+            let (status, body) =
+                refused(pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{mode:?}");
+            assert!(
+                body.contains("signals: unservable 50, no_strong_digest 50; risk score 100 of 100"),
+                "{mode:?}: {body}"
             );
         }
     }
@@ -12423,10 +12525,13 @@ mod tests {
         abbreviated.as_object_mut().unwrap().remove("time");
         let mut unnamed = full.clone();
         unnamed["name"] = "".into();
+        let undigested = "no strong digest: its metadata publishes no strong digest".to_owned();
         let signals = vec![
             "new package: first published 2 days ago".to_owned(),
             "no repository: the metadata names none".to_owned(),
+            undigested.clone(),
         ];
+        let only_undigested = vec![undigested];
         let one = || vec![Some(HeaderValue::from_static(npm::FULL_ACCEPT))];
         let (off, cooldown) = (
             "version: 1\ncooldown_days: 0\n",
@@ -12438,7 +12543,7 @@ mod tests {
                 Abbreviated,
                 &full,
                 off,
-                "allow",
+                "block",
                 &signals,
                 one(),
             ),
@@ -12447,18 +12552,18 @@ mod tests {
                 Abbreviated,
                 &full,
                 cooldown,
-                "quarantine",
+                "block",
                 &signals,
                 one(),
             ),
-            (&full, Full, &full, cooldown, "quarantine", &signals, vec![]),
+            (&full, Full, &full, cooldown, "block", &signals, vec![]),
             (
                 &abbreviated,
                 Abbreviated,
                 &unnamed,
                 cooldown,
-                "quarantine",
-                &vec![],
+                "block",
+                &only_undigested,
                 one(),
             ),
         ];

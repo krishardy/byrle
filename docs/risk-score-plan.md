@@ -184,6 +184,12 @@ present and their score; the verdict is a refusal when the score reaches
       only the first. npm's document removes a version on an origin the proxy does not
       serve only when `unservable` weighs the threshold alone. With
       `BYRLE_REFUSE_UNSERVABLE=0` the signal is not raised at all.
+   2. `no_strong_digest`. Done 2026-10-18: raised for an artifact with no strong digest
+      and no claim being checked. Under the threshold, its bytes are forwarded unverified,
+      and `install_scripts` is dropped as not analysed. A proxy refusal answers in its own
+      words only when its rule weighs the threshold alone; one reached by a sum is refused
+      in the policy's words, naming the rules. An audit line answered `no-strong-digest`
+      records `block` where it recorded `allow`, as the signal now weighs in its decision.
 6. The surprise score for a dropped signature or attestation, the first item #42 names:
    P(unsigned) = (weighted unsigned + 1) / (weighted total + 2) over earlier versions,
    newest weighted most, the signal −log2 P. Its half-life and weight measured on Central's
