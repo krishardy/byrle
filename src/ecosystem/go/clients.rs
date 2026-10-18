@@ -72,7 +72,7 @@ pub fn proxies(goproxy: &str) -> Indexes {
     Indexes { index, extra }
 }
 
-fn go_settings(machine: &Machine) -> Vec<Finding> {
+fn go_settings(machine: &Machine, _tokens: Option<bool>) -> Vec<Finding> {
     go_env(machine).map_or_else(Vec::new, |env| settings(&env))
 }
 
@@ -231,13 +231,13 @@ mod tests {
             go_indexes(&found).unwrap(),
             Some(indexes("https://a:b@h.example/go", &["direct"]))
         );
-        assert_eq!(go_settings(&found)[0].severity, Severity::Warn);
+        assert_eq!(go_settings(&found, None)[0].severity, Severity::Warn);
 
         for answer in [None, Some("not json".to_owned())] {
             let answering = move |_: &str, _: &[&str]| answer.clone();
             let absent = machine(&environment, &answering);
             assert_eq!(go_indexes(&absent).unwrap(), None);
-            assert!(go_settings(&absent).is_empty());
+            assert!(go_settings(&absent, None).is_empty());
         }
         assert_eq!(
             (GO.registry.as_ref().map(|registry| match registry {

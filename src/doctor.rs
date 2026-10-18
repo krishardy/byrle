@@ -130,8 +130,11 @@ pub struct Client {
     /// The command that empties the cache.
     pub clear_cache: &'static str,
     /// Findings on the client's other settings that send installs around the proxy.
-    pub settings: Option<fn(&Machine) -> Vec<Finding>>,
+    pub settings: Option<SettingsCheck>,
 }
+
+/// Findings on a client's settings, given whether the proxy requires tokens, if it answered.
+pub type SettingsCheck = fn(&Machine, Option<bool>) -> Vec<Finding>;
 
 /// Where a client keeps its cache.
 pub enum CacheLocation {
@@ -145,6 +148,8 @@ pub enum CacheLocation {
         configured: fn(&env::Process) -> Result<Option<std::path::PathBuf>, env::EnvError>,
         under_home: &'static str,
     },
+    /// A function of the client's ecosystem module reads it from the client's configuration.
+    Read(fn(&Machine) -> Result<Option<std::path::PathBuf>, env::EnvError>),
 }
 
 /// What `doctor` reads from the machine: the environment, the directory and the programs.
@@ -839,9 +844,9 @@ pub async fn run(machine: &Machine<'_>) -> Result<Checked, env::EnvError> {
     let _ = writeln!(report, "  checking from {}", machine.dir.display());
     report.push('\n');
 
-    let mut findings = proxy_findings(&proxy).await;
+    let (mut findings, tokens) = proxy_findings(&proxy).await;
     findings.extend(policy_findings(environment).await?);
-    findings.extend(registry_findings(machine, &proxy)?);
+    findings.extend(registry_findings(machine, &proxy, tokens)?);
     findings.extend(lockfile_findings(machine.dir, public.as_deref(), &proxy));
     findings.extend(cache_findings(machine)?);
 
@@ -872,8 +877,8 @@ pub async fn run(machine: &Machine<'_>) -> Result<Checked, env::EnvError> {
 
 /// Whether the thing at the other end is there at all, and what it says it does.
 /// Everything after this reads client configuration, which can be perfect while nothing is
-/// listening.
-async fn proxy_findings(proxy: &str) -> Vec<Finding> {
+/// listening. Also returns whether it requires tokens, `None` when it did not answer.
+async fn proxy_findings(proxy: &str) -> (Vec<Finding>, Option<bool>) {
     let health: Result<crate::proxy::Health, String> =
         probe::own(proxy, crate::proxy::HEALTH_PATH).await;
     let unreached = match &health {
@@ -891,7 +896,7 @@ async fn proxy_findings(proxy: &str) -> Vec<Finding> {
             probe::own(proxy, crate::proxy::READY_PATH).await.ok();
         findings.push(check_readiness(readiness.as_ref(), proxy));
     }
-    findings
+    (findings, health.ok().map(|health| health.tokens_required))
 }
 
 /// The PyPI index form when a cooldown is configured, and the policy the proxy is
@@ -934,8 +939,13 @@ async fn policy_findings(environment: &env::Process) -> Result<Vec<Finding>, env
     Ok(findings)
 }
 
-/// The registry and extra indexes each client is configured with.
-fn registry_findings(machine: &Machine, proxy: &str) -> Result<Vec<Finding>, env::EnvError> {
+/// The registry and extra indexes each client is configured with. `tokens` is whether the
+/// proxy requires them.
+fn registry_findings(
+    machine: &Machine,
+    proxy: &str,
+    tokens: Option<bool>,
+) -> Result<Vec<Finding>, env::EnvError> {
     let mut findings = Vec::new();
     for client in clients() {
         match &client.registry {
@@ -961,7 +971,7 @@ fn registry_findings(machine: &Machine, proxy: &str) -> Result<Vec<Finding>, env
             },
         }
         if let Some(settings) = client.settings {
-            findings.extend(settings(machine));
+            findings.extend(settings(machine, tokens));
         }
     }
     Ok(findings)
@@ -1052,6 +1062,7 @@ pub mod probe {
                 Some(dir) => Some(dir),
                 None => environment.home()?.map(|home| home.join(under_home)),
             },
+            CacheLocation::Read(read) => read(machine)?,
         })
     }
 
@@ -1317,6 +1328,21 @@ pub mod probe {
                 cache_dir(&here(&testing::empty()), &bare).unwrap(),
                 Some(PathBuf::from("/c"))
             );
+        }
+
+        /// A cache read from the client's configuration is where its module says.
+        #[test]
+        fn a_read_cache_is_what_the_module_reads() {
+            let client = echoing(CacheLocation::Read(|_| Ok(Some(PathBuf::from("/m2")))));
+            assert_eq!(
+                cache_dir(&here(&testing::empty()), &client).unwrap(),
+                Some(PathBuf::from("/m2"))
+            );
+            let failing = echoing(CacheLocation::Read(|machine| {
+                machine.environment.home().map(|_| None)
+            }));
+            let unreadable = testing::with_unreadable(&[], crate::env::HOME_DIR);
+            assert!(cache_dir(&here(&unreadable), &failing).is_err());
         }
 
         #[test]
@@ -2204,6 +2230,7 @@ mod tests {
                 ("uv", true),
                 ("cargo", true),
                 ("go", true),
+                ("mvn", true),
             ]
         );
     }
@@ -2371,7 +2398,10 @@ mod tests {
         };
         let url = fake_proxy(true, ready).await;
         let index = format!("{url}/pypi/simple/");
+        let dir = crate::util::test_support::tempdir("doctor-run-ok");
+        let maven_home = format!("Apache Maven 3.10.0\nMaven home: {}", dir.display());
         let at_proxy = |program: &str, args: &[&str]| match (program, args) {
+            ("mvn", ["--version"]) => Some(maven_home.clone()),
             (_, ["--version"]) => Some("1.0".to_owned()),
             ("npm" | "pnpm" | "yarn", ["config", "get", "registry"]) => Some(format!("{url}/npm/")),
             ("pip", ["config", "list"]) => Some(format!("global.index-url='{index}'")),
@@ -2379,12 +2409,23 @@ mod tests {
             ("go", ["version"]) => Some("go version go1.27.2 linux/amd64".to_owned()),
             _ => None,
         };
+        let settings = dir.join("settings.xml");
+        let maven_args = format!("-s {}", settings.display());
         let environment = crate::env::testing::with(&[
             (env::PROXY_URL, &url),
             (env::UV_DEFAULT, &index),
             (env::UV_NO_FILES, "1"),
+            (env::MVN_ADDED, &maven_args),
         ]);
-        let dir = crate::util::test_support::tempdir("doctor-run-ok");
+        std::fs::write(
+            &settings,
+            format!(
+                "<settings><mirrors><mirror><id>byrle</id><mirrorOf>*</mirrorOf>\
+                 <url>{url}/maven/</url></mirror></mirrors><servers><server><id>byrle</id>\
+                 <username>a</username><password>t</password></server></servers></settings>"
+            ),
+        )
+        .expect("writes");
         std::fs::create_dir_all(dir.join(".cargo")).expect("creates");
         std::fs::write(
             dir.join(".cargo/config.toml"),

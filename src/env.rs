@@ -697,6 +697,11 @@ pub const CARGO_DIR: Var = other(
     "CARGO_HOME",
     &["where cargo keeps its configuration and cache, when set"],
 );
+pub const MVN_ADDED: Var = other(
+    Kind::External,
+    "MAVEN_ARGS",
+    &["arguments mvn adds to its own, read by doctor for `-s`, `-gs` and `maven.repo.local`"],
+);
 pub const CONFIG_HOME: Var = other(
     Kind::External,
     "XDG_CONFIG_HOME",
@@ -734,7 +739,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 88] = [
+pub const ALL: [Var; 89] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -816,6 +821,7 @@ pub const ALL: [Var; 88] = [
     HOME_DIR,
     BUN_CACHE,
     CARGO_DIR,
+    MVN_ADDED,
     CONFIG_HOME,
     UV_DEFAULT,
     UV_OLDER_INDEX,
@@ -1553,6 +1559,18 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn cargo_home(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(CARGO_DIR)
+    }
+
+    pub fn maven_args(&self) -> Result<Option<String>, EnvError> {
+        self.text(MVN_ADDED)
+    }
+
+    /// A variable a client's configuration names, such as `${env.TOKEN}` in mvn's
+    /// `settings.xml`. `None` when unset, empty or not UTF-8.
+    pub fn referenced(&self, name: &str) -> Option<String> {
+        (self.lookup)(name)
+            .and_then(|raw| raw.into_string().ok())
+            .filter(|value| !value.is_empty())
     }
 
     pub fn xdg_config_home(&self) -> Result<Option<PathBuf>, EnvError> {

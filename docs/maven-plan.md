@@ -462,6 +462,7 @@ Q2, Q7 and Q9 otherwise.
    | `settings.xml` | which mirror `central` and any other repository id are sent to, and whether it is the proxy; no `<server>` with the mirror's id when tokens are required |
    | `$GRADLE_USER_HOME/init.d/` | no init script naming the proxy's `/maven/` and `/gradle-plugins/` |
    | `gradle-wrapper.properties` and `gradle-wrapper.jar` | Q9's four checks, against `services.gradle.org/versions/all` |
+   | `.mvn/wrapper/maven-wrapper.properties` | `./mvnw`'s download of mvn: its checks are listed once a wrapper generated through the stub is read |
    | `~/.m2/repository` and Gradle's `caches/modules-2` | a warm cache, as for Go's module cache |
    | `gradle/verification-metadata.xml` | none, or one with `<verify-signatures>` false: no check of byrle from outside it, per step 2.3 |
 
@@ -480,6 +481,24 @@ Q2, Q7 and Q9 otherwise.
    cached before from the cache. Of two mirrors, one `mirrorOf` `*` listed first and one
    `mirrorOf` `central`, Central's requests went to the `central` one. With `*,!central`
    they went to `repo.maven.apache.org`.
+
+   Measured 2026-10-18 the same way, for how mvn reads more than one file:
+
+   | Settings | Central's requests went to |
+   |---|---|
+   | user file `*`, global file (`-gs`) `central` | the global file's mirror, 18 requests |
+   | the same mirror id in both, different URLs | the user file's |
+   | `*` listed first, then `central,foo` | the `*` mirror: only a `<mirrorOf>` equal to the id is chosen first |
+   | `-s` in `.mvn/maven.config`, or in `MAVEN_ARGS` | the named file's mirror |
+   | `HOME` set to a directory holding `.m2/settings.xml` | not that file's: mvn takes the home directory from the account |
+
+   Done 2026-10-18 for `settings.xml` and `~/.m2/repository`, in
+   `src/ecosystem/maven/clients.rs`. Doctor reads the files mvn would, from the first two
+   rows, and `${user.home}` and `${env.NAME}` in their values. It reports Central's mirror as
+   the registry, the mirror an id no file names goes to as an extra index, and when the
+   proxy requires tokens, a `<server>` of Central's mirror's id with a username and password
+   or an `Authorization` header. It reads `HOME`, as the other clients' checks do, and does
+   not decrypt a `{...}` password.
 
    `services.gradle.org/versions/all` lists 532 versions on 2026-10-17. Each has a
    `checksum`, the `-bin` zip's sha256, a `wrapperChecksum` and a `buildTime`. An `-all`

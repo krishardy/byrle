@@ -56,7 +56,7 @@ maven
   publish times    each version's `.pom` `Last-Modified`; `maven-metadata.xml` carries none
   versions         Maven's ComparableVersion
   checks           no meaning here: yanked, deprecated
-  clients          none checked by doctor
+  clients          mvn
   client lockfiles gradle.lockfile, buildscript-gradle.lockfile, settings-gradle.lockfile
   streams          osv/maven
   loaded           none of them

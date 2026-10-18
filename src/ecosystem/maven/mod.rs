@@ -2,6 +2,7 @@
 //! filtered by policy, and each version's files fetched at the proxy. See
 //! docs/maven-plan.md.
 
+pub mod clients;
 pub mod digest;
 pub mod inspect;
 pub mod keys;
@@ -48,7 +49,7 @@ pub const REGISTRY: Registry = Registry {
     streams: &[&OSV],
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
-    clients: &[],
+    clients: clients::CLIENTS,
     setup: Setup {
         client: "mvn",
         command: setup_line,

@@ -138,7 +138,7 @@ fn append(open: &mut Option<Open>, text: &str) {
 }
 
 /// One of the five entities XML defines. Errors for any other, as no DTD defines more.
-fn predefined(name: &str) -> Result<char, String> {
+pub(super) fn predefined(name: &str) -> Result<char, String> {
     match name {
         "lt" => Ok('<'),
         "gt" => Ok('>'),
