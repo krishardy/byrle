@@ -102,11 +102,10 @@ present and their score; the verdict is a refusal when the score reaches
   that signal's weight to 0 for the versions it matches, and `cooldown_days` the window the
   `cooldown` signal is present in. `risk_threshold` is added at the top level, and the new
   rules to `signal_weights`.
-- **The threshold is measured, not chosen.** Signals already sum with no effect:
-  `advisory_malware` 8, `advisory_vulnerability` 4, each detector rule 1. Once a threshold
-  refuses, a sum of those could refuse a version served today. Step 2 reads the highest
-  `risk_score` in the audit logs of every smoke run and the corpus, and the default is set
-  above it.
+- **The threshold is over what today's signals can sum to.** Signals already sum with no
+  effect: `advisory_malware` 8, `advisory_vulnerability` 4, each detector rule 1. Once a
+  threshold refuses, a sum of those could refuse a version served today, so step 2 sets
+  the default over the most they can sum to: 100.
 - **Where each signal is known.** A metadata filter scores only what the document says:
   denials, malware, cooldown, advisories, yanked, deprecated, and install scripts the
   metadata declares. Detectors, install scripts read from the archive, and every group C
@@ -130,6 +129,27 @@ present and their score; the verdict is a refusal when the score reaches
 2. Measure the threshold: the highest `risk_score` over the audit logs of `make
    smoke-npm`, `smoke-python`, `smoke-cargo`, `smoke-go` and `smoke-maven`, and over the
    npm corpus run through `explain`.
+   Done 2026-10-18, from the rules instead of the corpus. A rule counts once however often
+   it fires, so a version's score from today's signals is at most the sum of every rule's
+   default weight:
+
+   | Detector | Rules | Weight | Most |
+   |---|---|---|---|
+   | metadata | 4 | 1 | 4 |
+   | source | 4 | 1 | 4 |
+   | virustotal | 1 | 1 | 1 |
+   | trustpub | 2 | 1 | 2 |
+   | signing | 2 | 1 | 2 |
+   | advisory | 5 | 8, 4, 3, 2, 1 | 18 |
+   | guarddog, when configured | 64 | 1 | 64 |
+   | every one | 82 | | 95 |
+
+   The five smoke runs, each with `BYRLE_AUDIT_LOG` set, wrote 790 lines; 36 carried a
+   `risk_score`. The highest was 8, `clinstestpackage`'s `advisory_malware`, refused as
+   known malware; the highest of a version served was 4, one `advisory_vulnerability`, for
+   rustls 0.23.45, commons-lang3 and commons-text. So `risk_threshold` defaults to 100,
+   over the 95 any version can score from today's signals: a policy that sets no weight
+   refuses no version on them.
 3. `decide` returns signals and a score, group A as signals, the verdict from the
    threshold. `explain`, the audit line's `Inputs` and `audit verify` read it. Defaults
    unchanged, checked as above.
