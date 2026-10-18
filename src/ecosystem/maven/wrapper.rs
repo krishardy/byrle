@@ -144,10 +144,39 @@ fn mvnw_settings(machine: &Machine, tokens: Option<bool>) -> Vec<Finding> {
     let environment = machine.environment;
     match (read(machine), environment.mvnw_credentials()) {
         (Ok(Some(wrapper)), Ok(credentials)) => {
-            settings(&wrapper.properties, tokens == Some(true) && !credentials)
+            let mut findings = settings(&wrapper.properties, tokens == Some(true) && !credentials);
+            findings.extend(doubled(&wrapper.properties, wrapper.base.as_deref()));
+            findings
         }
         _ => Vec::new(),
     }
+}
+
+/// The URL mvnw downloads `url` from: `base` in place of what precedes `/org/apache/maven/`.
+pub fn download_url(url: &str, base: Option<&str>) -> String {
+    match (base, url.find(SPLICE)) {
+        (Some(base), Some(at)) => format!("{base}{}", &url[at..]),
+        _ => url.to_owned(),
+    }
+}
+
+/// A distribution URL with `//` in its path, which the proxy answers 404. `wrapper:wrapper`
+/// writes one from a mirror `<url>` ending in `/`.
+pub fn doubled(properties: &[(String, String)], base: Option<&str>) -> Option<Finding> {
+    let url = download_url(value(properties, "distributionUrl")?, base);
+    let (_, rest) = url.split_once("://")?;
+    rest.contains("//").then(|| {
+        Finding::new(
+            Severity::Problem,
+            "mvnw distribution URL",
+            format!("{url} has // in its path, which the proxy answers 404"),
+        )
+        .with_fix(format!(
+            "remove the / that ends the mirror's <url> or {}, and the extra / from \
+             distributionUrl in {PROPERTIES}",
+            crate::env::MVNW_BASE
+        ))
+    })
 }
 
 /// Whether the distribution's sha256 is pinned, and whether mvnw lacks the credentials a
@@ -422,5 +451,51 @@ distributionUrl=http://127.0.0.1:18891/maven2/org/apache/maven/apache-maven/3.10
             ..machine
         };
         assert!(distributions(&broken).is_err());
+    }
+
+    /// What `wrapper:wrapper` wrote from a mirror `<url>` ending in `/`, on 2026-10-18.
+    #[test]
+    fn a_doubled_slash_in_the_download_path_is_a_problem() {
+        let doubled_url = pairs(&[(
+            "distributionUrl",
+            "https://localhost:8741/maven//org/apache/maven/apache-maven/3.10.0/apache-maven-3.10.0-bin.zip",
+        )]);
+        let found = doubled(&doubled_url, None).expect("a finding");
+        assert_eq!(found.severity, Severity::Problem);
+        assert_eq!(
+            found.detail,
+            "https://localhost:8741/maven//org/apache/maven/apache-maven/3.10.0/\
+             apache-maven-3.10.0-bin.zip has // in its path, which the proxy answers 404"
+        );
+        assert_eq!(
+            found.fix,
+            Some(format!(
+                "remove the / that ends the mirror's <url> or {MVNW_BASE}, and the extra / \
+                 from distributionUrl in .mvn/wrapper/maven-wrapper.properties"
+            ))
+        );
+        assert!(doubled(&properties(GENERATED), None).is_none());
+        assert!(doubled(&properties(GENERATED), Some("https://b.example/maven/")).is_some());
+        assert!(doubled(&properties(GENERATED), Some("https://b.example/maven")).is_none());
+        assert!(doubled(&[], None).is_none());
+        assert!(doubled(&pairs(&[("distributionUrl", "no-scheme//x")]), None).is_none());
+        assert_eq!(
+            download_url("https://x.example/a.zip", Some("https://b.example")),
+            "https://x.example/a.zip"
+        );
+        let root = crate::util::test_support::tempdir("mvnw-doubled");
+        std::fs::create_dir_all(root.join(".mvn/wrapper")).unwrap();
+        std::fs::write(
+            root.join(PROPERTIES),
+            "distributionUrl=https://h/maven//org/apache/maven/a-bin.zip\n",
+        )
+        .unwrap();
+        let environment = crate::env::testing::empty();
+        let machine = Machine {
+            environment: &environment,
+            dir: &root,
+            run: &|_, _| None,
+        };
+        assert_eq!(mvnw_settings(&machine, None).len(), 2);
     }
 }
