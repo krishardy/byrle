@@ -131,7 +131,7 @@ pub struct Client {
     pub clear_cache: &'static str,
     /// Findings on the client's other settings that send installs around the proxy.
     pub settings: Option<SettingsCheck>,
-    /// Whether the client is used here, when not by running it with `version_args`.
+    /// Whether the client is used here, when not by running it; one that is not is not checked.
     pub found: Option<fn(&Machine) -> bool>,
 }
 
@@ -950,6 +950,9 @@ fn registry_findings(
 ) -> Result<Vec<Finding>, env::EnvError> {
     let mut findings = Vec::new();
     for client in clients() {
+        if client.found.is_some_and(|found| !found(machine)) {
+            continue;
+        }
         match &client.registry {
             None => {}
             Some(RegistrySource::Asked(query)) => findings.push(check_registry(
@@ -2242,6 +2245,7 @@ mod tests {
                 ("cargo", true),
                 ("go", true),
                 ("mvn", true),
+                ("mvnw", true),
                 ("gradle", true),
             ]
         );

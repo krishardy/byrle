@@ -29,7 +29,7 @@ pub const MVN: Client = Client {
     found: None,
 };
 
-pub const CLIENTS: &[Client] = &[MVN, super::gradle::GRADLE];
+pub const CLIENTS: &[Client] = &[MVN, super::wrapper::MVNW, super::gradle::GRADLE];
 
 /// Where mvn asks for Central with no mirror.
 const CENTRAL_URL: &str = "https://repo.maven.apache.org/maven2";

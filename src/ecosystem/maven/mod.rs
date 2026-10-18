@@ -14,6 +14,7 @@ pub mod signer;
 pub mod signing;
 pub mod transport;
 pub mod wire;
+pub mod wrapper;
 
 pub use paths::{classify_path, document_from_content_type, upstream_url};
 pub use transport::Client;

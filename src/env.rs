@@ -702,6 +702,21 @@ pub const GRADLE_DIR: Var = other(
     "GRADLE_USER_HOME",
     &["where Gradle keeps its init scripts and cache, when set"],
 );
+pub const MVNW_BASE: Var = other(
+    Kind::External,
+    "MVNW_REPOURL",
+    &["the repository `./mvnw` downloads mvn from in place of its properties' own"],
+);
+pub const MVNW_USER: Var = other(
+    Kind::External,
+    "MVNW_USERNAME",
+    &["the username `./mvnw` sends with its download, read by doctor only for being set"],
+);
+pub const MVNW_SECRET: Var = other(
+    Kind::External,
+    "MVNW_PASSWORD",
+    &["the password `./mvnw` sends with its download, read by doctor only for being set"],
+);
 pub const MVN_ADDED: Var = other(
     Kind::External,
     "MAVEN_ARGS",
@@ -744,7 +759,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 90] = [
+pub const ALL: [Var; 93] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -827,6 +842,9 @@ pub const ALL: [Var; 90] = [
     BUN_CACHE,
     CARGO_DIR,
     MVN_ADDED,
+    MVNW_BASE,
+    MVNW_USER,
+    MVNW_SECRET,
     GRADLE_DIR,
     CONFIG_HOME,
     UV_DEFAULT,
@@ -1569,6 +1587,15 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn gradle_user_home(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(GRADLE_DIR)
+    }
+
+    pub fn mvnw_repository(&self) -> Result<Option<String>, EnvError> {
+        self.text(MVNW_BASE)
+    }
+
+    /// Whether `./mvnw` is given both a username and a password to send.
+    pub fn mvnw_credentials(&self) -> Result<bool, EnvError> {
+        Ok(self.text(MVNW_USER)?.is_some() && self.text(MVNW_SECRET)?.is_some())
     }
 
     pub fn maven_args(&self) -> Result<Option<String>, EnvError> {

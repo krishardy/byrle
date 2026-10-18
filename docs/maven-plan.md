@@ -462,7 +462,7 @@ Q2, Q7 and Q9 otherwise.
    | `settings.xml` | which mirror `central` and any other repository id are sent to, and whether it is the proxy; no `<server>` with the mirror's id when tokens are required |
    | `$GRADLE_USER_HOME/init.d/` | no init script naming the proxy's `/maven/` and `/gradle-plugins/` |
    | `gradle-wrapper.properties` and `gradle-wrapper.jar` | Q9's four checks, against `services.gradle.org/versions/all` |
-   | `.mvn/wrapper/maven-wrapper.properties` | `./mvnw`'s download of mvn: its checks are listed once a wrapper generated through the stub is read |
+   | `.mvn/wrapper/maven-wrapper.properties` | `./mvnw`'s download of mvn not from the proxy's `/maven/`; no `distributionSha256Sum`; when tokens are required, `MVNW_USERNAME` or `MVNW_PASSWORD` unset |
    | `~/.m2/repository` and Gradle's `caches/modules-2` | a warm cache, as for Go's module cache |
    | `gradle/verification-metadata.xml` | none, or one with `<verify-signatures>` false: no check of byrle from outside it, per step 2.3 |
 
@@ -512,6 +512,25 @@ Q2, Q7 and Q9 otherwise.
    nearest directory at or above the working directory with a wrapper or a settings
    script. `<verify-signatures>` true is reported ok. False, which checks digests only, and
    no file are warnings. A file that is not well-formed XML is a problem.
+
+   Measured 2026-10-18 with Maven Wrapper 3.3.4, which `mvn -N wrapper:wrapper` wrote
+   through the stub's mirror as `distributionType=only-script` and a `distributionUrl`
+   under the mirror's URL, with no `distributionSha256Sum`:
+
+   | `./mvnw -v` | Result |
+   |---|---|
+   | as written, on a machine with no `unzip` | `GET` of `-bin.tar.gz` in place of the `-bin.zip` named: the script swaps it when `unzip` is missing |
+   | `distributionSha256Sum` of the `.tar.gz` | 1 request, then 0 from `~/.m2/wrapper/dists` |
+   | `distributionSha256Sum` of anything else | "Failed to validate Maven distribution SHA-256", exit 1 |
+   | `MVNW_REPOURL` set | its base in place of what precedes `/org/apache/maven/` |
+   | a stub answering 401 with `WWW-Authenticate: Basic`, no credentials | curl failed, exit 1 |
+   | the same, `MVNW_USERNAME` and `MVNW_PASSWORD` set | the script's Java downloader: 2 answered 401, then Basic, 200 |
+   | `MVNW_REPOURL` at byrle's `/maven` | ran mvn 3.10.0; byrle served the `.tar.gz` and the `.zip` byte for byte, after one 503 while it analysed each |
+
+   Central publishes a `.sha512` of the archive and no `.sha256`, so doctor reports whether
+   `distributionSha256Sum` is set, not whether it is right. Done 2026-10-18 in
+   `src/ecosystem/maven/wrapper.rs`, as the client `mvnw`. A client with a `found` hook that
+   is not found here, as `mvnw` and `gradle` are without their files, is no longer reported.
 
    `services.gradle.org/versions/all` lists 532 versions on 2026-10-17. Each has a
    `checksum`, the `-bin` zip's sha256, a `wrapperChecksum` and a `buildTime`. An `-all`
