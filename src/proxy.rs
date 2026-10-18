@@ -6510,6 +6510,28 @@ mod tests {
         }
     }
 
+    /// In observe mode a check that fails is served and logged, even beside a proxy signal
+    /// weighed under the threshold.
+    #[tokio::test]
+    async fn observe_mode_serves_a_policy_refusal_beside_a_proxy_signal_under_the_threshold() {
+        let yaml = "version: 1\ncooldown_days: 0\n\
+                    signal_weights: { unservable: 50, no_strong_digest: 0 }\n\
+                    denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: t\n";
+        let proxy = offline(None, Some(yaml))
+            .with_refuse_unservable(true)
+            .with_mode(Mode::Observe);
+        hold_document(
+            &proxy,
+            OFFSITE_PACKUMENT.as_bytes(),
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let step = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
+        assert!(
+            matches!(step, ArtifactStep::Fetch(_)),
+            "the denial is observed"
+        );
+    }
+
     /// Two of the proxy's signals that reach the threshold only together are refused in the
     /// policy's words, naming both, in observe mode too.
     #[tokio::test]
