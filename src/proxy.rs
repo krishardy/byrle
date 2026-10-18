@@ -690,6 +690,8 @@ struct VerifyingStream {
     verified: Arc<Mutex<VerifiedArtifacts>>,
     /// Where the line that served the artifact went, and the line, for a `cut-short` one.
     served: Option<(Sinks, Written)>,
+    /// Whether a mismatch releases the held chunk rather than cutting the body short.
+    tolerates: bool,
 }
 
 impl VerifyingStream {
@@ -711,7 +713,15 @@ impl VerifyingStream {
             sri: sri.clone(),
             verified,
             served: None,
+            tolerates: false,
         }
+    }
+
+    /// Release the held chunk on a mismatch, as the policy weighs `digest_mismatch` under
+    /// the threshold, when `tolerates`.
+    fn tolerating(mut self, tolerates: bool) -> Self {
+        self.tolerates = tolerates;
+        self
     }
 
     /// Audit a body that ends early in `sinks`, after the line that served it.
@@ -769,6 +779,10 @@ impl VerifyingStream {
                     byrle.artifact.bytes = mismatch.bytes,
                     "ARTIFACT DIGEST MISMATCH"
                 );
+                if self.tolerates {
+                    warn!(url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path), byrle.package.purl = %self.purl, "served whole: the policy weighs digest_mismatch under the threshold");
+                    return Poll::Ready(self.held.take().map(Ok));
+                }
                 self.cut_short();
                 self.held = None;
                 Poll::Ready(Some(Err(Box::new(mismatch) as BoxError)))
@@ -1467,6 +1481,8 @@ struct ArtifactFetch {
     audit: Option<Box<Written>>,
     /// The claim a manifest's body is checked against, for a manifest GET.
     manifest: Option<ecosystem::Claim>,
+    /// Whether bytes that do not match `digest` are served, as the policy weighs it.
+    tolerates_mismatch: bool,
 }
 
 /// What [`Deciding::refusal`] read and decided: the intel, the refusal, the signals in it.
@@ -1475,6 +1491,8 @@ struct Weighing {
     refusal: Option<enforce::Refusal>,
     signals: Vec<Signal>,
     own: Own,
+    /// Whether `digest_mismatch`, added to the rest, stays under the threshold.
+    tolerates: bool,
 }
 
 /// Whether the proxy's own refusals, such as an origin it does not serve, answer.
@@ -1539,7 +1557,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         state,
     } = deciding.analysed(&record, &fetch, times.as_ref()).await;
     let today = crate::policy::today();
-    let own = deciding.own_signals(unservable.as_ref(), &fetch, claiming.as_ref());
+    let own = deciding.own_signals(unservable.as_ref(), &fetch, (claiming.as_ref(), &state));
     let weighing = match deciding
         .refusal(
             &record,
@@ -1553,7 +1571,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Err(unavailable) => return deciding.not_ready(unavailable),
     };
     let (intel, refusal, signals) = (weighing.intel, weighing.refusal, weighing.signals);
-    let own = weighing.own;
+    let (own, tolerates) = (weighing.own, weighing.tolerates);
     deciding.report_signals(&signals);
     if sourced.is_none() {
         deciding.compare_source(&described, &fetch, refusal.as_ref());
@@ -1561,6 +1579,10 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     deciding.scan(&fetch, scanned, refusal.as_ref());
     deciding.detect(&record, &detected, refusal.as_ref());
     let awaiting = deciding.awaiting(&record, &detected, refusal.as_ref());
+    let fetch = ArtifactFetch {
+        tolerates_mismatch: tolerates,
+        ..fetch
+    };
     let (answered, step) = deciding.answer(
         (refusal.as_ref(), &own),
         unservable,
@@ -1902,17 +1924,25 @@ impl<'a> Deciding<'a> {
         {
             Own::Passed
         } else {
-            match decided(&[keys, own_keys].concat()) {
+            match decided(&[keys.clone(), own_keys.clone()].concat()) {
                 Some(refusal) => Own::WithPolicy(refusal),
                 None => Own::Passed,
             }
         };
+        let mut mismatched = own_keys.clone();
+        if !mismatched.iter().any(|key| key == "digest_mismatch") {
+            mismatched.push("digest_mismatch".to_owned());
+        }
+        let tolerates = !weighs(&mismatched)
+            && (self.proxy.config.mode == Mode::Observe
+                || decided(&[keys, mismatched].concat()).is_none());
         signals.extend(own);
         Ok(Weighing {
             intel,
             refusal,
             signals,
             own: own_answer,
+            tolerates,
         })
     }
 
@@ -1932,7 +1962,7 @@ impl<'a> Deciding<'a> {
         &self,
         unservable: Option<&String>,
         fetch: &ArtifactFetch,
-        claiming: Option<&Claiming>,
+        (claiming, state): (Option<&Claiming>, &AnalysisState),
     ) -> Vec<Signal> {
         let own = |rule: &str, detail: String| Signal {
             detector: crate::policy::decide::PROXY.to_owned(),
@@ -1953,7 +1983,19 @@ impl<'a> Deciding<'a> {
                 "its metadata publishes no strong digest".to_owned(),
             )
         });
-        unservable.into_iter().chain(undigested).collect()
+        let mismatched = (matches!(claiming, Some(Claiming::Failed(_)))
+            || matches!(state, AnalysisState::Mismatched(_)))
+        .then(|| {
+            own(
+                "digest_mismatch",
+                "its bytes are not the ones its digest or claim names".to_owned(),
+            )
+        });
+        unservable
+            .into_iter()
+            .chain(undigested)
+            .chain(mismatched)
+            .collect()
     }
 
     /// The record for the requested file, from the metadata held or fetched now.
@@ -2151,6 +2193,7 @@ impl<'a> Deciding<'a> {
                 .filter(|origin| origins.reachable().routes_directly(origin)),
             audit: None,
             manifest: None,
+            tolerates_mismatch: false,
         };
         (fetch, unservable)
     }
@@ -2275,9 +2318,10 @@ impl<'a> Deciding<'a> {
             return (audit::Answered::Unservable, self.unservable(&origin));
         }
         match held.claiming {
-            Some(Claiming::Failed(why)) => {
+            Some(Claiming::Failed(why)) if own.answers("digest_mismatch") => {
                 return (audit::Answered::UpstreamMismatch, self.claim_failed(&why));
             }
+            Some(Claiming::Failed(_)) => {}
             Some(Claiming::Pending(job)) => {
                 let claim = job.claim.clone();
                 self.proxy
@@ -2308,10 +2352,11 @@ impl<'a> Deciding<'a> {
             );
         };
         match held.state {
-            AnalysisState::Mismatched(mismatch) => (
+            AnalysisState::Mismatched(mismatch) if own.answers("digest_mismatch") => (
                 audit::Answered::UpstreamMismatch,
                 self.mismatched(&mismatch),
             ),
+            AnalysisState::Mismatched(_) => (audit::Answered::Served, ArtifactStep::Fetch(fetch)),
             AnalysisState::Pending(job) => {
                 self.proxy
                     .config
@@ -3640,7 +3685,8 @@ impl Exchange<'_> {
             artifact.purl,
             self.proxy.verified.clone(),
         )
-        .audited(artifact.audit.map(|written| (self.proxy.sinks(), *written)));
+        .audited(artifact.audit.map(|written| (self.proxy.sinks(), *written)))
+        .tolerating(artifact.tolerates_mismatch);
         (forward_status, headers, Body::from_stream(verified)).into_response()
     }
 
@@ -8195,6 +8241,23 @@ mod tests {
                 assert!(body.contains("its claim does not describe"), "{body}");
             }
         }
+
+        let upstream = module_proxy_zip(go_mod, None, b"not a zip".to_vec()).await;
+        let analyser = Arc::new(crate::analysis::run::tests::analyser(
+            "go-zip-tolerated",
+            1 << 20,
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+        ));
+        let lowered = "version: 1\ncooldown_days: 0\nsignal_weights: { digest_mismatch: 50 }\n";
+        let proxy = go_proxy(&upstream, quote_sumdb().await)
+            .with_analyser(Some(analyser.clone()))
+            .with_policy(Some(policy(lowered)));
+        let _ = pinned(&proxy, QUOTE_ZIP).await;
+        analyser.ended(1).await;
+        let ArtifactStep::Fetch(fetch) = pinned(&proxy, QUOTE_ZIP).await else {
+            panic!("digest_mismatch weighs under the threshold");
+        };
+        assert_eq!(fetch.digest, None, "forwarded unverified");
     }
 
     /// go fetches versions its list leaves out, pseudo-versions among them: the zip's record
@@ -10439,6 +10502,26 @@ mod tests {
         let retry = tarball_request(&base).await;
         assert_eq!(retry.status(), 502);
         assert!(retry.text().await.unwrap().contains("does not describe"));
+
+        let lowered = "version: 1\ncooldown_days: 0\nsignal_weights: { digest_mismatch: 50 }\n";
+        let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
+        let (base, analyser) = analysing(
+            "analyse-mismatch-tolerated",
+            "",
+            &integrity(b"other bytes"),
+            tarball.clone(),
+            Some(lowered),
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 503);
+        analyser.ended(1).await;
+        let served = tarball_request(&base).await;
+        assert_eq!(
+            served.status(),
+            200,
+            "digest_mismatch weighs under the threshold"
+        );
+        assert_eq!(served.bytes().await.unwrap().as_ref(), tarball.as_slice());
     }
 
     /// No strong digest, so nothing can be stored or checked against: refused under any
@@ -12713,6 +12796,46 @@ mod tests {
         );
         assert!(matches!(stream.next().await, Some(Err(_))));
         assert!(stream.next().await.is_none());
+    }
+
+    /// A stream that tolerates a mismatch releases every byte and ends cleanly, and records
+    /// nothing as verified; one that does not cuts the body short.
+    #[tokio::test]
+    async fn a_tolerated_mismatch_releases_the_held_chunk_and_records_nothing() {
+        use futures_util::StreamExt as _;
+        let sri = Sri::parse(&sri_of(b"other bytes")).expect("an SRI");
+        for tolerates in [true, false] {
+            let body: ByteStream = Box::pin(futures_util::stream::iter(vec![
+                Ok(Bytes::from_static(b"ab")),
+                Ok(Bytes::from_static(b"c")),
+            ]));
+            let verified = Arc::new(Mutex::new(VerifiedArtifacts::new(8)));
+            let stream = VerifyingStream::new(
+                body,
+                &sri,
+                "/npm/a".to_owned(),
+                "pkg:npm/a@1.0.0".to_owned(),
+                verified.clone(),
+            )
+            .tolerating(tolerates);
+            let chunks: Vec<_> = stream.collect().await;
+            let bytes: Vec<u8> = chunks
+                .iter()
+                .filter_map(|chunk| chunk.as_ref().ok())
+                .flat_map(|chunk| chunk.to_vec())
+                .collect();
+            if tolerates {
+                assert_eq!(bytes, b"abc");
+                assert!(chunks.iter().all(Result::is_ok));
+            } else {
+                assert_eq!(bytes, b"ab", "the last chunk is held back");
+                assert!(chunks.last().is_some_and(Result::is_err));
+            }
+            assert_eq!(
+                verified.lock().unwrap().lookup(&sri),
+                crate::verified::Seen::First
+            );
+        }
     }
 
     /// The base a rewritten URL points at comes from a `Host` that can be read, and is

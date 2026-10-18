@@ -213,7 +213,7 @@ audit verify` weighs them again.
 | `provenance_identity_changed` | its attestation names another repository or workflow than the version before it | `risk_threshold` |
 | `unservable` | its artifact is on an origin the proxy does not serve, while `BYRLE_REFUSE_UNSERVABLE` is on. Under the threshold, the version stays in the document and its fetch goes on; the proxy never fetches from that origin | `risk_threshold` |
 | `no_strong_digest` | no strong digest is published for its artifact. Under the threshold, its bytes are forwarded unverified and unanalysed, so `install_scripts` and the detectors have no answer | `risk_threshold` |
-| `digest_mismatch` | its bytes are not the ones its digest or claim names. Weighed from step 5 | `risk_threshold` |
+| `digest_mismatch` | its bytes are not the ones its digest or claim names. Under the threshold, a claim that fails is fetched unverified, and bytes that do not match their digest are served whole, their last chunk released rather than held; neither is recorded as verified | `risk_threshold` |
 | `signature_failed` | a Maven `.pom` or `.module` whose signature fails. Weighed from step 5 | `risk_threshold` |
 | `new_package` | the first version was published under 30 days ago | 1 |
 | `new_publisher` | no earlier version was published by this account | 1 |

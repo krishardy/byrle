@@ -190,6 +190,12 @@ present and their score; the verdict is a refusal when the score reaches
       words only when its rule weighs the threshold alone; one reached by a sum is refused
       in the policy's words, naming the rules. An audit line answered `no-strong-digest`
       records `block` where it recorded `allow`, as the signal now weighs in its decision.
+   3. `digest_mismatch`. Done 2026-10-18: raised when a claim job's bytes are not the
+      claim's or the analysis fetch's bytes do not match the digest. Under the threshold,
+      the first is fetched unverified and the second served. The decision also says whether
+      a mismatch found while the body streams would be tolerated, `digest_mismatch` added
+      to the rest staying under the threshold; a tolerated one releases the held chunk, is
+      logged, and is never recorded as verified.
 6. The surprise score for a dropped signature or attestation, the first item #42 names:
    P(unsigned) = (weighted unsigned + 1) / (weighted total + 2) over earlier versions,
    newest weighted most, the signal −log2 P. Its half-life and weight measured on Central's
