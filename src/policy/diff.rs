@@ -1189,6 +1189,29 @@ mod tests {
         assert!(d.moved(), "the score and the threshold moved together");
     }
 
+    /// A half-life that weighs a dropped attestation's line less moves its score: 107 of
+    /// 100 at 16, 98 at 1, a loosening.
+    #[test]
+    fn a_half_life_that_lowers_a_drops_score_is_a_loosening() {
+        let dropped = Facts {
+            provenance: crate::policy::decide::Provenance::Dropped {
+                previous: "4.17.20".to_owned(),
+                history: crate::policy::decide::History(vec![true; 3]),
+            },
+            ..facts()
+        };
+        let d = diff(
+            "version: 1\ncooldown_days: 0\n",
+            "version: 1\ncooldown_days: 0\nprovenance_half_life: 1\n",
+            &dropped,
+        );
+        assert_eq!(
+            (d.from_verdict, d.to_verdict, d.from_score, d.to_score),
+            (Action::Block, Action::Allow, (107, 100), (98, 100))
+        );
+        assert!(d.loosened());
+    }
+
     /// The written policy did not loosen. What happens did, so the gate says so.
     #[test]
     fn a_check_that_stops_being_enforced_is_a_loosening() {

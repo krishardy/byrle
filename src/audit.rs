@@ -143,6 +143,9 @@ pub struct Inputs {
     /// The weight of each check's rule and each signal's, so a moved default replays.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub weights: BTreeMap<String, u32>,
+    /// `provenance_half_life` a dropped attestation's history was weighed at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub half_life: Option<u32>,
 }
 
 impl Inputs {
@@ -165,6 +168,8 @@ impl Inputs {
                 )
                 .map(|rule| (rule.to_owned(), policy.weight_of(rule)))
                 .collect(),
+            half_life: matches!(facts.provenance, Provenance::Dropped { .. })
+                .then_some(policy.provenance_half_life),
         }
     }
 
@@ -686,7 +691,8 @@ pub fn replay(file: &str, log: &str, policies: &[crate::policy::Policy]) -> Repl
         if inputs.build != env!("CARGO_PKG_VERSION") {
             out.other_build += 1;
         }
-        let weighed = policy.with_weights(&inputs.weights);
+        let mut weighed = policy.with_weights(&inputs.weights);
+        weighed.provenance_half_life = inputs.half_life.unwrap_or(policy.provenance_half_life);
         let again = Event::pinned(
             &event.ecosystem,
             &event.name,
@@ -1316,6 +1322,40 @@ not json
             .expect("inputs")
             .remove("weights");
         let replayed = replay("audit.jsonl", &line.to_string(), &[light]);
+        assert_eq!(
+            replayed.differ,
+            [(
+                "audit.jsonl:1".to_owned(),
+                "pkg:npm/lodash@4.17.21: action block now allow".to_owned()
+            )]
+        );
+    }
+
+    /// A dropped attestation's line decides again at the half-life it recorded, not the
+    /// policy's; one with none recorded takes the policy's.
+    #[test]
+    fn a_drop_replays_at_the_half_life_it_recorded() {
+        let sixteen = policy("version: 1\ncooldown_days: 0\n");
+        let one = policy("version: 1\ncooldown_days: 0\nprovenance_half_life: 1\n");
+        let dropped = Facts {
+            provenance: Provenance::Dropped {
+                previous: "4.17.20".to_owned(),
+                history: crate::policy::decide::History(vec![true; 3]),
+            },
+            ..facts()
+        };
+        let mut line: serde_json::Value =
+            serde_json::from_str(&recorded(&sixteen, &dropped)).expect("reads");
+        assert_eq!(line["action"], "block", "{line}");
+        assert_eq!(line["inputs"]["half_life"], 16, "{line}");
+        line["inputs"]["policy_digest"] = one.digest.clone().into();
+        let replayed = replay("audit.jsonl", &line.to_string(), std::slice::from_ref(&one));
+        assert_eq!(replayed.reproduced, 1, "{replayed:?}");
+        line["inputs"]
+            .as_object_mut()
+            .expect("inputs")
+            .remove("half_life");
+        let replayed = replay("audit.jsonl", &line.to_string(), &[one]);
         assert_eq!(
             replayed.differ,
             [(
