@@ -233,9 +233,6 @@ pub fn mirror_for<'a>(mirrors: &'a [Mirror], id: &str) -> Option<&'a Mirror> {
 /// Whether `pattern` takes repository `id` at an https URL off this host, as Central is
 /// and as one a pom declares is assumed to be. A `!id` in the list excludes it.
 fn matches(pattern: &str, id: &str) -> bool {
-    if pattern == "*" || pattern == id {
-        return true;
-    }
     let mut result = false;
     for part in pattern.split(',').map(str::trim) {
         if let Some(excluded) = part.strip_prefix('!').filter(|e| !e.is_empty()) {
@@ -859,6 +856,39 @@ mod tests {
         );
     }
 
+    /// The findings doctor prints come from the files read on this machine.
+    #[test]
+    fn mvn_s_findings_are_of_the_files_it_reads() {
+        let layout = Layout::new("mvn-findings");
+        layout.write(
+            "home/.m2/settings.xml",
+            &star("https://byrle.example/maven/"),
+        );
+        let environment = crate::env::testing::with(&[(HOME_DIR, &layout.home())]);
+        let run = |_: &str, _: &[&str]| Some(layout.version.clone());
+        let machine = Machine {
+            environment: &environment,
+            dir: &layout.project,
+            run: &run,
+        };
+        let details: Vec<String> = mvn_settings(&machine, Some(true))
+            .into_iter()
+            .map(|finding| finding.detail)
+            .collect();
+        assert_eq!(
+            details,
+            [
+                format!(
+                    "read {}",
+                    layout.root.join("home/.m2/settings.xml").display()
+                ),
+                "no <server> `byrle` holds a username and password or an Authorization header, \
+                 so the proxy answers mvn 401"
+                    .to_owned(),
+            ]
+        );
+    }
+
     #[test]
     fn an_unreadable_environment_is_an_error() {
         let layout = Layout::new("mvn-unreadable");
@@ -974,6 +1004,18 @@ mod tests {
                  </password></server> to ~/.m2/settings.xml"
             )
         );
+        let elsewhere = vec![Server {
+            id: "other".to_owned(),
+            ..holding[0].clone()
+        }];
+        let empty = vec![Server {
+            password: String::new(),
+            ..holding[0].clone()
+        }];
+        for servers in [elsewhere, empty] {
+            let read = read_of(central.clone(), servers);
+            assert_eq!(details(&read, Some(true))[1].0, Severity::Problem);
+        }
         let held = read_of(central, holding);
         assert_eq!(
             details(&held, Some(true))[1],
