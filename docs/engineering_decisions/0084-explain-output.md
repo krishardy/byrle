@@ -1,7 +1,9 @@
 # What `byrle explain` prints
 
 - **Number:** 0084
-- **Status:** Implemented. `src/explain.rs`.
+- **Status:** Implemented. `src/explain.rs`. Amended 2026-10-18 by
+  [every-refusal-a-signal](0116-every-refusal-a-signal.md): its signals' weights now add to
+  the risk score a pinned fetch is refused at.
 - **Related:** [policy-tier-resolution](0023-policy-tier-resolution.md)
 
 ## Decision

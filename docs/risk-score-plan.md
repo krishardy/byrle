@@ -164,7 +164,13 @@ present and their score; the verdict is a refusal when the score reaches
       score or threshold, and a weaker verdict as a loosening. The five smoke runs' audit
       outcomes were the same.
    3. The detectors' and advisories' signals in the pinned verdict, after analysis, and
-      the signals and weights in `Inputs`.
+      the signals and weights in `Inputs`. Done 2026-10-18: a pinned fetch reads the intel,
+      builds the signals from the detectors' stored results and the advisories, and
+      decides on their weights with the checks'. A refusal names the signals when the
+      checks alone were under the threshold. The audit line records their rules in
+      `inputs.signals`, and `audit verify` weighs them again; a line written before reads
+      as having none. `explain`'s verdict includes the signals it lists, and shows the
+      score against the threshold.
 4. The metadata filters refuse by the score of what each document says.
 5. Group C as signals, each answered as below when its weight is under the threshold.
 6. The surprise score for a dropped signature or attestation, the first item #42 names:

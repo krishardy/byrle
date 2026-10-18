@@ -5,7 +5,9 @@
   the command adapter), `src/analysis/run/detecting.rs` (running them), `version_detection`
   (migration 0014), measured by `examples/detector_rates.rs`. The metadata heuristics and
   the source comparison moved behind the trait 2026-10-01: `src/analysis/detector/metadata.rs`
-  and `src/analysis/detector/source.rs`, turned into signals by `src/signal.rs`.
+  and `src/analysis/detector/source.rs`, turned into signals by `src/signal.rs`. Amended 2026-10-18 by
+  [every-refusal-a-signal](0116-every-refusal-a-signal.md): its signals' weights now add to
+  the risk score a pinned fetch is refused at.
 - **Related:** [metadata-heuristics](0090-metadata-heuristics.md), [source-diff](0091-source-diff.md),
   [policy-reference](../policy-reference.md#signal_weights), [threat-model](../threat-model.md)
 

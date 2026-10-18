@@ -136,6 +136,9 @@ pub struct Inputs {
     /// [`crate::analysis::attestation::verifier_id`], whose stored results were read too.
     pub verifier: String,
     pub facts: RecordedFacts,
+    /// The rules of the other signals that weighed in the verdict; absent before 2026-10-18.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
 }
 
 impl Inputs {
@@ -148,7 +151,14 @@ impl Inputs {
             reader: crate::analysis::READER.to_owned(),
             verifier: crate::analysis::attestation::verifier_id().to_owned(),
             facts: RecordedFacts::of(facts),
+            signals: Vec::new(),
         }
+    }
+
+    /// With the rules of the signals that weighed in the verdict.
+    pub fn with_signals(mut self, keys: Vec<String>) -> Self {
+        self.signals = keys;
+        self
     }
 }
 
@@ -659,7 +669,8 @@ pub fn replay(file: &str, log: &str, policies: &[crate::policy::Policy]) -> Repl
             &event.ecosystem,
             &event.name,
             version,
-            &crate::policy::decide::decide(policy, &facts, as_of),
+            &crate::policy::decide::decide(policy, &facts, as_of)
+                .with_signals(&inputs.signals, policy),
             &crate::policy::enforce::unenforceable_of(policy, &facts),
         );
         let mut differences = Vec::new();
@@ -1218,6 +1229,41 @@ not json
                 ..Replay::default()
             }
         );
+    }
+
+    /// The signals a line records weigh again, so a verdict they reached replays; a line
+    /// written before they were recorded reads as having none.
+    #[test]
+    fn the_signals_a_line_records_decide_it_again() {
+        let policy = policy(
+            "version: 1\ncooldown_days: 0\nrisk_threshold: 5\nsignal_weights: { near_name: 5 }\n",
+        );
+        let as_of = jiff::civil::date(2026, 9, 13);
+        let keys = vec!["near_name".to_owned()];
+        let event = Event::pinned(
+            "npm",
+            "lodash",
+            "4.17.21",
+            &decide(&policy, &facts(), as_of).with_signals(&keys, &policy),
+            &crate::policy::enforce::unenforceable_of(&policy, &facts()),
+        )
+        .with_inputs(Inputs::of(&policy, &facts(), as_of).with_signals(keys));
+        let log = serde_json::to_string(&event).expect("an event serialises");
+        assert!(log.contains("\"action\":\"block\""), "{log}");
+        assert!(log.contains("\"signals\":[\"near_name\"]"), "{log}");
+        let replayed = replay("audit.jsonl", &log, std::slice::from_ref(&policy));
+        assert_eq!(replayed.reproduced, 1, "{replayed:?}");
+        let before = log.replace(",\"signals\":[\"near_name\"]", "");
+        let replayed = replay("audit.jsonl", &before, &[policy]);
+        assert_eq!(
+            replayed.differ,
+            [(
+                "audit.jsonl:1".to_owned(),
+                "pkg:npm/lodash@4.17.21: action block now allow".to_owned()
+            )]
+        );
+        let unweighed = recorded(&self::policy(REPLAYED), &facts());
+        assert!(!unweighed.contains("\"signals\""), "{unweighed}");
     }
 
     #[test]

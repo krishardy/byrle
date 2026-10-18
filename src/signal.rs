@@ -1,5 +1,5 @@
 //! Signals about a package version: each rule a detector fired, reported in the log, the
-//! audit line and `explain`, and never refused on. Their weights sum to the risk score.
+//! audit line and `explain`. Their weights add to the risk score a version is refused at.
 //!
 //! See docs/engineering_decisions/0092-detectors.md.
 

@@ -181,13 +181,14 @@ pub fn enforced(decision: &Decision, unenforceable: &[Unenforceable]) -> Decisio
 /// `None` for the policy is Stage 1 behaviour: nothing is enforced and everything
 /// serves. That is a distinct state from a policy that allows everything, and the log
 /// should be able to tell them apart. `None` for `intel` is a build with no store, and the
-/// three checks that read advisories are dropped as unenforceable.
+/// three checks that read advisories are dropped as unenforceable. `signals` are the rules
+/// the detectors and the advisories reported, which add to the score.
 pub fn artifact(
     policy: Option<&Policy>,
     record: &PackageRecord,
     times: Option<&super::facts::PublishTimes>,
     intel: Option<&PackageIntel>,
-    provenance: &Provenance,
+    (provenance, signals): (&Provenance, &[String]),
     today: Date,
 ) -> Verdict {
     let Some(policy) = policy else {
@@ -201,7 +202,7 @@ pub fn artifact(
     verdict(
         policy,
         &facts,
-        &enforced(&decide(policy, &facts, today), &dropped),
+        &enforced(&decide(policy, &facts, today), &dropped).with_signals(signals, policy),
     )
 }
 
@@ -210,14 +211,30 @@ fn verdict(policy: &Policy, facts: &Facts, decision: &Decision) -> Verdict {
     if action == Action::Allow {
         return Verdict::Serve;
     }
+    let mut reasons: Vec<String> = decision
+        .reasons()
+        .iter()
+        .map(|r| reason(r, policy, facts, decision.entry))
+        .collect();
+    let weighed: Vec<String> = decision
+        .signals
+        .iter()
+        .filter(|s| s.weight > 0)
+        .map(|s| format!("{} {}", s.key, s.weight))
+        .collect();
+    let checks: u32 = decision.results.iter().map(|r| r.weight).sum();
+    if !weighed.is_empty() && checks < decision.threshold {
+        reasons.push(format!(
+            "signals: {}; risk score {} of {}",
+            weighed.join(", "),
+            decision.score(),
+            decision.threshold
+        ));
+    }
     Verdict::Refuse(Refusal {
         action,
         purl: format!("pkg:{}/{}@{}", facts.ecosystem, facts.name, facts.version),
-        reasons: decision
-            .reasons()
-            .iter()
-            .map(|r| reason(r, policy, facts, decision.entry))
-            .collect(),
+        reasons,
     })
 }
 
@@ -288,6 +305,56 @@ mod tests {
 
     fn loaded(yaml: &str) -> Policy {
         Policy::parse(yaml).expect("policy should load")
+    }
+
+    /// The detectors' signals refuse when their weights reach the threshold together, and
+    /// the refusal names them, as no check did.
+    #[test]
+    fn signals_that_reach_the_threshold_refuse_and_are_named() {
+        let policy = loaded(
+            "version: 1\ncooldown_days: 0\nrisk_threshold: 10\n\
+             signal_weights: { near_name: 6, new_package: 4 }\n",
+        );
+        let decided = |keys: &[&str]| {
+            let keys: Vec<String> = keys.iter().map(|k| (*k).to_owned()).collect();
+            artifact(
+                Some(&policy),
+                &record(),
+                None,
+                None,
+                (&Provenance::Consistent, &keys),
+                TODAY,
+            )
+        };
+        assert_eq!(decided(&["near_name"]), Verdict::Serve);
+        let Verdict::Refuse(refusal) = decided(&["near_name", "new_package"]) else {
+            panic!("6 and 4 reach 10");
+        };
+        assert_eq!(refusal.action, Action::Block);
+        assert_eq!(
+            refusal.reasons,
+            ["signals: near_name 6, new_package 4; risk score 10 of 10"]
+        );
+        let unweighed = loaded(
+            "version: 1\ncooldown_days: 0\nrisk_threshold: 10\n\
+             signal_weights: { near_name: 0, new_package: 10 }\n",
+        );
+        let keys = ["near_name".to_owned(), "new_package".to_owned()];
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&unweighed),
+            &record(),
+            None,
+            None,
+            (&Provenance::Consistent, &keys),
+            TODAY,
+        ) else {
+            panic!("10 reaches 10");
+        };
+        assert_eq!(
+            refusal.reasons,
+            ["signals: new_package 10; risk score 10 of 10"],
+            "a signal weighing nothing is not named"
+        );
     }
 
     /// A store with one advisory for every version.
@@ -431,7 +498,7 @@ mod tests {
             &record(),
             None,
             Some(&exploited(true)),
-            &Provenance::Consistent,
+            (&Provenance::Consistent, &[]),
             TODAY,
         ) else {
             panic!("an exploited advisory must be refused");
@@ -443,7 +510,7 @@ mod tests {
                 &record(),
                 None,
                 Some(&exploited(false)),
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY
             ),
             Verdict::Serve
@@ -458,7 +525,7 @@ mod tests {
             &record(),
             None,
             Some(&malware_everywhere()),
-            &Provenance::Consistent,
+            (&Provenance::Consistent, &[]),
             TODAY,
         ) else {
             panic!("known malware must be refused");
@@ -477,7 +544,7 @@ mod tests {
                 &record(),
                 None,
                 None,
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY
             ),
             Verdict::Serve
@@ -512,7 +579,14 @@ mod tests {
     #[test]
     fn no_policy_at_all_serves_everything() {
         assert_eq!(
-            artifact(None, &record(), None, None, &Provenance::Consistent, TODAY),
+            artifact(
+                None,
+                &record(),
+                None,
+                None,
+                (&Provenance::Consistent, &[]),
+                TODAY
+            ),
             Verdict::Serve
         );
     }
@@ -527,7 +601,7 @@ mod tests {
                 &record(),
                 None,
                 None,
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY
             ),
             Verdict::Serve
@@ -546,7 +620,7 @@ mod tests {
             &record(),
             None,
             None,
-            &Provenance::Consistent,
+            (&Provenance::Consistent, &[]),
             TODAY,
         ) else {
             panic!("a denied version must be refused");
@@ -574,7 +648,7 @@ mod tests {
                 &record(),
                 None,
                 None,
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY
             ),
             Verdict::Serve
@@ -592,7 +666,7 @@ mod tests {
             &r,
             None,
             None,
-            &Provenance::Consistent,
+            (&Provenance::Consistent, &[]),
             TODAY,
         ) else {
             panic!("install scripts must be refused when the policy blocks them");
@@ -607,7 +681,7 @@ mod tests {
                 &r,
                 None,
                 None,
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY
             ),
             Verdict::Serve
@@ -631,7 +705,7 @@ mod tests {
             &r,
             None,
             None,
-            &Provenance::Consistent,
+            (&Provenance::Consistent, &[]),
             TODAY,
         ) else {
             panic!("a version inside the cooldown must be refused on a pinned fetch");
@@ -660,7 +734,7 @@ mod tests {
             &r,
             None,
             None,
-            &Provenance::Consistent,
+            (&Provenance::Consistent, &[]),
             TODAY,
         ) else {
             panic!("2026-09-12 plus 3 days is still ahead of 2026-09-13");
@@ -714,7 +788,7 @@ mod tests {
             &r,
             None,
             None,
-            &Provenance::Consistent,
+            (&Provenance::Consistent, &[]),
             TODAY,
         ) else {
             panic!("must refuse");
@@ -796,7 +870,7 @@ mod tests {
                 &abbreviated(),
                 None,
                 None,
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY
             ),
             Verdict::Serve
@@ -816,7 +890,7 @@ mod tests {
             &abbreviated(),
             None,
             None,
-            &Provenance::Consistent,
+            (&Provenance::Consistent, &[]),
             TODAY,
         ) else {
             panic!("the denial must survive the cooldown being dropped");
@@ -844,7 +918,7 @@ mod tests {
                 &r,
                 None,
                 None,
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY
             ),
             Verdict::Refuse(_)
@@ -863,7 +937,7 @@ mod tests {
                 &abbreviated(),
                 None,
                 None,
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY
             ),
             Verdict::Serve
@@ -899,7 +973,7 @@ mod tests {
                 &r,
                 None,
                 None,
-                &Provenance::Consistent,
+                (&Provenance::Consistent, &[]),
                 TODAY,
             ) else {
                 panic!("a scoped package must be refusable, written as `{spelling}`");

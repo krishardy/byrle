@@ -166,7 +166,7 @@ fn virustotal<L: Fn(&str) -> Option<OsString>>(
             byrle.virustotal.mode = settings.mode.as_str(),
             byrle.virustotal.per_minute = settings.per_minute,
             byrle.virustotal.per_day = settings.per_day,
-            "virustotal on: each artifact's SHA-256 is looked up, a signal that refuses nothing"
+            "virustotal on: each artifact's SHA-256 is looked up, a signal weighed in the risk score"
         ),
         None => info!(byrle.config.variable = %env::VIRUSTOTAL_API_KEY, "virustotal off"),
     }

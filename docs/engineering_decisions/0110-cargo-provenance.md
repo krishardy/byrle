@@ -3,7 +3,9 @@
 - **Number:** 0110
 - **Status:** Measured 2026-10-15. Decided by the user 2026-10-15: `trustpub_data` is read
   as a risk signal. Implemented as the `trustpub` detector:
-  `src/analysis/detector/trustpub.rs`, `src/ecosystem/cargo/trustpub.rs`.
+  `src/analysis/detector/trustpub.rs`, `src/ecosystem/cargo/trustpub.rs`. Amended 2026-10-18 by
+  [every-refusal-a-signal](0116-every-refusal-a-signal.md): its signals' weights now add to
+  the risk score a pinned fetch is refused at.
 - **Related:** [provenance-check](0066-provenance-check.md),
   [pypi-provenance](0061-pypi-provenance.md), [advisory-kinds](0109-advisory-kinds.md),
   [detectors](0092-detectors.md)

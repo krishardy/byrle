@@ -396,11 +396,26 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         times.as_ref(),
         intel.as_ref(),
     );
+    let listing = Listing {
+        records: &metadata.records,
+        record: package,
+        full: full.as_ref(),
+        served: Vec::new(),
+        now: jiff::Timestamp::now(),
+    };
+    let mut found = crate::signal::of_detections(&[built_in(&Metadata, &listing)]);
+    if let Some(intel) = intel.as_ref() {
+        found.extend(crate::signal::of_advisories(
+            &intel.for_version(&facts.ecosystem, &facts.version),
+        ));
+    }
+    let keys: Vec<String> = found.iter().map(crate::signal::Signal::key).collect();
     let as_of = crate::policy::today();
+    let decided = decide::decide(policy, &facts, as_of).with_signals(&keys, policy);
     let mut answer = decision(
         policy,
         &facts,
-        &decide::decide(policy, &facts, as_of),
+        &decided,
         &crate::policy::enforce::unenforceable(
             policy,
             package,
@@ -415,20 +430,7 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
             &intel.for_version(&facts.ecosystem, &facts.version),
         ));
     }
-    let listing = Listing {
-        records: &metadata.records,
-        record: package,
-        full: full.as_ref(),
-        served: Vec::new(),
-        now: jiff::Timestamp::now(),
-    };
-    let mut found = crate::signal::of_detections(&[built_in(&Metadata, &listing)]);
-    if let Some(intel) = intel.as_ref() {
-        found.extend(crate::signal::of_advisories(
-            &intel.for_version(&facts.ecosystem, &facts.version),
-        ));
-    }
-    answer.push_str(&signals(&found, &policy.signal_weights));
+    answer.push_str(&signals(&found, policy, &decided));
     Ok(answer)
 }
 
@@ -458,23 +460,24 @@ fn advisories(records: &[&Record]) -> String {
     out
 }
 
-/// The metadata heuristics' signals, which refuse nothing, under the verdict, read from the full
-/// packument when there is one. `explain` holds no served names, so no near name.
-/// `weights` are the policy's, which give the risk score.
-fn signals(signals: &[crate::signal::Signal], weights: &crate::policy::SignalWeights) -> String {
+/// The metadata heuristics' and advisories' signals under the verdict, each with its weight
+/// under `policy`, and the score `decided` sums them and the checks to. `explain` holds no
+/// served names, so no near name.
+fn signals(signals: &[crate::signal::Signal], policy: &Policy, decided: &Decision) -> String {
     if signals.is_empty() {
         return "  signals: none\n".to_owned();
     }
-    let mut out = "  signals, which refuse nothing:\n".to_owned();
+    let mut out = "  signals, each adding its weight to the risk score:\n".to_owned();
     for signal in signals {
         out.push_str(&format!(
             "    {signal} (weight {})\n",
-            signal.weight(weights)
+            policy.weight_of(&signal.key())
         ));
     }
     out.push_str(&format!(
-        "  risk score: {}\n",
-        crate::signal::score(signals, weights)
+        "  risk score: {} of {}\n",
+        decided.score(),
+        decided.threshold
     ));
     out
 }
@@ -592,7 +595,7 @@ mod run_tests {
         );
         assert!(
             answered.answer.ends_with(
-                "  signals, which refuse nothing:\n    new package: first published 2 days ago (weight 1)\n  risk score: 1\n"
+                "  signals, each adding its weight to the risk score:\n    new package: first published 2 days ago (weight 1)\n  risk score: 101 of 100\n"
             ),
             "the full packument's publish time: {}",
             answered.answer
@@ -603,22 +606,28 @@ mod run_tests {
     #[test]
     fn each_signal_gets_a_line_under_the_verdict() {
         use crate::signal::Signal;
-        let weights = crate::policy::SignalWeights::of_pairs(&[("no_repository", 3)]);
+        let policy = Policy::parse("version: 1\nsignal_weights: { no_repository: 3 }\n").unwrap();
         let metadata = |rule: &str, detail: &str| Signal {
             detector: "metadata".to_owned(),
             rule: rule.to_owned(),
             detail: detail.to_owned(),
         };
-        assert_eq!(signals(&[], &weights), "  signals: none\n");
+        let found = [
+            metadata("no_repository", "the metadata names none"),
+            metadata("new_package", "first published 1 day ago"),
+        ];
+        let keys: Vec<String> = found.iter().map(Signal::key).collect();
+        let decided = Decision {
+            results: Vec::new(),
+            entry: None,
+            threshold: 100,
+            signals: Vec::new(),
+        }
+        .with_signals(&keys, &policy);
+        assert_eq!(signals(&[], &policy, &decided), "  signals: none\n");
         assert_eq!(
-            signals(
-                &[
-                    metadata("no_repository", "the metadata names none"),
-                    metadata("new_package", "first published 1 day ago")
-                ],
-                &weights
-            ),
-            "  signals, which refuse nothing:\n    no repository: the metadata names none (weight 3)\n    new package: first published 1 day ago (weight 1)\n  risk score: 4\n"
+            signals(&found, &policy, &decided),
+            "  signals, each adding its weight to the risk score:\n    no repository: the metadata names none (weight 3)\n    new package: first published 1 day ago (weight 1)\n  risk score: 4 of 100\n"
         );
     }
 

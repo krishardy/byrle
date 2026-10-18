@@ -5,7 +5,9 @@
   `metadata` detector since 2026-10-01 ([detectors](0092-detectors.md)),
   `Deciding::dated` and `negotiate` in `src/proxy.rs`,
   `RecordStore::metadata` in `src/store.rs`, logged and audited by `decide_artifact` in
-  `src/proxy.rs`, printed by `byrle explain`.
+  `src/proxy.rs`, printed by `byrle explain`. Amended 2026-10-18 by
+  [every-refusal-a-signal](0116-every-refusal-a-signal.md): its signals' weights now add to
+  the risk score a pinned fetch is refused at.
 - **Related:** [audit-log](0087-audit-log.md), [explain-output](0084-explain-output.md),
   [watcher](0089-watcher.md)
 

@@ -206,7 +206,14 @@ pub struct Result {
     pub weight: u32,
 }
 
-/// Every check, and the threshold their weights are refused at.
+/// A signal other than a check's, as `signal_weights` names it, and what it weighs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Weighed {
+    pub key: String,
+    pub weight: u32,
+}
+
+/// Every check, the other signals present, and the threshold their weights are refused at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
     pub results: Vec<Result>,
@@ -214,6 +221,8 @@ pub struct Decision {
     pub entry: Option<usize>,
     /// The score a package is refused at.
     pub threshold: u32,
+    /// The detectors' and advisories' signals, each rule once.
+    pub signals: Vec<Weighed>,
 }
 
 /// The score refused at when the policy sets none, over the 95 the other rules can sum to.
@@ -238,9 +247,23 @@ pub const RULES: [&str; 11] = [
 ];
 
 impl Decision {
-    /// The weights of the checks that failed, summed.
+    /// The weights of the checks that failed and of the other signals, summed.
     pub fn score(&self) -> u32 {
-        self.results.iter().map(|r| r.weight).sum()
+        let checks: u32 = self.results.iter().map(|r| r.weight).sum();
+        checks + self.signals.iter().map(|s| s.weight).sum::<u32>()
+    }
+
+    /// With the signals `keys` name, each weighed by `policy`, each rule once.
+    pub fn with_signals(mut self, keys: &[String], policy: &Policy) -> Self {
+        for key in keys {
+            if self.signals.iter().all(|s| &s.key != key) {
+                self.signals.push(Weighed {
+                    key: key.clone(),
+                    weight: policy.weight_of(key),
+                });
+            }
+        }
+        self
     }
 
     /// Allow under the threshold. At it, quarantine when the score without the signals
@@ -319,6 +342,7 @@ pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
         results,
         entry,
         threshold,
+        signals: Vec::new(),
     }
 }
 
@@ -599,6 +623,7 @@ mod tests {
                 .collect(),
             entry: None,
             threshold,
+            signals: Vec::new(),
         }
     }
 
@@ -657,6 +682,38 @@ mod tests {
         assert_eq!((two.score(), two.action()), (10, Action::Block));
         assert_eq!(two.reasons().len(), 2);
         assert_eq!(weighed(&[(Action::Block, 0)], 10).reasons().len(), 0);
+    }
+
+    /// The other signals add to the score, each rule once, weighed by the policy.
+    #[test]
+    fn the_other_signals_add_their_weights_once_each() {
+        let policy = Policy::parse("version: 1\nsignal_weights: { near_name: 30 }\n").unwrap();
+        let keys = [
+            "near_name".to_owned(),
+            "near_name".to_owned(),
+            "advisory_vulnerability".to_owned(),
+        ];
+        let decided = weighed(&[(Action::Block, 66)], 100).with_signals(&keys, &policy);
+        assert_eq!(
+            decided.signals,
+            [
+                Weighed {
+                    key: "near_name".to_owned(),
+                    weight: 30
+                },
+                Weighed {
+                    key: "advisory_vulnerability".to_owned(),
+                    weight: 4
+                },
+            ]
+        );
+        assert_eq!((decided.score(), decided.action()), (100, Action::Block));
+        let lapsing = weighed(&[(Action::Quarantine, 66)], 100).with_signals(&keys, &policy);
+        assert_eq!(
+            lapsing.action(),
+            Action::Quarantine,
+            "the signals do not lapse"
+        );
     }
 
     /// A package held only by what lapses on its own is quarantined, not blocked.

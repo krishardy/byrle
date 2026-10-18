@@ -3,7 +3,9 @@
 - **Number:** 0104
 - **Status:** Implemented 2026-10-13, decided with the user 2026-10-12. TODO Ad-hoc #31.
   `src/analysis/virustotal.rs`, `src/analysis/run/virustotal.rs`,
-  `src/analysis/detector/virustotal.rs`, `migrations/0017_artifact_virustotal.sql`.
+  `src/analysis/detector/virustotal.rs`, `migrations/0017_artifact_virustotal.sql`. Amended 2026-10-18 by
+  [every-refusal-a-signal](0116-every-refusal-a-signal.md): its signals' weights now add to
+  the risk score a pinned fetch is refused at.
 - **Related:** [detectors](0092-detectors.md), [source-diff](0091-source-diff.md),
   [artifact-analysis-store](0063-artifact-analysis-store.md), [threat-model](../threat-model.md)
 

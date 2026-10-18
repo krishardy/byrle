@@ -1502,6 +1502,7 @@ mod tests {
             results: Vec::new(),
             entry: None,
             threshold: crate::policy::decide::DEFAULT_RISK_THRESHOLD,
+            signals: Vec::new(),
         };
         assert_eq!(
             shown(&decision, &unread, Check::InstallScripts),
@@ -1516,6 +1517,7 @@ mod tests {
             results: Vec::new(),
             entry: None,
             threshold: crate::policy::decide::DEFAULT_RISK_THRESHOLD,
+            signals: Vec::new(),
         };
 
         assert_eq!(shown(&empty, &[], Check::Denials), Shown::Unenforced);

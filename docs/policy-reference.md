@@ -186,14 +186,17 @@ The same advisory scored twice is refused.
 
 What each kind of signal adds to a version's risk score. The score is the sum of the weights
 of the kinds present, each kind once however often it fires. A version is refused when the
-weights of the checks that failed sum to `risk_threshold`. Each check weighs the threshold
+weights of the checks that failed, and of the other signals present, sum to `risk_threshold`. Each check weighs the threshold
 unless weighed here, so it refuses alone, as before scores. A lower weight is a loosening,
 which `byrle policy diff` reports. A weight on a check its setting turns off, such as
 `install_scripts` under `install_scripts: allow`, is refused, as it would never be added.
 
-The other rules' weights are logged, written to the audit line as `risk_score`, and printed
-by `explain`, and refuse nothing yet: [risk-score-plan](risk-score-plan.md) step 3c adds them
-to the verdict.
+The other rules' weights add to the same score on a pinned fetch, from the detectors'
+results stored by then and the advisories against the version, and the refusal names them
+when the checks alone would not have refused. With their defaults they sum to at most 95, so
+they refuse only with a check, or with weights the policy raises. A metadata document is
+filtered on the checks alone. The audit line records each rule in its `inputs`, so `byrle
+audit verify` weighs them again.
 
 | Key | Signal | Default |
 |---|---|---|

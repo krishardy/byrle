@@ -1458,6 +1458,13 @@ struct ArtifactFetch {
     manifest: Option<ecosystem::Claim>,
 }
 
+/// What [`Deciding::refusal`] read and decided: the intel, the refusal, the signals in it.
+struct Weighing {
+    intel: Option<PackageIntel>,
+    refusal: Option<enforce::Refusal>,
+    signals: Vec<Signal>,
+}
+
 /// Look up the record for an artifact GET, decide on it before a byte is fetched, and
 /// audit the answer.
 /// `request`: the artifact the client asked for.
@@ -1502,8 +1509,8 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         state,
     } = deciding.analysed(&record, &fetch, times.as_ref()).await;
     let today = crate::policy::today();
-    let (intel, refusal) = match deciding
-        .refusal(&record, times.as_ref(), &provenance, today)
+    let weighing = match deciding
+        .refusal(&record, (times.as_ref(), &provenance), &detections, today)
         .await
     {
         Ok(decided) => decided,
@@ -1515,7 +1522,8 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             return ArtifactStep::Answer(unavailable.response());
         }
     };
-    let signals = deciding.signals(&detections, &record, intel.as_ref());
+    let (intel, refusal, signals) = (weighing.intel, weighing.refusal, weighing.signals);
+    deciding.report_signals(&signals);
     if sourced.is_none() {
         deciding.compare_source(&described, &fetch, refusal.as_ref());
     }
@@ -1659,7 +1667,7 @@ impl<'a> Deciding<'a> {
             .collect()
     }
 
-    /// The signals `detections` report and the advisories against `record`, logged when any.
+    /// The signals `detections` report and the advisories against `record`.
     fn signals(
         &self,
         detections: &[(String, crate::analysis::detector::Detection)],
@@ -1673,19 +1681,24 @@ impl<'a> Deciding<'a> {
                 &intel.for_version(key.ecosystem().as_str(), record.package.version()),
             ));
         }
-        if !signals.is_empty() {
-            let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
-            let weights = self
-                .proxy
-                .config
-                .policy
-                .as_deref()
-                .map(|policy| policy.signal_weights.clone())
-                .unwrap_or_default();
-            let score = crate::signal::score(&signals, &weights);
-            warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), byrle.package.purl = %self.purl, byrle.signals = ?found, byrle.risk_score = score, "signals reported; they refuse nothing");
-        }
         signals
+    }
+
+    /// Log `signals` with what they weigh under the policy, when there are any.
+    fn report_signals(&self, signals: &[Signal]) {
+        if signals.is_empty() {
+            return;
+        }
+        let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
+        let weights = self
+            .proxy
+            .config
+            .policy
+            .as_deref()
+            .map(|policy| policy.signal_weights.clone())
+            .unwrap_or_default();
+        let score = crate::signal::score(signals, &weights);
+        warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), byrle.package.purl = %self.purl, byrle.signals = ?found, byrle.risk_score = score, "signals reported, each adding its weight to the risk score");
     }
 
     /// What each detector found about `record`'s version when it ran before, by detector name.
@@ -1806,29 +1819,35 @@ impl<'a> Deciding<'a> {
         }
     }
 
-    /// The intel the policy reads for this package, and the policy's refusal of `record`
-    /// with its publish `times` and `provenance`, as of `today`.
-    /// Errors with why the intel store cannot answer.
+    /// The intel the policy reads for this package, the signals `detections` and it report,
+    /// and the policy's refusal of `record` with its publish `times` and `provenance`, as of
+    /// `today`. Errors with why the intel store cannot answer.
     async fn refusal(
         &self,
         record: &PackageRecord,
-        times: Option<&facts::PublishTimes>,
-        provenance: &Provenance,
+        (times, provenance): (Option<&facts::PublishTimes>, &Provenance),
+        detections: &[(String, crate::analysis::detector::Detection)],
         today: jiff::civil::Date,
-    ) -> Result<(Option<PackageIntel>, Option<enforce::Refusal>), NotReady> {
+    ) -> Result<Weighing, NotReady> {
         let intel = intel_for(self.proxy, self.request.key, self.request.path).await?;
+        let signals = self.signals(detections, record, intel.as_ref());
+        let keys: Vec<String> = signals.iter().map(Signal::key).collect();
         let refusal = match enforce::artifact(
             self.proxy.config.policy.as_deref(),
             record,
             times,
             intel.as_ref(),
-            provenance,
+            (provenance, &keys),
             today,
         ) {
             enforce::Verdict::Refuse(refusal) => Some(refusal),
             enforce::Verdict::Serve => None,
         };
-        Ok((intel, refusal))
+        Ok(Weighing {
+            intel,
+            refusal,
+            signals,
+        })
     }
 
     /// The record for the requested file, from the metadata held or fetched now.
@@ -2749,17 +2768,18 @@ fn pinned_line(
     if let Some(intel) = intel {
         facts = facts.with_intel(intel);
     }
+    let keys: Vec<String> = signals.iter().map(Signal::key).collect();
     Some(
         audit::Event::pinned(
             &facts.ecosystem,
             &facts.name,
             &facts.version,
-            &crate::policy::decide::decide(policy, &facts, today),
+            &crate::policy::decide::decide(policy, &facts, today).with_signals(&keys, policy),
             &enforce::unenforceable(policy, record, times, facts.intel, &facts.provenance),
         )
         .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
         .answered(answered)
-        .with_inputs(audit::Inputs::of(policy, &facts, today))
+        .with_inputs(audit::Inputs::of(policy, &facts, today).with_signals(keys))
         .with_signals(signals, &policy.signal_weights)
         .with_account(account)
         .with_repository(at),
@@ -3999,13 +4019,13 @@ impl Proxy {
             let refusal = deciding
                 .refusal(
                     &analysed.record,
-                    dated.times.as_ref(),
-                    &analysed.provenance,
+                    (dated.times.as_ref(), &analysed.provenance),
+                    &[],
                     crate::policy::today(),
                 )
                 .await
                 .ok()
-                .and_then(|(_, refusal)| refusal);
+                .and_then(|weighing| weighing.refusal);
             if sourced.is_none() {
                 deciding.compare_source(dated.describing(record), &fetch, refusal.as_ref());
             }
@@ -4244,7 +4264,7 @@ fn policy_refused_versions(
     for (record, previous) in metadata.records.iter().zip(&predecessors) {
         let provenance = attestation::from_metadata(record, previous);
         let enforce::Verdict::Refuse(refusal) =
-            enforce::artifact(Some(policy), record, None, intel, &provenance, today)
+            enforce::artifact(Some(policy), record, None, intel, (&provenance, &[]), today)
         else {
             continue;
         };
@@ -12006,6 +12026,41 @@ mod tests {
             1,
             "an answer not due is not asked again"
         );
+    }
+
+    /// Signals the policy weighs to the threshold refuse the download that reports them, and
+    /// the refusal names them with the score.
+    #[tokio::test]
+    async fn signals_weighed_to_the_threshold_refuse_the_download() {
+        let policy = format!(
+            "{SOURCE_POLICY}signal_weights: {{ source_differing: 60, source_install_files: 40 }}\n"
+        );
+        let (proxy, analyser, path, packument) = sourcing("source-refuses", &policy, vec![]).await;
+        hold_document(
+            &proxy,
+            packument.to_string().as_bytes(),
+            crate::record::DocumentDetail::Full,
+        );
+        let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            analyser.sources_ended(1),
+        )
+        .await
+        .expect("the comparison ends");
+        let (status, body) = refused(pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            body.contains("source_install_files 40, source_differing 60; risk score 101 of 100"),
+            "{body}"
+        );
+        let lines: Vec<audit::Event> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines[1].action, "block");
+        assert_eq!(lines[1].answered, Some(audit::Answered::Refused));
     }
 
     /// A decision starts the comparison without waiting for it, and a later one reports it,
