@@ -682,6 +682,7 @@ mod tests {
         let refused = super::super::decide::Result {
             check: Check::CooldownDays,
             outcome: Outcome::Failed(Action::Quarantine),
+            weight: super::super::decide::DEFAULT_RISK_THRESHOLD,
         };
         assert_eq!(
             reason(
@@ -916,7 +917,11 @@ mod tests {
             deprecated: Some(String::new()),
             ..Facts::from_record(&record())
         };
-        let result = |check, outcome| crate::policy::decide::Result { check, outcome };
+        let result = |check, outcome| crate::policy::decide::Result {
+            check,
+            outcome,
+            weight: crate::policy::decide::DEFAULT_RISK_THRESHOLD,
+        };
         assert_eq!(
             reason(
                 &result(Check::Deprecated, Outcome::Failed(Action::Block)),

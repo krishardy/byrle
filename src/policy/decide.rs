@@ -1,7 +1,6 @@
 //! Judging one package against a policy. Every check runs and appends one result to a
-//! decision vector, and the disposition is the strongest action in it.
-//!
-//! See docs/engineering_decisions/0023-policy-tier-resolution.md.
+//! decision vector, a failed check a signal with a weight, and the package is refused when
+//! the weights sum to the threshold. See docs/engineering_decisions/0116-every-refusal-a-signal.md.
 
 use super::merge::{self, Rule};
 use super::selector::Canonical;
@@ -185,29 +184,52 @@ impl Outcome {
     }
 }
 
-/// One check and what it decided.
+/// One check, what it decided, and what it adds to the risk score.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Result {
     pub check: Check,
     pub outcome: Outcome,
+    /// The weight of its signal when it failed, else 0.
+    pub weight: u32,
 }
 
-/// Every check, and the disposition taken from them.
+/// Every check, and the threshold their weights are refused at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
     pub results: Vec<Result>,
     /// The `packages` entry that applied, if any, whether or not it excused anything.
     pub entry: Option<usize>,
+    /// The score a package is refused at.
+    pub threshold: u32,
 }
 
+/// The score a package is refused at, when the policy sets none.
+pub const DEFAULT_RISK_THRESHOLD: u32 = 100;
+
 impl Decision {
-    /// The strongest action in the vector, by `Action::strength`.
+    /// The weights of the checks that failed, summed.
+    pub fn score(&self) -> u32 {
+        self.results.iter().map(|r| r.weight).sum()
+    }
+
+    /// Allow under the threshold. At it, quarantine when the score without the signals
+    /// that lapse on their own is under it, as only those hold the package; else block.
     pub fn action(&self) -> Action {
-        self.results
+        let score = self.score();
+        if score < self.threshold {
+            return Action::Allow;
+        }
+        let lapsing: u32 = self
+            .results
             .iter()
-            .map(|r| r.outcome.action())
-            .max_by_key(|a| a.strength())
-            .unwrap_or(Action::Allow)
+            .filter(|r| r.outcome.action() == Action::Quarantine)
+            .map(|r| r.weight)
+            .sum();
+        if score - lapsing < self.threshold {
+            Action::Quarantine
+        } else {
+            Action::Block
+        }
     }
 
     /// Whether the package is delivered.
@@ -218,11 +240,7 @@ impl Decision {
     /// The checks that decided against the package, strongest first. What `explain` leads
     /// with and what a refusal says.
     pub fn reasons(&self) -> Vec<&Result> {
-        let mut reasons: Vec<&Result> = self
-            .results
-            .iter()
-            .filter(|r| r.outcome.action() != Action::Allow)
-            .collect();
+        let mut reasons: Vec<&Result> = self.results.iter().filter(|r| r.weight > 0).collect();
         reasons.sort_by_key(|r| std::cmp::Reverse(r.outcome.action().strength()));
         reasons
     }
@@ -252,15 +270,33 @@ pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
     let selectors = policy.selectors();
     let entry = most_specific_match(policy, &selectors, facts, as_of);
 
+    let threshold = DEFAULT_RISK_THRESHOLD;
     let results = Check::ALL
         .iter()
-        .map(|&check| Result {
-            check,
-            outcome: run(policy, facts, check, entry, as_of),
+        .map(|&check| {
+            let outcome = run(policy, facts, check, entry, as_of);
+            let weight = weight(&outcome, threshold);
+            Result {
+                check,
+                outcome,
+                weight,
+            }
         })
         .collect();
 
-    Decision { results, entry }
+    Decision {
+        results,
+        entry,
+        threshold,
+    }
+}
+
+/// What a check's signal weighs: the threshold when it failed, so it refuses alone.
+fn weight(outcome: &Outcome, threshold: u32) -> u32 {
+    match outcome {
+        Outcome::Failed(action) if *action != Action::Allow => threshold,
+        _ => 0,
+    }
 }
 
 /// The wait that applies to a package: the exception's where it sets one, else the global
@@ -518,6 +554,63 @@ mod tests {
     use jiff::civil::date;
 
     const TODAY: Date = date(2026, 9, 12);
+
+    /// A decision of `failed`, each a check's action and its signal's weight, at `threshold`.
+    fn weighed(failed: &[(Action, u32)], threshold: u32) -> Decision {
+        Decision {
+            results: failed
+                .iter()
+                .map(|(action, weight)| Result {
+                    check: Check::MaxCvss,
+                    outcome: Outcome::Failed(*action),
+                    weight: *weight,
+                })
+                .collect(),
+            entry: None,
+            threshold,
+        }
+    }
+
+    /// A score at the threshold refuses, and one under it serves.
+    #[test]
+    fn a_package_is_refused_when_its_weights_reach_the_threshold() {
+        assert_eq!(weighed(&[(Action::Block, 9)], 10).action(), Action::Allow);
+        assert_eq!(weighed(&[(Action::Block, 10)], 10).action(), Action::Block);
+        let two = weighed(&[(Action::Block, 6), (Action::Block, 4)], 10);
+        assert_eq!((two.score(), two.action()), (10, Action::Block));
+        assert_eq!(two.reasons().len(), 2);
+        assert_eq!(weighed(&[(Action::Block, 0)], 10).reasons().len(), 0);
+    }
+
+    /// A package held only by what lapses on its own is quarantined, not blocked.
+    #[test]
+    fn a_score_that_needs_a_lapsing_signal_quarantines() {
+        let held = weighed(&[(Action::Quarantine, 10)], 10);
+        assert_eq!(held.action(), Action::Quarantine);
+        let both = weighed(&[(Action::Quarantine, 5), (Action::Block, 5)], 10);
+        assert_eq!(
+            both.action(),
+            Action::Quarantine,
+            "it is served once the cooldown lapses"
+        );
+        let blocked = weighed(&[(Action::Quarantine, 5), (Action::Block, 10)], 10);
+        assert_eq!(blocked.action(), Action::Block);
+    }
+
+    /// Every failed check weighs the threshold, so it refuses alone, as a check did before
+    /// scores. A failed `allow` weighs nothing.
+    #[test]
+    fn a_failed_check_weighs_the_threshold() {
+        assert_eq!(weight(&Outcome::Failed(Action::Block), 7), 7);
+        assert_eq!(weight(&Outcome::Failed(Action::Quarantine), 7), 7);
+        assert_eq!(weight(&Outcome::Failed(Action::Allow), 7), 0);
+        assert_eq!(weight(&Outcome::Passed, 7), 0);
+        let excepted = Outcome::Excepted {
+            entry: 0,
+            action: Action::Block,
+        };
+        assert_eq!(weight(&excepted, 7), 0);
+    }
 
     fn policy(body: &str) -> Policy {
         Policy::parse(&format!("version: 1\n{body}")).expect("fixture should parse")

@@ -1426,6 +1426,7 @@ mod tests {
         let decision = Decision {
             results: Vec::new(),
             entry: None,
+            threshold: crate::policy::decide::DEFAULT_RISK_THRESHOLD,
         };
         assert_eq!(
             shown(&decision, &unread, Check::InstallScripts),
@@ -1439,6 +1440,7 @@ mod tests {
         let empty = Decision {
             results: Vec::new(),
             entry: None,
+            threshold: crate::policy::decide::DEFAULT_RISK_THRESHOLD,
         };
 
         assert_eq!(shown(&empty, &[], Check::Denials), Shown::Unenforced);
