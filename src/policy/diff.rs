@@ -1175,11 +1175,12 @@ mod tests {
             assert!(back.tightened() && !back.loosened());
             let mut report = Report::default();
             report.push(d);
+            let rendered = report.render();
             assert!(
-                report
-                    .render()
-                    .contains("    score             100 of 100 -> ")
+                rendered.contains("    score             100 of 100 -> "),
+                "{rendered}"
             );
+            assert!(rendered.contains("      1  score LOOSER\n"), "{rendered}");
         }
         let raised = decided(&format!("{denied}risk_threshold: 200\n"), &facts());
         let d = package("pkg:npm/lodash@4.17.21", (&from, &[]), (&raised, &[]));
