@@ -7,11 +7,23 @@ settings
   yanked           block
   deprecated       allow
   provenance       block, over 7 days
+  risk_threshold   100
   denials          0
   packages         0
   advisory_scores  0
 
 signal weights, for the risk score
+  denied                       100
+  known_malware                100
+  cooldown                     100
+  kev                          100
+  max_cvss                     100
+  install_scripts              100
+  yanked                       100
+  deprecated                   100
+  provenance_unverified        100
+  provenance_dropped           100
+  provenance_identity_changed  100
   new_package                  1
   new_publisher                1
   no_repository                1
@@ -51,11 +63,23 @@ settings
   yanked           block
   deprecated       allow
   provenance       block, over 7 days
+  risk_threshold   100
   denials          0
   packages         0
   advisory_scores  0
 
 signal weights, for the risk score
+  denied                       100
+  known_malware                100
+  cooldown                     100
+  kev                          100
+  max_cvss                     100
+  install_scripts              100
+  yanked                       100
+  deprecated                   100
+  provenance_unverified        100
+  provenance_dropped           100
+  provenance_identity_changed  100
   new_package                  1
   new_publisher                1
   no_repository                1
@@ -95,11 +119,23 @@ settings
   yanked           block
   deprecated       allow
   provenance       block, over 7 days
+  risk_threshold   100
   denials          4
   packages         5
   advisory_scores  0
 
 signal weights, for the risk score
+  denied                       100
+  known_malware                100
+  cooldown                     100
+  kev                          100
+  max_cvss                     100
+  install_scripts              100
+  yanked                       100
+  deprecated                   100
+  provenance_unverified        100
+  provenance_dropped           100
+  provenance_identity_changed  100
   new_package                  1
   new_publisher                1
   no_repository                1
@@ -149,11 +185,23 @@ settings
   yanked           block
   deprecated       allow
   provenance       block, over 7 days
+  risk_threshold   100
   denials          4
   packages         5
   advisory_scores  0
 
 signal weights, for the risk score
+  denied                       100
+  known_malware                100
+  cooldown                     100
+  kev                          100
+  max_cvss                     100
+  install_scripts              100
+  yanked                       100
+  deprecated                   100
+  provenance_unverified        100
+  provenance_dropped           100
+  provenance_identity_changed  100
   new_package                  1
   new_publisher                1
   no_repository                1

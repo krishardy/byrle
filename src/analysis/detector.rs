@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// The detectors whose rules a policy may weight, and those rules.
-pub const KNOWN: [(&str, &[&str]); 7] = [
+pub const KNOWN: [(&str, &[&str]); 8] = [
+    (crate::policy::decide::NAME, &crate::policy::decide::RULES),
     (metadata::NAME, &metadata::RULES),
     (crate::signal::ADVISORY, &crate::signal::ADVISORY_RULES),
     (source::NAME, &source::RULES),
@@ -35,7 +36,8 @@ pub const KNOWN: [(&str, &[&str]); 7] = [
 ];
 
 /// The detectors built in, whose rules a policy names without the detector's name.
-pub const BUILT_IN: [&str; 6] = [
+pub const BUILT_IN: [&str; 7] = [
+    crate::policy::decide::NAME,
     metadata::NAME,
     source::NAME,
     virustotal::NAME,
@@ -45,18 +47,21 @@ pub const BUILT_IN: [&str; 6] = [
 ];
 
 /// The rules of the detectors built in, as a policy names them.
-pub const BUILT_IN_RULES: [&str; 18] = joined(
-    &joined::<13>(
-        &joined::<11>(
-            &joined::<9>(
-                &joined::<8>(&metadata::RULES, &source::RULES),
-                &virustotal::RULES,
+pub const BUILT_IN_RULES: [&str; 29] = joined(
+    &crate::policy::decide::RULES,
+    &joined::<18>(
+        &joined::<13>(
+            &joined::<11>(
+                &joined::<9>(
+                    &joined::<8>(&metadata::RULES, &source::RULES),
+                    &virustotal::RULES,
+                ),
+                &trustpub::RULES,
             ),
-            &trustpub::RULES,
+            &signing::RULES,
         ),
-        &signing::RULES,
+        &crate::signal::ADVISORY_RULES,
     ),
-    &crate::signal::ADVISORY_RULES,
 );
 
 /// `a` then `b`, in an array of their length together.
@@ -506,12 +511,14 @@ esac
         assert!(!knows("metadata.new_package"));
         assert_eq!(key("source", "source_differing"), "source_differing");
         assert_eq!(key("guarddog", "bundled_binary"), "guarddog.bundled_binary");
-        assert_eq!(BUILT_IN_RULES[..4], metadata::RULES);
-        assert_eq!(BUILT_IN_RULES[4..8], source::RULES);
-        assert_eq!(BUILT_IN_RULES[8..9], virustotal::RULES);
-        assert_eq!(BUILT_IN_RULES[9..11], trustpub::RULES);
-        assert_eq!(BUILT_IN_RULES[11..13], signing::RULES);
-        assert_eq!(BUILT_IN_RULES[13..], crate::signal::ADVISORY_RULES);
+        assert_eq!(BUILT_IN_RULES[..11], crate::policy::decide::RULES);
+        assert_eq!(BUILT_IN_RULES[11..15], metadata::RULES);
+        assert_eq!(BUILT_IN_RULES[15..19], source::RULES);
+        assert_eq!(BUILT_IN_RULES[19..20], virustotal::RULES);
+        assert_eq!(BUILT_IN_RULES[20..22], trustpub::RULES);
+        assert_eq!(BUILT_IN_RULES[22..24], signing::RULES);
+        assert_eq!(BUILT_IN_RULES[24..], crate::signal::ADVISORY_RULES);
+        assert!(knows("provenance_dropped"), "a check's rule is built in");
         assert!(knows("signing_key_new"));
         assert!(knows("virustotal_detected"));
         assert!(knows("trustpub_dropped"));

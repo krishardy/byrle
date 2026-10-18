@@ -42,6 +42,9 @@ fn default_cooldown_days() -> u32 {
 fn default_provenance_window_days() -> u32 {
     DEFAULT_PROVENANCE_WINDOW_DAYS
 }
+fn default_risk_threshold() -> u32 {
+    decide::DEFAULT_RISK_THRESHOLD
+}
 fn default_max_cvss() -> f64 {
     DEFAULT_MAX_CVSS
 }
@@ -107,6 +110,10 @@ pub enum PolicyError {
         first: String,
         advisory_id: String,
     },
+    /// `risk_threshold` is 0, at which every version would be refused.
+    ZeroThreshold,
+    /// `signal_weights` weighs the rule of a check `setting` turns off.
+    WeighedButAllowed { setting: &'static str, rule: String },
 }
 
 impl fmt::Display for PolicyError {
@@ -160,6 +167,16 @@ impl fmt::Display for PolicyError {
                 f,
                 "{at} scores `{advisory_id}`, which {first} already scores. One advisory \
                  has one score"
+            ),
+            Self::ZeroThreshold => write!(
+                f,
+                "risk_threshold is 0, at which every version would be refused; it is at \
+                 least 1"
+            ),
+            Self::WeighedButAllowed { setting, rule } => write!(
+                f,
+                "signal_weights weighs `{rule}`, and `{setting}: allow` turns that check off, \
+                 so the weight is never added. Set `{setting}: block` to weigh it"
             ),
         }
     }
@@ -246,10 +263,13 @@ pub const DEFAULT_SIGNAL_WEIGHT: u32 = 1;
 impl SignalWeights {
     /// The weight of the rule `key` names, its [`crate::signal::default_weight`] unless set.
     pub fn of(&self, key: &str) -> u32 {
-        self.0
-            .get(key)
-            .copied()
+        self.set(key)
             .unwrap_or_else(|| crate::signal::default_weight(key))
+    }
+
+    /// The weight the policy gives the rule `key`, `None` when it gives none.
+    pub fn set(&self, key: &str) -> Option<u32> {
+        self.0.get(key).copied()
     }
 
     /// Weights set as `pairs`, of a key and its weight, for a test.
@@ -302,9 +322,12 @@ pub struct Policy {
     /// Scores for advisories the streams gave none, which `max_cvss` otherwise refuses.
     #[serde(default)]
     pub advisory_scores: Vec<AdvisoryScore>,
-    /// What each kind of signal adds to a version's risk score, which no verdict reads.
+    /// What each kind of signal adds to a version's risk score.
     #[serde(default)]
     pub signal_weights: SignalWeights,
+    /// The risk score a version is refused at.
+    #[serde(default = "default_risk_threshold")]
+    pub risk_threshold: u32,
 
     /// `sha256:` and the hex digest of the file's bytes, for the audit log. Not a key.
     #[serde(skip)]
@@ -334,6 +357,7 @@ impl Policy {
         policy.check_selectors()?;
         policy.check_denials()?;
         policy.check_advisory_scores()?;
+        policy.check_weights()?;
         Ok(policy)
     }
 
@@ -344,6 +368,60 @@ impl Policy {
             source,
         })?;
         Self::parse(&source)
+    }
+
+    /// What the rule `key` adds to a risk score: its `signal_weights` entry, else the
+    /// threshold for a check's rule, so a failed check refuses alone, else its default.
+    pub fn weight_of(&self, key: &str) -> u32 {
+        self.signal_weights.set(key).unwrap_or_else(|| {
+            if decide::RULES.contains(&key) {
+                self.risk_threshold
+            } else {
+                crate::signal::default_weight(key)
+            }
+        })
+    }
+
+    /// A threshold of at least 1, and no weight for a check the policy sets to `allow`,
+    /// which never fails so its weight is never added.
+    fn check_weights(&self) -> Result<(), PolicyError> {
+        if self.risk_threshold == 0 {
+            return Err(PolicyError::ZeroThreshold);
+        }
+        let off = [
+            (
+                "install_scripts",
+                self.install_scripts,
+                &["install_scripts"][..],
+            ),
+            ("kev", self.kev, &["kev"]),
+            ("yanked", self.yanked, &["yanked"]),
+            ("deprecated", self.deprecated, &["deprecated"]),
+            (
+                "provenance",
+                self.provenance,
+                &[
+                    "provenance_unverified",
+                    "provenance_dropped",
+                    "provenance_identity_changed",
+                ],
+            ),
+        ];
+        for (setting, action, rules) in off {
+            if action != Action::Allow {
+                continue;
+            }
+            if let Some(rule) = rules
+                .iter()
+                .find(|rule| self.signal_weights.set(rule).is_some())
+            {
+                return Err(PolicyError::WeighedButAllowed {
+                    setting,
+                    rule: (*rule).to_owned(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// [`Policy::provenance_window_days`] as a duration.
@@ -867,9 +945,59 @@ mod tests {
             );
         }
         for (weight, rule) in (10..).zip(BUILT_IN_RULES) {
-            let policy = parse(&format!("signal_weights: {{ {rule}: {weight} }}\n"))
-                .unwrap_or_else(|e| panic!("{rule}: {e}"));
+            let body = format!("deprecated: block\nsignal_weights: {{ {rule}: {weight} }}\n");
+            let policy = parse(&body).unwrap_or_else(|e| panic!("{rule}: {e}"));
             assert_eq!(policy.signal_weights.of(rule), weight, "{rule}");
+        }
+    }
+
+    /// A check's rule weighs the threshold unless the policy weighs it, and a detector's
+    /// rule its default.
+    #[test]
+    fn a_check_weighs_the_threshold_unless_weighed() {
+        let policy = parse("").unwrap();
+        assert_eq!(policy.risk_threshold, 100);
+        assert_eq!(policy.weight_of("install_scripts"), 100);
+        assert_eq!(policy.weight_of("near_name"), 1);
+        let set = parse("risk_threshold: 40\nsignal_weights: { install_scripts: 25 }\n").unwrap();
+        assert_eq!(set.weight_of("install_scripts"), 25);
+        assert_eq!(set.weight_of("kev"), 40);
+    }
+
+    /// A threshold of 0 refuses everything, and a weight on a check turned off adds nothing.
+    #[test]
+    fn a_threshold_of_0_and_a_weight_on_a_check_turned_off_are_refused() {
+        assert_eq!(
+            parse("risk_threshold: 0\n").unwrap_err().to_string(),
+            "risk_threshold is 0, at which every version would be refused; it is at least 1"
+        );
+        for (setting, rule) in [
+            ("install_scripts", "install_scripts"),
+            ("kev", "kev"),
+            ("yanked", "yanked"),
+            ("deprecated", "deprecated"),
+            ("provenance", "provenance_unverified"),
+            ("provenance", "provenance_dropped"),
+            ("provenance", "provenance_identity_changed"),
+        ] {
+            let error = parse(&format!(
+                "{setting}: allow\nsignal_weights: {{ {rule}: 50 }}\n"
+            ))
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "signal_weights weighs `{rule}`, and `{setting}: allow` turns that check \
+                     off, so the weight is never added. Set `{setting}: block` to weigh it"
+                )
+            );
+            assert!(
+                parse(&format!(
+                    "{setting}: block\nsignal_weights: {{ {rule}: 50 }}\n"
+                ))
+                .is_ok(),
+                "{rule}"
+            );
         }
     }
 
@@ -895,6 +1023,7 @@ mod tests {
                     "packages",
                     "advisory_scores",
                     "signal_weights",
+                    "risk_threshold",
                 ],
             ),
             (
@@ -950,6 +1079,17 @@ mod tests {
                 "signal_weights",
                 "signal_weights: { unknown: 1 }\n",
                 &[
+                    "denied",
+                    "known_malware",
+                    "cooldown",
+                    "kev",
+                    "max_cvss",
+                    "install_scripts",
+                    "yanked",
+                    "deprecated",
+                    "provenance_unverified",
+                    "provenance_dropped",
+                    "provenance_identity_changed",
                     "new_package",
                     "new_publisher",
                     "no_repository",

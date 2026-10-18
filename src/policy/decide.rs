@@ -155,6 +155,19 @@ impl Check {
         Self::Provenance,
     ];
 
+    /// The rule its signal is weighed under in `signal_weights`, given what its provenance
+    /// says.
+    pub fn rule(self, provenance: &Provenance) -> &'static str {
+        match (self, provenance) {
+            (Self::Denials, _) => "denied",
+            (Self::CooldownDays, _) => "cooldown",
+            (Self::Provenance, Provenance::Dropped { .. }) => "provenance_dropped",
+            (Self::Provenance, Provenance::IdentityChanged { .. }) => "provenance_identity_changed",
+            (Self::Provenance, _) => "provenance_unverified",
+            (check, _) => check.as_str(),
+        }
+    }
+
     /// Whether an exception can excuse this check: every one but a denial and known malware.
     pub fn exceptable(self) -> bool {
         !matches!(self, Self::Denials | Self::KnownMalware)
@@ -203,8 +216,26 @@ pub struct Decision {
     pub threshold: u32,
 }
 
-/// The score a package is refused at, when the policy sets none.
+/// The score refused at when the policy sets none, over the 95 the other rules can sum to.
 pub const DEFAULT_RISK_THRESHOLD: u32 = 100;
+
+/// The detector the checks' signals are reported under.
+pub const NAME: &str = "policy";
+
+/// The rules of the checks' signals, as [`Check::rule`] names them.
+pub const RULES: [&str; 11] = [
+    "denied",
+    "known_malware",
+    "cooldown",
+    "kev",
+    "max_cvss",
+    "install_scripts",
+    "yanked",
+    "deprecated",
+    "provenance_unverified",
+    "provenance_dropped",
+    "provenance_identity_changed",
+];
 
 impl Decision {
     /// The weights of the checks that failed, summed.
@@ -270,12 +301,12 @@ pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
     let selectors = policy.selectors();
     let entry = most_specific_match(policy, &selectors, facts, as_of);
 
-    let threshold = DEFAULT_RISK_THRESHOLD;
+    let threshold = policy.risk_threshold;
     let results = Check::ALL
         .iter()
         .map(|&check| {
             let outcome = run(policy, facts, check, entry, as_of);
-            let weight = weight(&outcome, threshold);
+            let weight = weight(&outcome, policy.weight_of(check.rule(&facts.provenance)));
             Result {
                 check,
                 outcome,
@@ -291,10 +322,10 @@ pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
     }
 }
 
-/// What a check's signal weighs: the threshold when it failed, so it refuses alone.
-fn weight(outcome: &Outcome, threshold: u32) -> u32 {
+/// What a check adds to the score: its signal's `weight` when it failed, else nothing.
+fn weight(outcome: &Outcome, weight: u32) -> u32 {
     match outcome {
-        Outcome::Failed(action) if *action != Action::Allow => threshold,
+        Outcome::Failed(action) if *action != Action::Allow => weight,
         _ => 0,
     }
 }
@@ -569,6 +600,52 @@ mod tests {
             entry: None,
             threshold,
         }
+    }
+
+    /// Two checks under the threshold alone are refused together, and served alone.
+    #[test]
+    fn checks_weighed_under_the_threshold_refuse_together() {
+        let policy = Policy::parse(
+            "version: 1\ncooldown_days: 0\nsignal_weights: { install_scripts: 60, deprecated: 50 }\n\
+             deprecated: block\n",
+        )
+        .unwrap();
+        let facts = |scripts: bool, deprecated: bool| Facts {
+            has_install_scripts: scripts,
+            install_scripts_analyzed: true,
+            deprecated: deprecated.then(|| "old".to_owned()),
+            ..clean()
+        };
+        let decided = |scripts, deprecated| decide(&policy, &facts(scripts, deprecated), TODAY);
+        assert_eq!(decided(true, false).action(), Action::Allow);
+        assert_eq!(decided(false, true).action(), Action::Allow);
+        let both = decided(true, true);
+        assert_eq!((both.score(), both.action()), (110, Action::Block));
+        assert_eq!(both.reasons().len(), 2);
+    }
+
+    /// Each check's signal is named for `signal_weights`, provenance by what it says.
+    #[test]
+    fn each_check_names_its_rule() {
+        let consistent = Provenance::Consistent;
+        let named: Vec<&str> = Check::ALL.iter().map(|c| c.rule(&consistent)).collect();
+        let mut expected = RULES[..9].to_vec();
+        expected[8] = "provenance_unverified";
+        assert_eq!(named, expected);
+        let dropped = Provenance::Dropped {
+            previous: "1".to_owned(),
+        };
+        assert_eq!(Check::Provenance.rule(&dropped), "provenance_dropped");
+        let changed = Provenance::IdentityChanged {
+            previous: "1".to_owned(),
+            from: "a".to_owned(),
+            to: "b".to_owned(),
+        };
+        assert_eq!(
+            Check::Provenance.rule(&changed),
+            "provenance_identity_changed"
+        );
+        assert!(Check::ALL.iter().all(|c| RULES.contains(&c.rule(&dropped))));
     }
 
     /// A score at the threshold refuses, and one under it serves.

@@ -80,6 +80,7 @@ One value each for the whole deployment.
 | `deprecated` | `block` or `allow` | `allow` | an npm version its publisher deprecated; PyPI has no marker, and Go's `// Deprecated:` is not read | `allow` |
 | `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a repository and workflow no version from before the window used ([provenance-check](engineering_decisions/0066-provenance-check.md)); for a Maven jar, an `.asc` that does not verify, or none after a version with one ([maven-signatures](engineering_decisions/0113-maven-signatures.md)) | `allow` |
 | `provenance_window_days` | a whole number of days | 7 | | a shorter window establishes a new repository or workflow sooner |
+| `risk_threshold` | a whole number, 1 or more | 100 | a version whose checks' weights sum to it or more ([every-refusal-a-signal](engineering_decisions/0116-every-refusal-a-signal.md)) | higher, where a check is weighed under it in `signal_weights` |
 
 - **`max_cvss`:** a score at or below it is allowed. A value above 10.0 loads, and allows
   every scored advisory.
@@ -184,12 +185,29 @@ The same advisory scored twice is refused.
 ## `signal_weights`
 
 What each kind of signal adds to a version's risk score. The score is the sum of the weights
-of the kinds present, each kind once however often it fires. It is logged, written to the
-audit line as `risk_score`, and printed by `explain`. No verdict reads it, so a weight loosens
-and tightens nothing.
+of the kinds present, each kind once however often it fires. A version is refused when the
+weights of the checks that failed sum to `risk_threshold`. Each check weighs the threshold
+unless weighed here, so it refuses alone, as before scores. A lower weight is a loosening,
+which `byrle policy diff` reports. A weight on a check its setting turns off, such as
+`install_scripts` under `install_scripts: allow`, is refused, as it would never be added.
+
+The other rules' weights are logged, written to the audit line as `risk_score`, and printed
+by `explain`, and refuse nothing yet: [risk-score-plan](risk-score-plan.md) step 3c adds them
+to the verdict.
 
 | Key | Signal | Default |
 |---|---|---|
+| `denied` | a `denials` entry names the version | `risk_threshold` |
+| `known_malware` | the intel store reports it as malware | `risk_threshold` |
+| `cooldown` | it was published fewer than `cooldown_days` ago. Quarantines rather than blocks when the score needs it | `risk_threshold` |
+| `kev` | an advisory against it is in CISA's catalogue | `risk_threshold` |
+| `max_cvss` | an advisory against it scores over `max_cvss`, or has no score | `risk_threshold` |
+| `install_scripts` | it runs an install script | `risk_threshold` |
+| `yanked` | its file was yanked | `risk_threshold` |
+| `deprecated` | its publisher deprecated it; weighed only with `deprecated: block` | `risk_threshold` |
+| `provenance_unverified` | an attestation or signature failed verification | `risk_threshold` |
+| `provenance_dropped` | it has none, after a version with one | `risk_threshold` |
+| `provenance_identity_changed` | its attestation names another repository or workflow than the version before it | `risk_threshold` |
 | `new_package` | the first version was published under 30 days ago | 1 |
 | `new_publisher` | no earlier version was published by this account | 1 |
 | `no_repository` | a full npm document names no repository | 1 |
@@ -209,9 +227,9 @@ and tightens nothing.
 | `advisory_unmaintained` | RustSec reports the crate unmaintained | 2 |
 | `advisory_notice` | RustSec published a notice about it, or a kind this build does not know | 1 |
 
-The keys above are the rules of the five detectors built in, `metadata`, `source`,
-`virustotal`, `trustpub` and `signing`, and of the advisories the intel store holds, which
-are named without the detector. An unsound, unmaintained or notice advisory refuses
+The keys above are the rules of the policy's checks, of the five detectors built in,
+`metadata`, `source`, `virustotal`, `trustpub` and `signing`, and of the advisories the
+intel store holds, which are named without the detector. An unsound, unmaintained or notice advisory refuses
 nothing: it is a signal only. A vulnerability or malware advisory is also refused by
 `max_cvss` or `known_malware`. Another detector's rule is weighed as `detector.rule`, such
 as `guarddog.threat-process-hooks: 3`, 1 unless set. A rule the detector does not have is refused, as an unknown key is. The rules

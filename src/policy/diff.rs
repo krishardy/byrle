@@ -106,16 +106,32 @@ pub struct Package {
     pub purl: String,
     pub from_verdict: Action,
     pub to_verdict: Action,
+    /// The risk score and the threshold, under each policy.
+    pub from_score: (u32, u32),
+    pub to_score: (u32, u32),
     /// Only the checks that answered differently.
     pub moved: Vec<Moved>,
 }
 
 impl Package {
-    /// Whether any check on this package got looser, whatever the verdict did.
+    /// Whether any check on this package got looser, whatever the verdict did, or the
+    /// verdict did, as a lower weight or a higher threshold makes it.
     pub fn loosened(&self) -> bool {
-        self.moved
-            .iter()
-            .any(|m| m.strictness == Strictness::Looser)
+        self.verdict() == Strictness::Looser
+            || self
+                .moved
+                .iter()
+                .any(|m| m.strictness == Strictness::Looser)
+    }
+
+    /// How the verdict moved.
+    pub fn verdict(&self) -> Strictness {
+        compare(Shown::Fail(self.from_verdict), Shown::Fail(self.to_verdict))
+    }
+
+    /// Whether anything about it moved: a check, the score or the threshold.
+    pub fn moved(&self) -> bool {
+        !self.moved.is_empty() || self.from_score != self.to_score
     }
 
     pub fn incomparable(&self) -> bool {
@@ -124,11 +140,13 @@ impl Package {
             .any(|m| m.strictness == Strictness::Incomparable)
     }
 
-    /// Whether any check got stricter.
+    /// Whether any check got stricter, or the verdict did.
     pub fn tightened(&self) -> bool {
-        self.moved
-            .iter()
-            .any(|m| m.strictness == Strictness::Stricter)
+        self.verdict() == Strictness::Stricter
+            || self
+                .moved
+                .iter()
+                .any(|m| m.strictness == Strictness::Stricter)
     }
 }
 
@@ -152,10 +170,16 @@ pub fn package(
         })
         .collect();
 
+    let (from_kept, to_kept) = (
+        super::enforce::enforced(from.0, from.1),
+        super::enforce::enforced(to.0, to.1),
+    );
     Package {
         purl: purl.to_owned(),
-        from_verdict: super::enforce::enforced(from.0, from.1).action(),
-        to_verdict: super::enforce::enforced(to.0, to.1).action(),
+        from_verdict: from_kept.action(),
+        to_verdict: to_kept.action(),
+        from_score: (from_kept.score(), from_kept.threshold),
+        to_score: (to_kept.score(), to_kept.threshold),
         moved,
     }
 }
@@ -176,7 +200,7 @@ pub struct Report {
 impl Report {
     pub fn push(&mut self, package: Package) {
         self.evaluated += 1;
-        if !package.moved.is_empty() {
+        if package.moved() {
             self.changed.push(package);
         }
     }
@@ -229,6 +253,11 @@ impl Report {
                     .entry((moved.check.as_str(), strictness(moved.strictness)))
                     .or_default() += 1;
             }
+            if package.from_score != package.to_score {
+                *counts
+                    .entry(("score", strictness(package.verdict())))
+                    .or_default() += 1;
+            }
         }
         out.push_str(&format!("{} moved\n\n", self.changed.len()));
         for ((check, direction), count) in &counts {
@@ -243,6 +272,14 @@ impl Report {
                 package.from_verdict.as_str(),
                 package.to_verdict.as_str()
             ));
+            if package.from_score != package.to_score {
+                let ((from, of), (to, to_of)) = (package.from_score, package.to_score);
+                out.push_str(&format!(
+                    "    {:16}  {from} of {of} -> {to} of {to_of}  ({})\n",
+                    "score",
+                    strictness(package.verdict())
+                ));
+            }
             for moved in &package.moved {
                 out.push_str(&format!(
                     "    {:16}  {} -> {}  ({})\n",
@@ -1117,6 +1154,40 @@ mod tests {
         assert!(d.loosened());
     }
 
+    /// A denial weighed under the threshold, or a threshold over its weight, is a loosening.
+    /// A threshold raised alone is not: a check the policy does not weigh weighs it.
+    #[test]
+    fn a_lower_weight_or_a_higher_threshold_is_a_loosening() {
+        let denied = "version: 1\ndenials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: t\n";
+        let from = decided(denied, &facts());
+        for to in [
+            format!("{denied}signal_weights: {{ denied: 99 }}\n"),
+            format!("{denied}signal_weights: {{ denied: 100 }}\nrisk_threshold: 101\n"),
+        ] {
+            let to = decided(&to, &facts());
+            let d = package("pkg:npm/lodash@4.17.21", (&from, &[]), (&to, &[]));
+            assert_eq!(
+                (d.from_verdict, d.to_verdict),
+                (Action::Block, Action::Allow)
+            );
+            assert!(d.loosened());
+            let back = package("pkg:npm/lodash@4.17.21", (&to, &[]), (&from, &[]));
+            assert!(back.tightened() && !back.loosened());
+            let mut report = Report::default();
+            report.push(d);
+            assert!(
+                report
+                    .render()
+                    .contains("    score             100 of 100 -> ")
+            );
+        }
+        let raised = decided(&format!("{denied}risk_threshold: 200\n"), &facts());
+        let d = package("pkg:npm/lodash@4.17.21", (&from, &[]), (&raised, &[]));
+        assert_eq!(d.verdict(), Strictness::Same);
+        assert!(!d.loosened() && !d.tightened());
+        assert!(d.moved(), "the score and the threshold moved together");
+    }
+
     /// The written policy did not loosen. What happens did, so the gate says so.
     #[test]
     fn a_check_that_stops_being_enforced_is_a_loosening() {
@@ -1215,6 +1286,8 @@ mod tests {
             purl: "pkg:npm/x@1.0.0".to_owned(),
             from_verdict: Action::Allow,
             to_verdict: Action::Allow,
+            from_score: (0, 100),
+            to_score: (0, 100),
             moved: vec![Moved {
                 check: Check::InstallScripts,
                 from: Shown::NotApplicable,
@@ -1223,6 +1296,7 @@ mod tests {
             }],
         });
         assert_eq!(report.exit_bits(), LOOSENED);
+        assert!(!report.render().contains("score"), "{}", report.render());
     }
 
     #[test]

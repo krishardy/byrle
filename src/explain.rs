@@ -197,6 +197,7 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
         policy.provenance.as_str(),
         policy.provenance_window_days
     ));
+    out.push_str(&format!("  risk_threshold   {}\n", policy.risk_threshold));
     out.push_str(&format!("  denials          {}\n", policy.denials.len()));
     out.push_str(&format!("  packages         {}\n", policy.packages.len()));
     out.push_str(&format!(
@@ -212,10 +213,7 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
         .max()
         .unwrap_or_default();
     for rule in rules {
-        out.push_str(&format!(
-            "  {rule:width$}  {}\n",
-            policy.signal_weights.of(rule)
-        ));
+        out.push_str(&format!("  {rule:width$}  {}\n", policy.weight_of(rule)));
     }
 
     out.push_str("\nchecks\n");

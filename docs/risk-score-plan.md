@@ -153,6 +153,18 @@ present and their score; the verdict is a refusal when the score reaches
 3. `decide` returns signals and a score, group A as signals, the verdict from the
    threshold. `explain`, the audit line's `Inputs` and `audit verify` read it. Defaults
    unchanged, checked as above.
+   In three parts:
+   1. The checks scored against the threshold, each weighing it. Done 2026-10-18,
+      `4ac8570`: every test passed unchanged, and the five smoke runs' 261 audit outcomes
+      were the same. `make mutants`: 23 mutants, 18 caught, 3 unviable, 2 timed out on
+      the threshold's comparison, which the boundary test also fails.
+   2. `risk_threshold` and the checks' rules in `signal_weights`. Done 2026-10-18: a
+      check weighs its `signal_weights` entry, else the threshold; a weight on a check its
+      setting turns off is refused, as is a threshold of 0. `policy diff` reports a moved
+      score or threshold, and a weaker verdict as a loosening. The five smoke runs' audit
+      outcomes were the same.
+   3. The detectors' and advisories' signals in the pinned verdict, after analysis, and
+      the signals and weights in `Inputs`.
 4. The metadata filters refuse by the score of what each document says.
 5. Group C as signals, each answered as below when its weight is under the threshold.
 6. The surprise score for a dropped signature or attestation, the first item #42 names:
