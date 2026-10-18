@@ -2,7 +2,9 @@
 
 - **Number:** 0116
 - **Status:** Decided by the user 2026-10-17 and 2026-10-18, as TODO.md ad-hoc #42 and
-  [risk-score-plan](../risk-score-plan.md). Not yet implemented: the plan's steps 2 to 7.
+  [risk-score-plan](../risk-score-plan.md). Implemented 2026-10-18, `4ac8570` to
+  `7175030`, as the plan's steps 2 to 7 record: `policy::decide`'s `Decision::action`,
+  `check_weight` and `History`, `proxy::Deciding::refusal`, and `audit::Inputs`.
 - **Related:** [policy-tier-resolution](0023-policy-tier-resolution.md), whose verdict
   this replaces, [policy-schema-v1-frozen](0030-policy-schema-v1-frozen.md),
   [detectors](0092-detectors.md), [reproducible-verdicts](0070-reproducible-verdicts.md)

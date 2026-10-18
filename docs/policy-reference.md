@@ -70,6 +70,10 @@ signal_weights:
 
 One value each for the whole deployment.
 
+"Refuses" is the signal the setting raises, weighed by [`signal_weights`](#signal_weights):
+each weighs `risk_threshold` by default, so refuses alone, but a dropped attestation, which
+weighs half of it and a quarter of it for each bit of surprise.
+
 | Key | Values | Default | Refuses | Looser is |
 |---|---|---|---|---|
 | `version` | `1` | required | | |
@@ -88,11 +92,14 @@ One value each for the whole deployment.
   every scored advisory.
 - **`block` or `allow`:** these five checks take nothing else. `quarantine` is refused, since
   waiting does not change whether a package has an install script.
-- **Known malware:** always refused. It is no setting, and no exception releases it.
+- **Known malware:** the `known_malware` signal, which weighs `risk_threshold` unless
+  `signal_weights` lowers it, and `byrle policy diff` reports that as a loosening. It is no
+  setting, and no `packages` entry releases it.
 
 ## `denials`
 
-Versions refused outright, with `block`. No exception releases a denial.
+Versions refused with `block`: each raises the `denied` signal, which weighs
+`risk_threshold` unless `signal_weights` lowers it. No `packages` entry releases a denial.
 
 | Key | Required | Value |
 |---|---|---|
@@ -188,8 +195,11 @@ The same advisory scored twice is refused.
 
 What each kind of signal adds to a version's risk score. The score is the sum of the weights
 of the kinds present, each kind once however often it fires. A version is refused when the
-weights of the checks that failed, and of the other signals present, sum to `risk_threshold`. Each check weighs the threshold
-unless weighed here, so it refuses alone, as before scores. A lower weight is a loosening,
+weights of the checks that failed, and of the other signals present, sum to `risk_threshold`.
+Each check weighs the threshold unless weighed here, so it refuses alone, as before scores,
+but `provenance_dropped`, which weighs half of it, with `provenance_surprise` a quarter of it
+for each bit: after 8 attested versions in its line a drop weighs 129, after 1 it weighs 90,
+and with none before it in its line, 50. A lower weight is a loosening,
 which `byrle policy diff` reports. A weight on a check its setting turns off, such as
 `install_scripts` under `install_scripts: allow`, is refused, as it would never be added.
 
@@ -197,8 +207,10 @@ The other rules' weights add to the same score on a pinned fetch, from the detec
 results stored by then and the advisories against the version, and the refusal names them
 when the checks alone would not have refused. With their defaults they sum to at most 95, so
 they refuse only with a check, or with weights the policy raises. A metadata document is
-filtered on the checks and the advisories' signals, which are all it can know. The audit line records each rule in its `inputs`, so `byrle
-audit verify` weighs them again.
+filtered on the checks and the advisories' signals, which are all it can know. The audit
+line records each rule in its `inputs` with the weight it was decided on, and a dropped
+attestation's history and half-life, so `byrle audit verify` decides it again on those
+after a later build moves a default.
 
 | Key | Signal | Default |
 |---|---|---|

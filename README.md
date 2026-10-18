@@ -41,7 +41,7 @@ A tier is what the proxy does for the ecosystem today:
 
 | Tier | Meaning |
 |---|---|
-| `enforcing` | every policy check runs; a refused version is removed from the metadata and its artifact refused; an artifact is served only after its analysis has finished, and only when its bytes match its published digest |
+| `enforcing` | every policy check runs; a refused version is removed from the metadata and its artifact refused; an artifact with a strong digest is served only after its analysis has finished, and only when its bytes match it; one with none is forwarded unverified, unless `no_strong_digest` is weighed |
 | `observe-only` | checks run and are logged; nothing is refused |
 | `experimental` | some checks run; what is missing is listed |
 
@@ -133,6 +133,12 @@ packages:
     reason: downloads its platform binary on install
     permanent: true
 ```
+
+Every reason to refuse is a signal with a weight, and a version is refused when the
+weights present sum to `risk_threshold`, 100. Each check weighs 100 by default, so refuses
+alone, but a dropped attestation: it weighs 50, and 25 more for each bit of how unexpected
+it is after the earlier versions in its release line. The detectors' and advisories'
+signals, 1 to 8 each, add to the same score.
 
 The proxy enforces by default. `BYRLE_MODE=observe` serves what the policy would refuse
 and logs it, so adopters can move from observe to enforce on their own schedule.

@@ -436,6 +436,10 @@ Items that I've added that are not stage-bound.
     every refusal, the proxy's own integrity refusals included, a signal; one
     `risk_threshold`; known malware and `denials` weighing it by default; `version: 1`
     changed.
+    Done 2026-10-18, `4ac8570` to `7175030`: every refusal a signal under the threshold,
+    100. `no_strong_digest` weighs 0, `provenance_dropped` half the threshold beside
+    `provenance_surprise`, a quarter of it per bit, and gradle-versions-plugin 0.52.0 is
+    served with no exception.
 43. The PyPI index keeps a version whose files are on an origin the proxy does not serve:
     `pypi/mod.rs:165` passes no `refuse_unservable`, as npm's rewrite does, so only the
     pinned fetch is refused. Raised 2026-10-18.

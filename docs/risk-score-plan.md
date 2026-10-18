@@ -228,19 +228,20 @@ present and their score; the verdict is a refusal when the score reaches
    Against today's `provenance_dropped`, counted as any attested version before it, with
    the surprise at h = 16 weighed 25 per bit, so 4 bits reach 100:
 
-   | Refused | Today | 25 per bit, h = 16 |
-   |---|---|---|
-   | legitimate stable versions | 294 | 0 |
-   | legitimate prereleases | 581 | 5 |
-   | nx and @nx/devkit, 2025-08-26 and 27 | all 10 | all 10, 105 to 112 |
-   | @rspack/core 1.1.7, 2024-12-19 | yes | yes, 101 |
-   | axios 1.14.1 and 0.30.4, 2026-03-31 | both | neither: 58 and 0 |
-   | eslint-config-prettier 8.10.1, 9.1.1, 10.1.6, 10.1.7, 2025-07-18 | all 4 | none: 0, 0, 12, 12 |
-   | @solana/web3.js 1.95.6 and 1.95.7, @ctrl/tinycolor 4.1.1 and 4.1.2, @duckdb/node-api 1.3.3 | none, no version before was attested | none |
-   | gradle-versions-plugin 0.52.0 | yes | no, 4 |
+   | Refused | Today | 25 per bit, h = 16 | With `provenance_dropped` 50, the default |
+   |---|---|---|---|
+   | legitimate stable versions | 294 | 0 | 10 |
+   | legitimate prereleases | 581 | 5 | 55 |
+   | nx and @nx/devkit, 2025-08-26 and 27 | all 10 | all 10, 105 to 112 | all 10, 155 to 162 |
+   | @rspack/core 1.1.7, 2024-12-19 | yes | yes, 101 | yes, 151 |
+   | axios 1.14.1 and 0.30.4, 2026-03-31 | both | neither: 58 and 0 | 1.14.1, 108; not 0.30.4, 50 |
+   | eslint-config-prettier 8.10.1, 9.1.1, 10.1.6, 10.1.7, 2025-07-18 | all 4 | none: 0, 0, 12, 12 | none: 50, 50, 62, 62 |
+   | @solana/web3.js 1.95.6 and 1.95.7, @ctrl/tinycolor 4.1.1 and 4.1.2, @duckdb/node-api 1.3.3 | none, no version before was attested | none | none |
+   | gradle-versions-plugin 0.52.0 | yes | no, 0: none before it in its line | no, 50 |
 
    axios 1.14.1 followed signed 1.14.0, but its line has one legitimate drop, 1.13.3, four
-   versions before, which raises P(unsigned). axios 0.30.4 and eslint-config-prettier
+   versions before, which raises P(unsigned) to 2.30 bits; with the 50 beside it, it is
+   refused. axios 0.30.4 and eslint-config-prettier
    8.10.1 and 9.1.1 had no attested version in their own line; 10.1.6 and 10.1.7 followed
    the package's first two attested versions, 10.1.4 and 10.1.5.
 
@@ -274,7 +275,9 @@ present and their score; the verdict is a refusal when the score reaches
       and is served; with `provenance_dropped: 100` it is 403 naming provenance. The five
       smoke runs' audit outcomes were the same but that line, which records `provenance`
       failed where the exception excused it.
-7. Docs: policy-reference, request-flow, threat-model, quickstart §4, the README.
+7. Docs: policy-reference, request-flow, threat-model, quickstart §4, the README. Done 2026-10-18,
+   with [every-refusal-a-signal](engineering_decisions/0116-every-refusal-a-signal.md)'s
+   status.
 
 Raised beside this plan, and not part of it: the PyPI index keeps a version whose files are
 on an origin the proxy does not serve (`pypi/mod.rs:165` passes no `refuse_unservable`),

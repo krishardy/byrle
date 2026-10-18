@@ -61,13 +61,18 @@ Start from the defaults:
 version: 1
 ```
 
-That refuses known malware, a version published in the last 7 days, install scripts (for a
+Each reason to refuse a version is a signal with a weight, and a version is refused when
+the weights of those present sum to `risk_threshold`, 100. These weigh 100, so each refuses
+alone: known malware, a version published in the last 7 days, install scripts (for a
 crate, a build script or a proc-macro, which `serde` and `rustls` have; for a jar, an
 annotation processor javac runs, which `lombok` and `log4j-core` declare), an advisory
-scored above 6.9, a known-exploited vulnerability, a yanked PyPI file, and
-contradicted provenance (for Maven, a version unsigned after a signed one, as
-`gradle-versions-plugin` 0.52.0 is after 0.11.1). [policy-reference](policy-reference.md) lists every key.
-`byrle policy check policy.yaml` loads it as the proxy does.
+scored above 6.9, a known-exploited vulnerability, a yanked PyPI file, an attestation that
+fails verification, and one naming another repository or workflow. A version with no
+attestation after one with some weighs 50, and 25 more for each bit of surprise: after 8
+attested versions in its release line it weighs 129, and `gradle-versions-plugin` 0.52.0,
+the first of its line, unsigned after 0.11.1, weighs 50 and is served. An artifact with no
+strong digest weighs 0, and is forwarded unverified. [policy-reference](policy-reference.md)
+lists every key and weight. `byrle policy check policy.yaml` loads it as the proxy does.
 
 ## 5. Run the proxy in observe mode
 

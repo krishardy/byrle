@@ -15,6 +15,15 @@ to the next check, and a metadata document keeps the versions the policy refuses
 other answer is the same in both modes
 ([observe-mode](engineering_decisions/0071-observe-mode.md)).
 
+The policy's checks, the detectors' and advisories' signals, and the proxy's own refusals
+are each a signal with a weight, and a version is refused when the weights present sum to
+`risk_threshold` ([every-refusal-a-signal](engineering_decisions/0116-every-refusal-a-signal.md)).
+The proxy's own, `unservable`, `no_strong_digest`, `digest_mismatch` and
+`signature_failed`, answer as drawn below when one weighs the threshold alone, which each
+does by default but `no_strong_digest`, 0; reached only by a sum, the refusal is the
+policy's; under it, each serves what it can, as
+[policy-reference](policy-reference.md#signal_weights) says.
+
 "Refusal status" is `BYRLE_REFUSAL_STATUS`: 403 by default, settable per ecosystem and
 client to any code from 400 to 599. Every 503 carries `Retry-After` and
 `x-byrle-not-ready` naming the case. `Retry-After` is 1, except for a download waiting on
@@ -44,7 +53,7 @@ flowchart TD
     KIND -->|Go sumdb/sum.golang.org/ anything else| FWD
     KIND -->|Go .mod| MOD{sum.golang.org's claim<br/>for the version}
     MOD -->|no proved answer| M503[503 checksum-database]
-    MOD -->|no record| MREF[refusal status]
+    MOD -->|no record| MREF[forwarded unverified;<br/>refusal status while<br/>no_strong_digest weighs<br/>the threshold]
     MOD -->|a record| MFWD[fetched; 502 when its h1:<br/>is not the one claimed]
     KIND -->|artifact HEAD, or anything else| FWD
 
@@ -58,11 +67,12 @@ flowchart TD
     INTEL -->|no stream covers<br/>the ecosystem| A503E[503 no-stream-for-ecosystem]
     INTEL -->|answers, or none set| POLICY{policy on what is known}
 
-    POLICY -->|refuses: denial, cooldown,<br/>advisory, KEV, malware,<br/>install scripts, provenance,<br/>yanked, deprecated| AREF2[refusal status:<br/>refused by policy]
-    POLICY -->|passes| ORIGIN{artifact on an origin<br/>the proxy does not serve?}
-    ORIGIN -->|yes| AREF3[refusal status]
+    POLICY -->|risk score reaches risk_threshold:<br/>denial, cooldown, advisory, KEV,<br/>malware, install scripts, provenance,<br/>yanked, deprecated, detectors| AREF2[refusal status:<br/>refused by policy]
+    POLICY -->|under it| ORIGIN{artifact on an origin<br/>the proxy does not serve?}
+    ORIGIN -->|yes, unservable weighs<br/>the threshold| AREF3[refusal status]
     ORIGIN -->|no| DIGEST{strong digest published,<br/>or for Go and Maven claimed?}
-    DIGEST -->|no| AREF4[refusal status:<br/>cannot be assessed]
+    DIGEST -->|no, and no_strong_digest<br/>weighs the threshold| AREF4[refusal status:<br/>cannot be assessed]
+    DIGEST -->|no, by default| FWD
     DIGEST -->|yes| ANALYSIS{analysis of these bytes}
 
     ANALYSIS -->|last fetch did not<br/>match the digest; a Go zip<br/>not the one claimed| A502X[502: bytes the metadata<br/>does not describe]
@@ -99,7 +109,7 @@ flowchart TD
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
-| refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
+| refusal status, 403 by default | proxy | the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
 | 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
 
@@ -143,7 +153,8 @@ does not change a 401. A store that cannot answer is 503 `account-store`, after 
 database pool's wait for a connection: 30.0 s per request with Postgres stopped, measured
 2026-10-11. The intel store uses the same pool.
 
-A request the policy refuses is refused before anything is fetched. A version the policy
+A request the policy refuses is refused before anything is fetched, but for the detectors'
+signals, known once its artifact is analysed. A version the policy
 refuses is also removed from the metadata document, so a resolver picks another version
 and never asks for it.
 
