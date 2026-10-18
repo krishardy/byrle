@@ -201,7 +201,7 @@ make inspect PACKAGE=@babel/core
 sends one packument request and one artifact request as each of npm, pnpm and yarn, with
 the headers those clients actually send, and prints the responses beside what the registry
 served directly. It verifies the artifact digest itself rather than trusting the proxy's
-report. `make smoke-clients` is the one that asserts; this one is for looking.
+report. `make smoke-npm-clients` is the one that asserts; this one is for looking.
 
 ## Deployment note
 

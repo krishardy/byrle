@@ -5445,7 +5445,7 @@ mod tests {
         assert!(log.contains("/npm/second"), "{log}");
     }
 
-    /// `make smoke-clients` greps for `UNINSPECTED`, so the line is part of the interface.
+    /// `make smoke-npm-clients` greps for `UNINSPECTED`, so the line is part of the interface.
     #[test]
     fn a_document_the_proxy_cannot_read_is_logged_as_uninspected() {
         let proxy = offline(None, None);

@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck install-java install-gradle ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck install-java install-gradle ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
@@ -29,7 +29,7 @@ help:
 	@echo "  smoke-cargo    what the proxy does for crates.io, checked with cargo"
 	@echo "  smoke-go       what the proxy does for Go modules, checked with go on TLS"
 	@echo "  smoke-maven    what the proxy does for Maven, checked with mvn and Gradle on TLS"
-	@echo "  smoke-clients  whether npm's other four clients route artifacts through it"
+	@echo "  smoke-npm-clients  whether npm's other four clients route artifacts through it"
 	@echo "  smoke-proxy    whether upstream traffic honours HTTP_PROXY, HTTPS_PROXY and NO_PROXY"
 	@echo "  smoke-tls-front  the proxy behind nginx on TLS, checked with npm and pip"
 	@echo "  smoke-console    the Stage 4.9 exit test: installs, the console API, alerts, Dex login"
@@ -143,8 +143,8 @@ smoke-go:
 smoke-maven:
 	@scripts/make/smoke-maven.sh
 
-smoke-clients:
-	@scripts/make/smoke-clients.sh
+smoke-npm-clients:
+	@scripts/make/smoke-npm-clients.sh
 
 smoke-proxy:
 	@scripts/make/smoke-proxy.sh

@@ -2,7 +2,7 @@
 # Send one packument request and one artifact request as each package manager, and print
 # the responses side by side with what the registry originally served.
 #
-# For looking, not for asserting. `make smoke-clients` is the one that fails a build;
+# For looking, not for asserting. `make smoke-npm-clients` is the one that fails a build;
 # this one exists so the rewriting, the encoding narrowing and the digest check can be
 # seen rather than inferred from a log.
 #

@@ -60,7 +60,7 @@ cargo "$nightly" llvm-cov --lib \
 printf '\n\033[1m==> not part of the floor\033[0m\n'
 cargo "$nightly" llvm-cov --summary-only 2>/dev/null | awk '/^Filename/ || /^main\.rs/'
 cargo "$nightly" llvm-cov --lib --summary-only 2>/dev/null | awk '/^(intel|analysis|account)\/postgres\.rs/'
-echo "    main.rs is startup wiring. 'make smoke-npm' and 'make smoke-clients' run real"
+echo "    main.rs is startup wiring. 'make smoke-npm' and 'make smoke-npm-clients' run real"
 echo "    clients through the binary."
 echo "    intel/postgres.rs, intel/refresh/run.rs, analysis/postgres.rs and account/postgres.rs need a real
     database. 'make test-integration' runs their tests."

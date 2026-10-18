@@ -339,7 +339,7 @@ packuments and zero tarballs and installed successfully. The proxy therefore poi
 artifact URLs at itself, uniformly rather than per client. Full reasoning, costs and
 lockfile effects in
 [docs/engineering_decisions/0018-packument-tarball-url-rewriting.md](engineering_decisions/0018-packument-tarball-url-rewriting.md);
-reproduce with `make smoke-clients`.
+reproduce with `make smoke-npm-clients`.
 
 **The rewrite is conditional on the host, and that is a bypass vector (corrected Sept
 2026).** An earlier version of this finding said npm ignores the host in `dist.tarball`

@@ -1,7 +1,7 @@
 //! The `byrle` binary: parse the command line, run the command, print what it returns.
 //!
 //! Each command is in the library. `make smoke-npm`, `make smoke-python` and
-//! `make smoke-clients` cover this file by running real clients through the proxy.
+//! `make smoke-npm-clients` cover this file by running real clients through the proxy.
 
 use byrle::cli;
 use byrle::doctor;

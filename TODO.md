@@ -15,7 +15,8 @@ started.
 
 Items that I've added that are not stage-bound.
 
-1. Look at the witchcraft binary collection (from edrazine) and look into integrating wsolver into a fuzzing and formal analysis process of the compiled binary.
+1. [x] Look at the witchcraft binary collection (from edrazine) and look into integrating wsolver into a fuzzing and formal analysis process of the compiled binary.
+   Closed 2026-10-18 as out of scope.
 2. [x] Add make dev-setup, which will install dev dependencies for this project.
    Done: `scripts/make/dev-setup.sh` installs clippy, rustfmt, cargo-audit and kani,
    and reports whether npm is present. Re-runnable; skips what is already installed.
@@ -388,12 +389,14 @@ Items that I've added that are not stage-bound.
     detector leads its own process group, and a run that ends without byrle reaping it, by
     timeout or output past the cap, is ended with `libc::killpg`, the user's choice of
     killpg. The test checks the fake's `sleep 30` is gone too
-36. Rename `make smoke-clients` to `make smoke-npm-clients`: it checks pnpm, yarn and bun,
+36. [x] Rename `make smoke-clients` to `make smoke-npm-clients`: it checks pnpm, yarn and bun,
     the npm ecosystem's other clients, as `smoke-cargo`, `smoke-go` and `smoke-python` each
     name their ecosystem. Kept apart from `smoke-npm`, which requires npm, where
     `smoke-clients` skips a client that is not installed. Raised 2026-10-16. Touches
     `Makefile`, `dev-setup.sh`, `coverage.sh`, `inspect.sh`, `project_plan.md` and
-    `duplication-catalogue.md`.
+    `duplication-catalogue.md`. Done 2026-10-18: the target and
+    `scripts/make/smoke-npm-clients.sh`, and every reference outside this file's history,
+    `src/main.rs`, `src/proxy.rs`, the README and 0018 among them.
 37. In `policy.yaml`'s `packages`, rename `vuln_advisory_ids` to `ignored_vuln_advisory_ids`.
     Raised 2026-10-16. [policy-schema-v1-frozen](docs/engineering_decisions/0030-policy-schema-v1-frozen.md)
     closes `version: 1` to a renamed key, so the new name is `version: 2`'s.

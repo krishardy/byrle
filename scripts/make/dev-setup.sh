@@ -214,7 +214,7 @@ else
     echo "    NOT FOUND. Install Node.js; 'make smoke-npm' cannot run without it."
 fi
 
-# The other package managers, all optional. `make smoke-clients` and `make inspect` cover
+# The other package managers, all optional. `make smoke-npm-clients` and `make inspect` cover
 # whichever are present and skip the rest. They are worth having: every one of them
 # except npm fetches dist.tarball from the host the packument names, which is the whole
 # reason the proxy rewrites artifact URLs.
@@ -228,17 +228,17 @@ npm_global() {
     elif npm install -g "$package" >/dev/null 2>&1; then
         echo "    installed $("$tool" --version 2>/dev/null)"
     else
-        echo "    npm install -g $package failed. 'make smoke-clients' skips $tool."
+        echo "    npm install -g $package failed. 'make smoke-npm-clients' skips $tool."
     fi
 }
 
-echo "==> pnpm (optional, used by 'make smoke-clients')"
+echo "==> pnpm (optional, used by 'make smoke-npm-clients')"
 npm_global pnpm pnpm
 
-echo "==> yarn 1 (optional, used by 'make smoke-clients')"
+echo "==> yarn 1 (optional, used by 'make smoke-npm-clients')"
 npm_global yarn yarn
 
-echo "==> yarn 2+ (optional, used by 'make smoke-clients')"
+echo "==> yarn 2+ (optional, used by 'make smoke-npm-clients')"
 if ! need corepack; then
     # Node shipped corepack from 16.9 until it was unbundled in 25, so on a current node
     # it has to be installed. It is how a project selects yarn 2+ without replacing the
@@ -258,7 +258,7 @@ if ! need corepack; then
             echo "    Your configured registry rejected the request, which will affect every"
             echo "    other install too. Check its credentials."
         else
-            echo "    and so did registry.npmjs.org. 'make smoke-clients' skips yarn 2+"
+            echo "    and so did registry.npmjs.org. 'make smoke-npm-clients' skips yarn 2+"
             echo "    until 'npm install -g corepack' works."
         fi
     fi
@@ -269,15 +269,15 @@ else
     if [[ "$node_major" -lt 18 ]]; then
         echo "    corepack found, but node is v$node_major. yarn 2+ needs 18 or later,"
         echo "    and corepack itself calls URL.canParse, which 16 does not have."
-        echo "    'make smoke-clients' skips yarn 2+ on this node."
+        echo "    'make smoke-npm-clients' skips yarn 2+ on this node."
     else
         echo "    corepack $(corepack --version), node v$node_major: available."
         echo "    Nothing to install: a project selects it with a packageManager field,"
-        echo "    and 'make smoke-clients' sets that up in a temporary project."
+        echo "    and 'make smoke-npm-clients' sets that up in a temporary project."
     fi
 fi
 
-echo "==> bun (optional, used by 'make smoke-clients')"
+echo "==> bun (optional, used by 'make smoke-npm-clients')"
 if need bun; then
     echo "    found $(bun --version)"
 elif need pacman; then
