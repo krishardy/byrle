@@ -42,6 +42,11 @@ names advisories the exception ignores, and the new name says so. Unlike the ame
 above, this one changes what a written file parses as: a file written for v0.1.0 with
 `vuln_advisory_ids` is refused, as an unknown key is.
 
+Amended 2026-10-18, decided by the user: [every-refusal-a-signal](0116-every-refusal-a-signal.md)
+changes what version 1's `block` and `allow` mean, to a signal weighing `risk_threshold`
+or 0, and adds `risk_threshold` and the new rules of `signal_weights`. With the defaults, a
+file written before refuses the versions it refused.
+
 ## The keys
 
 | Level | Keys |

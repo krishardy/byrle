@@ -125,6 +125,8 @@ present and their score; the verdict is a refusal when the score reaches
 1. An engineering decision for the four answers above, superseding the refusal half of
    [policy-tier-resolution](engineering_decisions/0023-policy-tier-resolution.md), and 0030
    amended.
+   Done 2026-10-18: [every-refusal-a-signal](engineering_decisions/0116-every-refusal-a-signal.md),
+   with 0023's status and 0030 amended.
 2. Measure the threshold: the highest `risk_score` over the audit logs of `make
    smoke-npm`, `smoke-python`, `smoke-cargo`, `smoke-go` and `smoke-maven`, and over the
    npm corpus run through `explain`.
@@ -144,10 +146,10 @@ Raised beside this plan, and not part of it: the PyPI index keeps a version whos
 on an origin the proxy does not serve (`pypi/mod.rs:165` passes no `refuse_unservable`),
 and Go's `@latest` is 404 for a module with no versions at all (`go/inspect.rs:90`).
 
-## Open questions
+## Answered 2026-10-18
 
-| Q | Question |
-|---|---|
-| Q1 | Observe mode serves what the policy refuses and never what cannot be assessed. Under one score, does it serve a version whose score reaches the threshold on group C signals? |
-| Q2 | A group C signal weighed under the threshold, by the policy: what is served? Origin not served: the client fetches it directly, as `BYRLE_REFUSE_UNSERVABLE=0` does today, and the proxy never fetches from an origin it does not serve. No strong digest: nothing can be analysed, so install scripts and the detectors have no answer. Bytes not as digested: the held last chunk is released. Not listed: there is no record to fetch it by. |
-| Q3 | Lowering `known_malware`'s or `denied`'s weight under the threshold: reported as a loosening only, or refused unless the policy gives a reason and an expiry, as a `packages` entry does? |
+| Q | Question | Answer |
+|---|---|---|
+| Q1 | Observe mode serves what the policy refuses and never what cannot be assessed. Under one score, does it serve a version whose score reaches the threshold on group C signals? | No. Observe mode serves a version over the threshold only when its group C signals alone weigh under it |
+| Q2 | A group C signal weighed under the threshold by the policy: what is served? | Each serves what it can. Origin not served: the client fetches it directly, as `BYRLE_REFUSE_UNSERVABLE=0` does today, and the proxy never fetches from an origin it does not serve. No strong digest: served unanalysed, so install scripts and the detectors have no answer. Bytes not as digested: the held last chunk is released. Not listed: refused whatever its weight, as there is no record to fetch it by |
+| Q3 | Lowering `known_malware`'s or `denied`'s weight under the threshold | Loads as any weight does; `policy diff` and `policy check` report it as a loosening |

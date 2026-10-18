@@ -1,7 +1,10 @@
 # Policy shape and how a package is judged
 
 - **Number:** 0023
-- **Status:** Decided. Plan §5 rewritten to match; the old §5.5 is gone.
+- **Status:** Decided. Plan §5 rewritten to match; the old §5.5 is gone. Its verdict, the
+  strongest action of the checks, is replaced by a score against one threshold in
+  [every-refusal-a-signal](0116-every-refusal-a-signal.md), decided 2026-10-18 and not yet
+  implemented; the checks and the exceptions stay as written here.
 - **Plan reference:** §5
 - **Related:** [package-override-tier](0009-package-override-tier.md),
   [policy-engine-hand-rolled](0010-policy-engine-hand-rolled.md)
