@@ -2384,6 +2384,28 @@ mod tests {
         None
     }
 
+    /// A client is used here by its `found`, else when it runs.
+    #[test]
+    fn a_client_is_installed_by_its_found_else_by_running() {
+        let environment = crate::env::testing::empty();
+        let machine = Machine {
+            environment: &environment,
+            dir: std::path::Path::new("/"),
+            run: &nothing_installed,
+        };
+        assert!(!installed(&machine, named("npm")));
+        let found = Client {
+            found: Some(|_| true),
+            ..crate::ecosystem::npm::clients::NPM
+        };
+        assert!(installed(&machine, &found));
+        let runs = Machine {
+            run: &|_, _| Some("11.0.0".to_owned()),
+            ..machine
+        };
+        assert!(installed(&runs, named("npm")));
+    }
+
     /// `doctor` run from `dir` with `environment` and programs answering as `run` does.
     async fn doctored(
         environment: &env::Process,
