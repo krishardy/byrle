@@ -26,9 +26,10 @@ pub const MVN: Client = Client {
     clear_cache: "use a mirror id no `_remote.repositories` in the local repository records, \
                   or remove the local repository",
     settings: Some(mvn_settings),
+    found: None,
 };
 
-pub const CLIENTS: &[Client] = &[MVN];
+pub const CLIENTS: &[Client] = &[MVN, super::gradle::GRADLE];
 
 /// Where mvn asks for Central with no mirror.
 const CENTRAL_URL: &str = "https://repo.maven.apache.org/maven2";

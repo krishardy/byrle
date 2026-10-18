@@ -500,6 +500,14 @@ Q2, Q7 and Q9 otherwise.
    or an `Authorization` header. It reads `HOME`, as the other clients' checks do, and does
    not decrypt a `{...}` password.
 
+   Done 2026-10-18 for Gradle's init scripts and `caches/modules-2`, in
+   `src/ecosystem/maven/gradle.rs`. Gradle is found by its wrapper's properties, so a
+   project built only with `./gradlew` is checked without running it. Doctor reads URLs
+   only as an init script writes them whole: one built from a variable, such as
+   `"$base/maven"`, is not read. When the proxy requires tokens, a script that does not
+   contain `credentials` is a problem. Gradle against the same repository URL made 6
+   requests, then 0 with the same user home.
+
    `services.gradle.org/versions/all` lists 532 versions on 2026-10-17. Each has a
    `checksum`, the `-bin` zip's sha256, a `wrapperChecksum` and a `buildTime`. An `-all`
    zip's sha256 is only at its `.sha256` URL. Gradle 9.8.1's `wrapper --gradle-version

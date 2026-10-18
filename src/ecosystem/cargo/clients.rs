@@ -25,6 +25,7 @@ pub const CARGO: Client = Client {
     bypass: CacheBypass::PerRegistry,
     clear_cache: "remove ~/.cargo/registry/cache",
     settings: None,
+    found: None,
 };
 
 pub const CLIENTS: &[Client] = &[CARGO];

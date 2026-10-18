@@ -22,6 +22,7 @@ pub const NPM: Client = Client {
     bypass: CacheBypass::Complete,
     clear_cache: "npm cache clean --force",
     settings: None,
+    found: None,
 };
 
 /// The npm clients doctor checks. See docs/engineering_decisions/0080-client-caches.md.
@@ -39,6 +40,7 @@ pub const CLIENTS: &[Client] = &[
         bypass: CacheBypass::Complete,
         clear_cache: "pnpm store prune, or delete the store directory",
         settings: None,
+        found: None,
     },
     Client {
         name: "yarn",
@@ -52,6 +54,7 @@ pub const CLIENTS: &[Client] = &[
         bypass: CacheBypass::ArtifactsOnly,
         clear_cache: "yarn cache clean --force",
         settings: None,
+        found: None,
     },
     Client {
         name: "bun",
@@ -65,6 +68,7 @@ pub const CLIENTS: &[Client] = &[
         bypass: CacheBypass::Complete,
         clear_cache: "bun pm cache rm",
         settings: None,
+        found: None,
     },
 ];
 

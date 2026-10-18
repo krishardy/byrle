@@ -131,6 +131,8 @@ pub struct Client {
     pub clear_cache: &'static str,
     /// Findings on the client's other settings that send installs around the proxy.
     pub settings: Option<SettingsCheck>,
+    /// Whether the client is used here, when not by running it with `version_args`.
+    pub found: Option<fn(&Machine) -> bool>,
 }
 
 /// Findings on a client's settings, given whether the proxy requires tokens, if it answered.
@@ -993,12 +995,20 @@ fn lockfile_findings(dir: &std::path::Path, public: Option<&str>, proxy: &str) -
     findings
 }
 
+/// Whether `client` is used on this machine: its `found`, else whether it runs.
+pub fn installed(machine: &Machine, client: &Client) -> bool {
+    match client.found {
+        Some(found) => found(machine),
+        None => (machine.run)(client.name, client.version_args).is_some(),
+    }
+}
+
 /// Every client caches, and what a warm cache supplies never reaches the proxy. How much
 /// it supplies differs, so each installed client is reported with what was measured for it.
 fn cache_findings(machine: &Machine) -> Result<Vec<Finding>, env::EnvError> {
     let mut findings = Vec::new();
     for client in clients() {
-        if (machine.run)(client.name, client.version_args).is_some() {
+        if installed(machine, client) {
             let warm = probe::warm_cache(machine, client)?;
             findings.push(check_cache(client, warm.as_deref()));
         }
@@ -1151,6 +1161,7 @@ pub mod probe {
                 bypass: CacheBypass::Complete,
                 clear_cache: "",
                 settings: None,
+                found: None,
             }
         }
 
@@ -2231,6 +2242,7 @@ mod tests {
                 ("cargo", true),
                 ("go", true),
                 ("mvn", true),
+                ("gradle", true),
             ]
         );
     }
@@ -2416,7 +2428,17 @@ mod tests {
             (env::UV_DEFAULT, &index),
             (env::UV_NO_FILES, "1"),
             (env::MVN_ADDED, &maven_args),
+            (env::GRADLE_DIR, dir.to_str().expect("UTF-8")),
         ]);
+        std::fs::create_dir_all(dir.join("init.d")).expect("creates");
+        std::fs::write(
+            dir.join("init.d/byrle.gradle"),
+            format!(
+                "def central = '{url}/maven/'\ndef portal = '{url}/gradle-plugins/'\n\
+                 credentials {{ username = 'a'; password = 't' }}\n"
+            ),
+        )
+        .expect("writes");
         std::fs::write(
             &settings,
             format!(

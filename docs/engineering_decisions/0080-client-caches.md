@@ -2,7 +2,7 @@
 
 - **Number:** 0080
 - **Status:** Implemented. `src/ecosystem/npm/clients.rs`, `src/ecosystem/maven/clients.rs`,
-  `doctor::probe`.
+  `src/ecosystem/maven/gradle.rs`, `doctor::probe`.
 - **Related:** [doctor-python-clients](0053-doctor-python-clients.md),
   [packument-tarball-url-rewriting](0018-packument-tarball-url-rewriting.md)
 
@@ -18,6 +18,7 @@ what the proxy saw the second time. `byrle doctor` reports each client's `CacheB
 | cargo 1.99.0 | with crates.io replaced, `itoa` cached from crates.io was downloaded again through the replacement, 2026-10-14 | `PerRegistry` |
 | go 1.27.2 | `rsc.io/quote@v1.5.2`, cached, was added though the proxy refused it by cooldown; the proxy saw no `.mod` or `.zip` request for it, 2026-10-16 | `Complete` |
 | mvn 3.10.0 | under the same mirror id, 0 requests; under another id at the same URL, 498, 2026-10-17. mvn keys its cache by the mirror's id, not its URL | `Complete` |
+| Gradle 9.8.1 | against the same repository URL, 6 requests, then 0, 2026-10-18. Cached from another URL, a jar is asked for by `HEAD` alone, and a 403 to it fails the build | `Complete` |
 
 ## Where doctor looks
 
@@ -28,6 +29,7 @@ what the proxy saw the second time. `byrle doctor` reports each client's `CacheB
 | cargo | `.cargo/config.toml` in the working directory and each above it, then `CARGO_HOME`'s, else `~/.cargo`'s: `[source.crates-io] replace-with` and that source's index | `CARGO_HOME/registry/cache`, else `~/.cargo/registry/cache`, a directory per registry, so reported and not warned about |
 | go | `go env -json GOPROXY GONOPROXY GOFLAGS`: `GOPROXY`'s first entry, and as extra indexes the entries after a `\|` | `go env GOMODCACHE`'s `cache/download` |
 | mvn | `-s` and `-gs` from `MAVEN_ARGS`, then `.mvn/maven.config`, else `~/.m2/settings.xml` and `conf/settings.xml` under the `Maven home:` `mvn --version` prints: the mirror for `central`, and as an extra index the mirror for an id no file names | `-Dmaven.repo.local` from the same arguments, else `<localRepository>`, else `~/.m2/repository` |
+| gradle | found by `gradle/wrapper/gradle-wrapper.properties` in the working directory or one above it, or by `gradle --version`. The `http://` and `https://` URLs written whole in `init.gradle`, `init.gradle.kts` and `init.d/*.gradle(.kts)` in `GRADLE_USER_HOME`, else `~/.gradle`: the first whose path is `/maven`, and as an extra index the first whose path is `/gradle-plugins` | `caches/modules-2` in the same home |
 
 The cache is looked up from the directory doctor runs in, because it can differ per
 directory: `pnpm store path` answers with a store on the project's own filesystem, so it is

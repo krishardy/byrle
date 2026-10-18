@@ -30,6 +30,7 @@ pub const PIP: Client = Client {
     bypass: CacheBypass::None,
     clear_cache: "pip cache purge",
     settings: None,
+    found: None,
 };
 
 pub const UV: Client = Client {
@@ -60,6 +61,7 @@ pub const UV: Client = Client {
     bypass: CacheBypass::Complete,
     clear_cache: "uv cache clean",
     settings: None,
+    found: None,
 };
 
 pub const CLIENTS: &[Client] = &[PIP, UV];

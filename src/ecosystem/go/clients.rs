@@ -26,6 +26,7 @@ pub const GO: Client = Client {
     bypass: CacheBypass::Complete,
     clear_cache: "go clean -modcache",
     settings: Some(go_settings),
+    found: None,
 };
 
 pub const CLIENTS: &[Client] = &[GO];

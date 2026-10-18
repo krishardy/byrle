@@ -4,6 +4,7 @@
 
 pub mod clients;
 pub mod digest;
+pub mod gradle;
 pub mod inspect;
 pub mod keys;
 pub mod lockfile;

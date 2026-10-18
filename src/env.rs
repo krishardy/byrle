@@ -697,6 +697,11 @@ pub const CARGO_DIR: Var = other(
     "CARGO_HOME",
     &["where cargo keeps its configuration and cache, when set"],
 );
+pub const GRADLE_DIR: Var = other(
+    Kind::External,
+    "GRADLE_USER_HOME",
+    &["where Gradle keeps its init scripts and cache, when set"],
+);
 pub const MVN_ADDED: Var = other(
     Kind::External,
     "MAVEN_ARGS",
@@ -739,7 +744,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 89] = [
+pub const ALL: [Var; 90] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -822,6 +827,7 @@ pub const ALL: [Var; 89] = [
     BUN_CACHE,
     CARGO_DIR,
     MVN_ADDED,
+    GRADLE_DIR,
     CONFIG_HOME,
     UV_DEFAULT,
     UV_OLDER_INDEX,
@@ -1559,6 +1565,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn cargo_home(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(CARGO_DIR)
+    }
+
+    pub fn gradle_user_home(&self) -> Result<Option<PathBuf>, EnvError> {
+        self.path(GRADLE_DIR)
     }
 
     pub fn maven_args(&self) -> Result<Option<String>, EnvError> {
