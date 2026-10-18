@@ -508,6 +508,11 @@ Q2, Q7 and Q9 otherwise.
    contain `credentials` is a problem. Gradle against the same repository URL made 6
    requests, then 0 with the same user home.
 
+   Done 2026-10-18 for `gradle/verification-metadata.xml`, read from the root project, the
+   nearest directory at or above the working directory with a wrapper or a settings
+   script. `<verify-signatures>` true is reported ok. False, which checks digests only, and
+   no file are warnings. A file that is not well-formed XML is a problem.
+
    `services.gradle.org/versions/all` lists 532 versions on 2026-10-17. Each has a
    `checksum`, the `-bin` zip's sha256, a `wrapperChecksum` and a `buildTime`. An `-all`
    zip's sha256 is only at its `.sha256` URL. Gradle 9.8.1's `wrapper --gradle-version
