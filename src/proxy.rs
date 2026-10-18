@@ -7764,6 +7764,15 @@ mod tests {
             200,
             "no_strong_digest weighs under the threshold"
         );
+        let lowering = offline(None, Some(lowered)).with_upstream(Ecosystem::Maven, &unsigned);
+        let ArtifactStep::Fetch(fetch) = exchange(&lowering, LANG3_17_POM).artifact_fetch().await
+        else {
+            panic!("forwarded unverified");
+        };
+        assert_eq!(
+            fetch.purl,
+            "pkg:maven/org.apache.commons/commons-lang3@3.17.0"
+        );
     }
 
     /// `days` ago, as a `Last-Modified` writes it.
@@ -8005,6 +8014,10 @@ mod tests {
                 panic!("{rule} weighs under the threshold");
             };
             assert_eq!(fetch.digest.is_some(), verified, "{rule}");
+            assert_eq!(
+                fetch.purl, "pkg:maven/jakarta.annotation/jakarta.annotation-api@2.1.1",
+                "{rule}"
+            );
         }
     }
 
