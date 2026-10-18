@@ -231,6 +231,17 @@ pub const DEFAULT_RISK_THRESHOLD: u32 = 100;
 /// The detector the checks' signals are reported under.
 pub const NAME: &str = "policy";
 
+/// The detector the proxy's own refusals are reported under.
+pub const PROXY: &str = "proxy";
+
+/// The rules of the proxy's own refusals, each weighing the threshold unless weighed.
+pub const PROXY_RULES: [&str; 4] = [
+    "no_strong_digest",
+    "unservable",
+    "digest_mismatch",
+    "signature_failed",
+];
+
 /// The rules of the checks' signals, as [`Check::rule`] names them.
 pub const RULES: [&str; 11] = [
     "denied",

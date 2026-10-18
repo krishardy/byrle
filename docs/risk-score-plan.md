@@ -86,7 +86,6 @@ present and their score; the verdict is a refusal when the score reaches
 | deprecated | `deprecated` | as `kev`, so 0 by default |
 | provenance contradicted | `provenance_unverified`, `provenance_dropped`, `provenance_identity_changed` | as `kev` |
 | no strong digest, no claim | `no_strong_digest` | the threshold |
-| not listed | `not_listed` | the threshold |
 | origin not served | `unservable` | the threshold, 0 with `BYRLE_REFUSE_UNSERVABLE=0` |
 | bytes not as claimed or digested | `digest_mismatch` | the threshold |
 | a `.pom` or `.module` signature that fails | `signature_failed` | the threshold |
@@ -176,6 +175,15 @@ present and their score; the verdict is a refusal when the score reaches
    of the advisories the intel store holds against it. The detectors' signals are known
    only once the version's artifact is analysed, so a document is filtered without them.
 5. Group C as signals, each answered as below when its weight is under the threshold.
+   One commit per signal:
+   1. `unservable`. Done 2026-10-18: the rules of the proxy's refusals are built in and
+      weigh the threshold. A pinned fetch decides twice: on the checks and signals, as
+      before, and with the proxy's signals added. When the proxy's weigh the threshold
+      alone, the refusal answers as it did; when only the sum does, it is refused in the
+      policy's words with the signals named; else it is passed over. Observe mode refuses
+      only the first. npm's document removes a version on an origin the proxy does not
+      serve only when `unservable` weighs the threshold alone. With
+      `BYRLE_REFUSE_UNSERVABLE=0` the signal is not raised at all.
 6. The surprise score for a dropped signature or attestation, the first item #42 names:
    P(unsigned) = (weighted unsigned + 1) / (weighted total + 2) over earlier versions,
    newest weighted most, the signal −log2 P. Its half-life and weight measured on Central's

@@ -15,7 +15,7 @@ A version is refused when the weights of the signals present sum to the policy's
 | Group | Signals | Default weight |
 |---|---|---|
 | the policy's checks | `denied`, `known_malware`, `cooldown`, `kev`, `max_cvss`, `install_scripts`, `yanked`, `deprecated`, `provenance_unverified`, `provenance_dropped`, `provenance_identity_changed` | the threshold, or 0 where the policy sets the check to `allow` |
-| the proxy's own | `no_strong_digest`, `not_listed`, `unservable`, `digest_mismatch`, `signature_failed` | the threshold |
+| the proxy's own | `no_strong_digest`, `unservable`, `digest_mismatch`, `signature_failed` | the threshold. A version the metadata does not list is refused whatever is weighed, so it has no weight |
 | reported today, refusing nothing | the advisory kinds, the detectors' rules, `trustpub_*`, `signing_key_*` | as today |
 
 So an unedited policy refuses what it refuses today. `version: 1` is changed, not a

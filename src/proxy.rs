@@ -1207,13 +1207,24 @@ async fn filtered_document(
         base,
         origins: &proxy.config.origins,
         refused_by_policy: &refused_by_policy.versions,
-        refuse_unservable: proxy.config.refuse_unservable,
+        refuse_unservable: refuses_unservable(proxy),
         path,
     });
     DocumentStep::Forward {
         body,
         refused: refused_by_policy,
     }
+}
+
+/// Whether a version on an origin the proxy does not serve is refused alone: while
+/// [`crate::env::REFUSE_UNSERVABLE`] is on and the policy weighs `unservable` to the threshold.
+fn refuses_unservable(proxy: &Proxy) -> bool {
+    proxy.config.refuse_unservable
+        && proxy
+            .config
+            .policy
+            .as_deref()
+            .is_none_or(|policy| policy.weight_of("unservable") >= policy.risk_threshold)
 }
 
 /// A cooldown longer than this, a century, dates a document as this one does.
@@ -1463,6 +1474,18 @@ struct Weighing {
     intel: Option<PackageIntel>,
     refusal: Option<enforce::Refusal>,
     signals: Vec<Signal>,
+    own: Own,
+}
+
+/// Whether the proxy's own refusals, such as an origin it does not serve, answer.
+#[derive(Debug)]
+enum Own {
+    /// Their weights, with the rest, are under the threshold: each is passed over.
+    Passed,
+    /// Their weights alone reach it: the first present answers as it always has.
+    Refused,
+    /// Only with the policy's do they reach it: refused in the policy's words.
+    WithPolicy(enforce::Refusal),
 }
 
 /// Look up the record for an artifact GET, decide on it before a byte is fetched, and
@@ -1509,20 +1532,21 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         state,
     } = deciding.analysed(&record, &fetch, times.as_ref()).await;
     let today = crate::policy::today();
+    let own = deciding.own_signals(unservable.as_ref());
     let weighing = match deciding
-        .refusal(&record, (times.as_ref(), &provenance), &detections, today)
+        .refusal(
+            &record,
+            (times.as_ref(), &provenance),
+            (&detections, own),
+            today,
+        )
         .await
     {
         Ok(decided) => decided,
-        Err(unavailable) => {
-            let request = &deciding.request;
-            let version = Some(request.claimed_version);
-            let (at, key, account) = (request.repository, request.key, request.account);
-            audit_not_ready(proxy, at, key, version, &unavailable, account);
-            return ArtifactStep::Answer(unavailable.response());
-        }
+        Err(unavailable) => return deciding.not_ready(unavailable),
     };
     let (intel, refusal, signals) = (weighing.intel, weighing.refusal, weighing.signals);
+    let own = weighing.own;
     deciding.report_signals(&signals);
     if sourced.is_none() {
         deciding.compare_source(&described, &fetch, refusal.as_ref());
@@ -1531,7 +1555,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     deciding.detect(&record, &detected, refusal.as_ref());
     let awaiting = deciding.awaiting(&record, &detected, refusal.as_ref());
     let (answered, step) = deciding.answer(
-        refusal.as_ref(),
+        (refusal.as_ref(), &own),
         unservable,
         fetch,
         Held {
@@ -1555,6 +1579,11 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         &signals,
     )
     .map(|line| Written { line, basis });
+    with_audit(proxy, step, written)
+}
+
+/// `step` with its audit line: carried by a fetch until the upstream answers, else written.
+fn with_audit(proxy: &Proxy, step: ArtifactStep, written: Option<Written>) -> ArtifactStep {
     match step {
         ArtifactStep::Fetch(fetch) => ArtifactStep::Fetch(ArtifactFetch {
             audit: written.map(Box::new),
@@ -1826,28 +1855,73 @@ impl<'a> Deciding<'a> {
         &self,
         record: &PackageRecord,
         (times, provenance): (Option<&facts::PublishTimes>, &Provenance),
-        detections: &[(String, crate::analysis::detector::Detection)],
+        (detections, own): (
+            &[(String, crate::analysis::detector::Detection)],
+            Vec<Signal>,
+        ),
         today: jiff::civil::Date,
     ) -> Result<Weighing, NotReady> {
         let intel = intel_for(self.proxy, self.request.key, self.request.path).await?;
-        let signals = self.signals(detections, record, intel.as_ref());
+        let mut signals = self.signals(detections, record, intel.as_ref());
         let keys: Vec<String> = signals.iter().map(Signal::key).collect();
-        let refusal = match enforce::artifact(
-            self.proxy.config.policy.as_deref(),
+        let policy = self.proxy.config.policy.as_deref();
+        let decided = |keys: &[String]| match enforce::artifact(
+            policy,
             record,
             times,
             intel.as_ref(),
-            (provenance, &keys),
+            (provenance, keys),
             today,
         ) {
             enforce::Verdict::Refuse(refusal) => Some(refusal),
             enforce::Verdict::Serve => None,
         };
+        let refusal = decided(&keys);
+        let own_keys: Vec<String> = own.iter().map(Signal::key).collect();
+        let alone = policy.map_or(!own.is_empty(), |policy| {
+            let weight: u32 = own_keys.iter().map(|key| policy.weight_of(key)).sum();
+            !own.is_empty() && weight >= policy.risk_threshold
+        });
+        let own_answer = if alone {
+            Own::Refused
+        } else if own.is_empty() || self.proxy.config.mode == Mode::Observe {
+            Own::Passed
+        } else {
+            match decided(&[keys, own_keys].concat()) {
+                Some(refusal) => Own::WithPolicy(refusal),
+                None => Own::Passed,
+            }
+        };
+        signals.extend(own);
         Ok(Weighing {
             intel,
             refusal,
             signals,
+            own: own_answer,
         })
+    }
+
+    /// The answer when the intel store cannot answer, audited.
+    fn not_ready(&self, unavailable: NotReady) -> ArtifactStep {
+        let request = &self.request;
+        let version = Some(request.claimed_version);
+        let (at, key, account) = (request.repository, request.key, request.account);
+        audit_not_ready(self.proxy, at, key, version, &unavailable, account);
+        ArtifactStep::Answer(unavailable.response())
+    }
+
+    /// The proxy's own refusals of what `fetch` would serve, as signals: today an origin the
+    /// proxy does not serve, while [`crate::env::REFUSE_UNSERVABLE`] is on.
+    fn own_signals(&self, unservable: Option<&String>) -> Vec<Signal> {
+        unservable
+            .filter(|_| self.proxy.config.refuse_unservable)
+            .map(|origin| Signal {
+                detector: crate::policy::decide::PROXY.to_owned(),
+                rule: "unservable".to_owned(),
+                detail: format!("published at {origin}, which the proxy does not serve"),
+            })
+            .into_iter()
+            .collect()
     }
 
     /// The record for the requested file, from the metadata held or fetched now.
@@ -2151,7 +2225,7 @@ impl<'a> Deciding<'a> {
     /// Returns what the audit line records, and the answer.
     fn answer(
         &self,
-        refusal: Option<&enforce::Refusal>,
+        (refusal, own): (Option<&enforce::Refusal>, &Own),
         unservable: Option<String>,
         fetch: ArtifactFetch,
         held: Held,
@@ -2162,7 +2236,11 @@ impl<'a> Deciding<'a> {
             }
             self.observed(refusal);
         }
-        if let Some(origin) = unservable.filter(|_| self.proxy.config.refuse_unservable) {
+        if let Own::WithPolicy(refusal) = own {
+            return (audit::Answered::Refused, self.refused_by_policy(refusal));
+        }
+        let own_refuses = matches!(own, Own::Refused);
+        if let Some(origin) = unservable.filter(|_| own_refuses) {
             return (audit::Answered::Unservable, self.unservable(&origin));
         }
         match held.claiming {
@@ -4020,7 +4098,7 @@ impl Proxy {
                 .refusal(
                     &analysed.record,
                     (dated.times.as_ref(), &analysed.provenance),
-                    &[],
+                    (&[], Vec::new()),
                     crate::policy::today(),
                 )
                 .await
@@ -6286,6 +6364,72 @@ mod tests {
             let (status, body) = refused(step).await;
             assert_eq!(status.as_u16(), expected, "{agent}");
             assert!(body.contains("elsewhere.example"), "{agent}: {body}");
+        }
+    }
+
+    /// `unservable` weighed under the threshold is passed over, and refused in the policy's
+    /// words with a check's weight. Observe mode refuses it only when it weighs it alone.
+    #[tokio::test]
+    async fn an_unservable_origin_weighed_under_the_threshold_is_passed_over() {
+        let lowered = "version: 1\ncooldown_days: 0\nsignal_weights: { unservable: 50 }\n";
+        let proxy = offline(None, Some(lowered)).with_refuse_unservable(true);
+        let DocumentStep::Forward { body, .. } = resolve(
+            &proxy,
+            "/npm/widget",
+            npm::ABBREVIATED_ACCEPT,
+            OFFSITE_PACKUMENT.as_bytes(),
+        )
+        .await
+        else {
+            panic!("the packument is forwarded");
+        };
+        assert!(body.is_none(), "nothing removed, nothing pointed here");
+        hold_document(
+            &proxy,
+            OFFSITE_PACKUMENT.as_bytes(),
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let (_, body) = refused(pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await).await;
+        assert!(
+            !body.contains("elsewhere.example") && body.contains("no strong digest"),
+            "past its origin, to its digest: {body}"
+        );
+
+        let with_denial = "version: 1\ncooldown_days: 0\n\
+                           signal_weights: { unservable: 50, denied: 50 }\n\
+                           denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: t\n";
+        let proxy = offline(None, Some(with_denial)).with_refuse_unservable(true);
+        hold_document(
+            &proxy,
+            OFFSITE_PACKUMENT.as_bytes(),
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let (status, body) = refused(pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            body.contains("signals: unservable 50; risk score 100 of 100"),
+            "{body}"
+        );
+
+        for (weight, refuses) in [(100, true), (50, false)] {
+            let yaml = format!(
+                "version: 1\ncooldown_days: 0\nsignal_weights: {{ unservable: {weight} }}\n"
+            );
+            let observing = offline(None, Some(&yaml))
+                .with_refuse_unservable(true)
+                .with_mode(Mode::Observe);
+            hold_document(
+                &observing,
+                OFFSITE_PACKUMENT.as_bytes(),
+                crate::record::DocumentDetail::Abbreviated,
+            );
+            let (_, body) =
+                refused(pinned(&observing, "/npm/widget/-/widget-1.0.0.tgz").await).await;
+            assert_eq!(
+                body.contains("elsewhere.example"),
+                refuses,
+                "weight {weight}: {body}"
+            );
         }
     }
 

@@ -371,10 +371,10 @@ impl Policy {
     }
 
     /// What the rule `key` adds to a risk score: its `signal_weights` entry, else the
-    /// threshold for a check's rule, so a failed check refuses alone, else its default.
+    /// threshold for a check's or the proxy's rule, so it refuses alone, else its default.
     pub fn weight_of(&self, key: &str) -> u32 {
         self.signal_weights.set(key).unwrap_or_else(|| {
-            if decide::RULES.contains(&key) {
+            if decide::RULES.contains(&key) || decide::PROXY_RULES.contains(&key) {
                 self.risk_threshold
             } else {
                 crate::signal::default_weight(key)
@@ -1090,6 +1090,10 @@ mod tests {
                     "provenance_unverified",
                     "provenance_dropped",
                     "provenance_identity_changed",
+                    "no_strong_digest",
+                    "unservable",
+                    "digest_mismatch",
+                    "signature_failed",
                     "new_package",
                     "new_publisher",
                     "no_repository",

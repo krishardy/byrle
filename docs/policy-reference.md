@@ -211,6 +211,10 @@ audit verify` weighs them again.
 | `provenance_unverified` | an attestation or signature failed verification | `risk_threshold` |
 | `provenance_dropped` | it has none, after a version with one | `risk_threshold` |
 | `provenance_identity_changed` | its attestation names another repository or workflow than the version before it | `risk_threshold` |
+| `unservable` | its artifact is on an origin the proxy does not serve, while `BYRLE_REFUSE_UNSERVABLE` is on. Under the threshold, the version stays in the document and its fetch goes on; the proxy never fetches from that origin | `risk_threshold` |
+| `no_strong_digest` | no strong digest is published for its artifact. Weighed from [risk-score-plan](risk-score-plan.md) step 5 | `risk_threshold` |
+| `digest_mismatch` | its bytes are not the ones its digest or claim names. Weighed from step 5 | `risk_threshold` |
+| `signature_failed` | a Maven `.pom` or `.module` whose signature fails. Weighed from step 5 | `risk_threshold` |
 | `new_package` | the first version was published under 30 days ago | 1 |
 | `new_publisher` | no earlier version was published by this account | 1 |
 | `no_repository` | a full npm document names no repository | 1 |
@@ -230,7 +234,11 @@ audit verify` weighs them again.
 | `advisory_unmaintained` | RustSec reports the crate unmaintained | 2 |
 | `advisory_notice` | RustSec published a notice about it, or a kind this build does not know | 1 |
 
-The keys above are the rules of the policy's checks, of the five detectors built in,
+`unservable`, `no_strong_digest`, `digest_mismatch` and `signature_failed` are the proxy's
+own refusals. Observe mode still refuses a version when they weigh the threshold alone; a
+version the metadata does not list is refused whatever is weighed.
+
+The keys above are the rules of the policy's checks, of the proxy's refusals, of the five detectors built in,
 `metadata`, `source`, `virustotal`, `trustpub` and `signing`, and of the advisories the
 intel store holds, which are named without the detector. An unsound, unmaintained or notice advisory refuses
 nothing: it is a signal only. A vulnerability or malware advisory is also refused by
