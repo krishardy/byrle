@@ -4239,7 +4239,8 @@ struct Auditing<'a> {
 }
 
 /// The versions in this metadata document the policy refuses, every one asked, with
-/// checks the record cannot answer dropped. Publish times come from the records alone.
+/// checks the record cannot answer dropped and the advisories' signals weighed. Publish
+/// times come from the records alone.
 fn policy_refused_versions(
     metadata: &PackageMetadata,
     policy: Option<&Policy>,
@@ -4263,9 +4264,23 @@ fn policy_refused_versions(
     );
     for (record, previous) in metadata.records.iter().zip(&predecessors) {
         let provenance = attestation::from_metadata(record, previous);
-        let enforce::Verdict::Refuse(refusal) =
-            enforce::artifact(Some(policy), record, None, intel, (&provenance, &[]), today)
-        else {
+        let keys: Vec<String> = intel.map_or_else(Vec::new, |intel| {
+            let ecosystem = record.package.key().ecosystem();
+            crate::signal::of_advisories(
+                &intel.for_version(ecosystem.as_str(), record.package.version()),
+            )
+            .iter()
+            .map(Signal::key)
+            .collect()
+        });
+        let enforce::Verdict::Refuse(refusal) = enforce::artifact(
+            Some(policy),
+            record,
+            None,
+            intel,
+            (&provenance, &keys),
+            today,
+        ) else {
             continue;
         };
         strongest = std::cmp::max_by_key(strongest, refusal.action, |a| a.strength());
@@ -6096,6 +6111,52 @@ mod tests {
 
     const COOLDOWN_AND_DENIAL: &str = "version: 1\ncooldown_days: 7\n\
                                        denials:\n  - purl: pkg:npm/pkg@1.0.0\n    reason: test\n";
+
+    /// An advisory under `max_cvss` is a signal: weighed to the threshold, it removes every
+    /// version it is reported against, and with its default weight none.
+    #[test]
+    fn an_advisory_weighed_to_the_threshold_removes_the_version() {
+        let intel = PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: vec![(
+                None,
+                crate::intel::store::Record {
+                    advisory_id: "GHSA-1".to_owned(),
+                    aliases: Vec::new(),
+                    source: "osv".to_owned(),
+                    cvss: Some(5.0),
+                    band: None,
+                    cvss_source: None,
+                    exploited: false,
+                    malware: false,
+                    informational: None,
+                    cached: None,
+                },
+            )],
+            ranges: Vec::new(),
+            exploitation_loaded: true,
+        };
+        let refused = |yaml: &str| {
+            policy_refused_versions(
+                &two_versions(),
+                Some(&policy(yaml)),
+                Some(&intel),
+                "/npm/pkg",
+                None,
+                Mode::Enforce,
+            )
+        };
+        assert!(
+            refused("version: 1\ncooldown_days: 0\n")
+                .versions
+                .is_empty()
+        );
+        let weighed = refused(
+            "version: 1\ncooldown_days: 0\nsignal_weights: { advisory_vulnerability: 100 }\n",
+        );
+        assert_eq!(weighed.versions.len(), 2);
+        assert_eq!(weighed.checks, ["signals"]);
+    }
 
     /// The resolution event carries the strongest action of the versions removed: 1.0.0 is
     /// blocked by a denial and 2.0.0 quarantined by the cooldown. It names the account.

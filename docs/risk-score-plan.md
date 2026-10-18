@@ -172,6 +172,9 @@ present and their score; the verdict is a refusal when the score reaches
       as having none. `explain`'s verdict includes the signals it lists, and shows the
       score against the threshold.
 4. The metadata filters refuse by the score of what each document says.
+   Done 2026-10-18: each version a document lists is decided on its checks and the signals
+   of the advisories the intel store holds against it. The detectors' signals are known
+   only once the version's artifact is analysed, so a document is filtered without them.
 5. Group C as signals, each answered as below when its weight is under the threshold.
 6. The surprise score for a dropped signature or attestation, the first item #42 names:
    P(unsigned) = (weighted unsigned + 1) / (weighted total + 2) over earlier versions,

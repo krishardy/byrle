@@ -195,7 +195,7 @@ The other rules' weights add to the same score on a pinned fetch, from the detec
 results stored by then and the advisories against the version, and the refusal names them
 when the checks alone would not have refused. With their defaults they sum to at most 95, so
 they refuse only with a check, or with weights the policy raises. A metadata document is
-filtered on the checks alone. The audit line records each rule in its `inputs`, so `byrle
+filtered on the checks and the advisories' signals, which are all it can know. The audit line records each rule in its `inputs`, so `byrle
 audit verify` weighs them again.
 
 | Key | Signal | Default |
