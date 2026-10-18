@@ -478,12 +478,18 @@ fn publishers<L: Fn(&str) -> Option<OsString>>(
                 let pace = detector.awaited().map_or_else(String::new, |each| {
                     format!(", one request each {} ms", each.as_millis())
                 });
-                info!(
-                    byrle.config.variable = %env::CRATES_API,
-                    byrle.detector = detector.name(),
+                let said = format!(
                     "publisher lookup on: each {repository} version served is looked up{pace}, \
                      for the {rules} signals"
                 );
+                match detector.configured_by() {
+                    Some(variable) => info!(
+                        byrle.config.variable = %variable,
+                        byrle.detector = detector.name(),
+                        "{said}"
+                    ),
+                    None => info!(byrle.detector = detector.name(), "{said}"),
+                }
                 made.push(detector);
             }
             None => info!(
@@ -977,6 +983,17 @@ mod tests {
         assert!(
             log.contains("maven version served is looked up, for the signing_key_new"),
             "{log}"
+        );
+        let line = |text: &str| {
+            log.lines()
+                .find(|line| line.contains(text))
+                .unwrap_or_default()
+        };
+        let crates_api = env::CRATES_API.to_string();
+        assert!(line("cargo version served").contains(&crates_api), "{log}");
+        assert!(
+            !line("maven version served").contains(&crates_api),
+            "the signing detector reads no variable: {log}"
         );
         let mirror = [(env::UPSTREAM_CARGO, "https://mirror.example/index/")];
         let (started, log) = logged("startup-trustpub-off", &mirror).await;

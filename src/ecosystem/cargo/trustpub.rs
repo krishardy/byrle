@@ -173,6 +173,10 @@ impl Detector for TrustPub {
         Some(self.interval)
     }
 
+    fn configured_by(&self) -> Option<crate::env::Var> {
+        Some(crate::env::CRATES_API)
+    }
+
     /// A version the pages do not list is older than [`OPENED`] when they reached it, and
     /// nothing fires. Otherwise it is not listed yet, and nothing is stored.
     fn detect<'a>(&'a self, target: &'a Target) -> Detecting<'a> {

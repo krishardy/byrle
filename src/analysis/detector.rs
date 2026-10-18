@@ -143,6 +143,11 @@ pub trait Detector<S: ?Sized = Target>: Send + Sync {
         None
     }
 
+    /// The variable that configures it, `None` when none does.
+    fn configured_by(&self) -> Option<crate::env::Var> {
+        None
+    }
+
     /// Run it on `subject`: a [`Target`] for a command, what the proxy holds for one built
     /// in. Each caller decides when it runs and whether its result is stored.
     /// Errors when it could not run at all, which stores nothing.
