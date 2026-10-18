@@ -210,6 +210,44 @@ present and their score; the verdict is a refusal when the score reaches
    newest weighted most, the signal −log2 P. Its half-life and weight measured on Central's
    and npm's histories first. `gradle-versions-plugin` 0.52.0 is the case: refused today
    as `Dropped { previous: 0.11.1 }` after 44 unsigned versions.
+
+   Measured 2026-10-18 on 57 npm packages' full documents, 63,423 versions, and
+   gradle-versions-plugin's 58 on the Gradle plugin portal. A version's history is the
+   versions published before it in its release line: the same major, or `0.minor`, and
+   both stable or both prerelease. Over all versions instead, the 22 legitimate drops in nx
+   score as high as its malicious versions: a backport to an older major, such as next
+   12.3.5 after 15.3.0 canaries, is unsigned after a run of signed versions on the current
+   one. The most a version can score is log2(1.44h + 2) bits, its whole history signed.
+
+   | Half-life h, versions | Most bits | Legitimate stable drops: highest | Prerelease drops ≥ 4 bits | Malicious, signed history before |
+   |---|---|---|---|---|
+   | 8 | 3.76 | 3.76, @swc/core 1.5.19 | 0 of 457 | nx 3.70 to 3.79, @rspack/core 3.62, axios 2.72 |
+   | 16 | 4.65 | 3.48, @swc/core 1.5.19 | 5 of 457 | nx 4.22 to 4.49, @rspack/core 4.04, axios 2.30 |
+   | 32 | 5.59 | 3.47, vitest 3.1.0 | 12 of 457 | nx 4.54 to 4.99, @rspack/core 4.30, axios 1.83 |
+
+   Against today's `provenance_dropped`, counted as any attested version before it, with
+   the surprise at h = 16 weighed 25 per bit, so 4 bits reach 100:
+
+   | Refused | Today | 25 per bit, h = 16 |
+   |---|---|---|
+   | legitimate stable versions | 294 | 0 |
+   | legitimate prereleases | 581 | 5 |
+   | nx and @nx/devkit, 2025-08-26 and 27 | all 10 | all 10, 105 to 112 |
+   | @rspack/core 1.1.7, 2024-12-19 | yes | yes, 101 |
+   | axios 1.14.1 and 0.30.4, 2026-03-31 | both | neither: 58 and 0 |
+   | eslint-config-prettier 8.10.1, 9.1.1, 10.1.6, 10.1.7, 2025-07-18 | all 4 | none: 0, 0, 12, 12 |
+   | @solana/web3.js 1.95.6 and 1.95.7, @ctrl/tinycolor 4.1.1 and 4.1.2, @duckdb/node-api 1.3.3 | none, no version before was attested | none |
+   | gradle-versions-plugin 0.52.0 | yes | no, 4 |
+
+   axios 1.14.1 followed signed 1.14.0, but its line has one legitimate drop, 1.13.3, four
+   versions before, which raises P(unsigned). axios 0.30.4 and eslint-config-prettier
+   8.10.1 and 9.1.1 had no attested version in their own line; 10.1.6 and 10.1.7 followed
+   the package's first two attested versions, 10.1.4 and 10.1.5.
+
+   Central gives nothing to calibrate against: of eight artifacts' 1,243 versions
+   (commons-lang3, guava, slf4j-api, jackson-databind, okhttp, kotlin-stdlib, netty-handler,
+   junit), every version after each one's first signed version has a `.pom.asc`, except
+   kotlin-stdlib 1.5.10 to 1.5.30-RC, seven versions.
 7. Docs: policy-reference, request-flow, threat-model, quickstart §4, the README.
 
 Raised beside this plan, and not part of it: the PyPI index keeps a version whose files are
