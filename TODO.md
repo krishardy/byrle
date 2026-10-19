@@ -464,7 +464,9 @@ Items that I've added that are not stage-bound.
     Done 2026-10-19: any other path is `RequestTarget::Unrecognised` and refused, and
     each smoke fails on one.
 46. The PR pre-merge checks refuse a pull request with a commit that has no
-    `Signed-off-by:` line. Raised 2026-10-19.
+    `Signed-off-by:` line. Raised 2026-10-19. Done 2026-10-19: CI's `signed-off` job runs
+    `make signed-off` on each pull request, refusing a commit, but a merge, with no
+    sign-off naming its author's email.
 47. `compose.yaml`, `Containerfile` and `Containerfile.release` move from the repository
     root to `container/`. Raised 2026-10-19.
 48. A performance review of the Postgres schema and migrations: which data types or
@@ -3161,7 +3163,8 @@ Plan for cargo and the adapter interface before it: [cargo-plan](docs/cargo-plan
 - [ ] `[!]` Add LICENSE, DCO sign-off in CONTRIBUTING, trademark note
   - [x] `LICENSE`, Apache-2.0, and `license` in `Cargo.toml`. 2026-09-28.
   - [x] `CONTRIBUTING.md` with the DCO 1.1 and `git commit -s`. 2026-09-28.
-  - [ ] A check that every commit is signed off.
+  - [x] A check that every commit is signed off. 2026-10-19, ad-hoc #46: `make signed-off`,
+        on pull requests in CI.
   - [ ] The trademark note.
 - [x] `[!]` README: document known bypass vectors honestly (plan §7)
       Done 2026-09-29: the README summarises them and links `docs/threat-model.md`.

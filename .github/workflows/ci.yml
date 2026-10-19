@@ -1,4 +1,4 @@
-# Lint, unit tests and the offline query cache check.
+# Lint, unit tests, the offline query cache check, and a pull request's sign-offs.
 #
 # Each job runs a `make` target, so what CI checks is what a contributor runs. The logic
 # lives in `scripts/make/`, per CLAUDE.md; nothing here is more than an invocation.
@@ -53,3 +53,16 @@ jobs:
       # Starts its own Postgres container, so no `services:` block: the same script a
       # contributor runs is the one that runs here.
       - run: make sqlx-prepare ARGS=--check
+
+  # Pull requests only: the commits a pull request adds, each signed off by its author.
+  signed-off:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: make signed-off BASE="origin/$BASE_REF"
+        env:
+          BASE_REF: ${{ github.base_ref }}

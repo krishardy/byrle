@@ -13,9 +13,10 @@ Signed-off-by: Your Name <you@example.com>
 ```
 
 `git commit -s` adds it from `user.name` and `user.email`. The name is your real name, not
-a pseudonym. A pull request with an unsigned commit is not merged until the commit is
-signed off: `git commit --amend -s` for the last commit, or `git rebase --signoff` for a
-branch.
+a pseudonym. A pull request with a commit that is not signed off fails CI's `signed-off`
+job, `make signed-off`, until it is: `git commit --amend -s` for the last commit, or
+`git rebase --signoff origin/main` for a branch. The sign-off must carry the commit
+author's email.
 
 No contributor licence agreement is asked for.
 
