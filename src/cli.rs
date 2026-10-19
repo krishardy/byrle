@@ -217,9 +217,12 @@ pub enum IntelCommand {
 #[derive(Debug, PartialEq, Args)]
 pub struct History {
     /// Most entries to print
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, default_value_t = DEFAULT_HISTORY_LIMIT, value_parser = clap::value_parser!(u32).range(1..))]
     pub limit: u32,
 }
+
+/// How many entries `intel history` prints unless told.
+pub const DEFAULT_HISTORY_LIMIT: u32 = 20;
 
 /// `explain --policy` or `explain <purl>`, exactly one.
 #[derive(Debug, PartialEq, Args)]

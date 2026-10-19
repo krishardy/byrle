@@ -94,8 +94,14 @@ pub const ARTIFACT_PATH: &str = "/api/v1/artifact";
 /// Under the console's path: `GET` what `byrle artifact export` prints on the deployment.
 pub const ARTIFACTS_PATH: &str = "/api/v1/artifacts";
 
+/// Under the console's path: `GET` what `byrle intel history` prints on the deployment.
+pub const INTEL_HISTORY_PATH: &str = "/api/v1/intel/history";
+
+/// Under the console's path: `GET` what `byrle status` prints on the deployment.
+pub const ECOSYSTEMS_PATH: &str = "/api/v1/ecosystems";
+
 /// Every console route.
-pub const ROUTES: [Route; 31] = [
+pub const ROUTES: [Route; 33] = [
     Route {
         method: Method::GET,
         path: super::pages::HOME_PATH,
@@ -312,6 +318,22 @@ pub const ROUTES: [Route; 31] = [
         kind: Kind::Api,
         guard: Guard::Needs(Permission::PackagesRead, |site, asked| {
             Box::pin(super::commands::artifacts(site, asked.parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: INTEL_HISTORY_PATH,
+        kind: Kind::Api,
+        guard: Guard::Needs(Permission::PackagesRead, |site, asked| {
+            Box::pin(super::commands::history(site, asked.parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: ECOSYSTEMS_PATH,
+        kind: Kind::Api,
+        guard: Guard::Needs(Permission::PackagesRead, |site, _| {
+            Box::pin(super::commands::ecosystems(site))
         }),
     },
     Route {

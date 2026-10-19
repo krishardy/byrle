@@ -1189,6 +1189,66 @@
         "x-byrle-permission": "requests.read"
       }
     },
+    "/api/v1/ecosystems": {
+      "get": {
+        "operationId": "ecosystems",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Printed"
+                }
+              }
+            },
+            "description": "What the command printed, and its exit code"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant packages.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No proxy to answer from"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET ecosystems`: what `byrle status` prints on the deployment.",
+        "tags": [
+          "commands"
+        ],
+        "x-byrle-permission": "packages.read"
+      }
+    },
     "/api/v1/events": {
       "get": {
         "operationId": "events",
@@ -1443,6 +1503,89 @@
         "tags": [
           "status"
         ]
+      }
+    },
+    "/api/v1/intel/history": {
+      "get": {
+        "operationId": "history",
+        "parameters": [
+          {
+            "description": "Most entries to print, 20 unless given.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Printed"
+                }
+              }
+            },
+            "description": "What the command printed, and its exit code"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A limit that is not a whole number from 1"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant packages.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No proxy, or one with no intel store"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET intel/history`: what `byrle intel history` prints on the deployment.",
+        "tags": [
+          "commands"
+        ],
+        "x-byrle-permission": "packages.read"
       }
     },
     "/api/v1/login": {

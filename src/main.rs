@@ -169,6 +169,16 @@ async fn run_doctor() -> std::process::ExitCode {
 
 /// `byrle status`: what this build does for each ecosystem, and which streams cover it.
 async fn run_status() -> std::process::ExitCode {
+    match remote("status") {
+        Err(code) => return code,
+        Ok(Some(remote)) => {
+            let printed = remote
+                .get("status", byrle::console::routes::ECOSYSTEMS_PATH, &[])
+                .await;
+            return std::process::ExitCode::from(printed.print());
+        }
+        Ok(None) => {}
+    }
     let environment = env::process();
     let upstreams = or_exit(environment.upstreams());
     use byrle::intel::store::Intel as _;
@@ -343,6 +353,21 @@ async fn run_token(command: cli::TokenCommand) -> std::process::ExitCode {
 
 /// `byrle intel history`: the newest entries of the ingestion history.
 async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
+    match remote("intel history") {
+        Err(code) => return code,
+        Ok(Some(remote)) => {
+            let query = [("limit", args.limit.to_string())];
+            let printed = remote
+                .get(
+                    "intel history",
+                    byrle::console::routes::INTEL_HISTORY_PATH,
+                    &query,
+                )
+                .await;
+            return std::process::ExitCode::from(printed.print());
+        }
+        Ok(None) => {}
+    }
     let intel = match postgres::required(&env::process()).await {
         Ok(intel) => intel,
         Err(refused) => {

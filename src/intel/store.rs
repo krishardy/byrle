@@ -229,6 +229,12 @@ pub trait Intel: Send + Sync {
     /// same as a package nothing is known against.
     fn package<'a>(&'a self, ecosystem: &'a str, name: &'a str)
     -> Lookup<'a, Option<PackageIntel>>;
+
+    /// The newest `limit` ingestions, newest first, as `byrle intel history` prints them. A
+    /// store that records none answers none.
+    fn history(&self, _limit: u32) -> Lookup<'_, Vec<crate::intel::history::Ingestion>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 
 /// Why a command has no intel to judge a package with.
@@ -312,7 +318,7 @@ pub mod testing {
         })))
     }
 
-    /// A store that answers for any package and then cannot say its snapshot.
+    /// A store that answers for any package and then cannot say its snapshot or history.
     pub struct Unsnapshotted;
 
     impl Intel for Unsnapshotted {
@@ -321,6 +327,10 @@ pub mod testing {
         }
 
         fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move { Err(IntelError::Backend(sqlx::Error::PoolTimedOut)) })
+        }
+
+        fn history(&self, _: u32) -> Lookup<'_, Vec<crate::intel::history::Ingestion>> {
             Box::pin(async move { Err(IntelError::Backend(sqlx::Error::PoolTimedOut)) })
         }
 

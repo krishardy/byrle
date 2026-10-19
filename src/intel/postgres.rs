@@ -631,4 +631,8 @@ impl Intel for PgIntel {
             Ok(Some(intel))
         })
     }
+
+    fn history(&self, limit: u32) -> Lookup<'_, Vec<crate::intel::history::Ingestion>> {
+        Box::pin(PgIntel::history(self, limit))
+    }
 }

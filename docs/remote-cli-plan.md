@@ -66,7 +66,8 @@ among the configuration; no route decides a package.
    `Proxy::analyses`, the analyser's store. An artifact is sent as `Artifact` writes it,
    which reads back as the same artifact.
 5. `intel history` (`GET api/v1/intel/history?limit=`) and `status` (`GET
-   api/v1/ecosystems`).
+   api/v1/ecosystems`). Done 2026-10-19: `Intel::history`, which a store recording no
+   ingestion answers empty, and the proxy's upstreams and snapshot.
 6. `policy check` (`POST api/v1/policy/check`) and `policy diff` (`POST api/v1/policy/diff`).
 7. `make smoke-console` asks each route through the CLI with a `reader` token, and is
    refused with a token of an account with no role. Docs: `docs/console-api.md`,

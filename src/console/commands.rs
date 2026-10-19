@@ -153,6 +153,92 @@ async fn exported(site: &Site, parts: &Parts) -> Result<Printed, Refused> {
     Ok(Printed::written(&out, &err, code))
 }
 
+/// `GET intel/history`'s query string.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct HistoryQuery {
+    /// Most entries to print, 20 unless given.
+    #[serde(default = "default_limit")]
+    limit: u32,
+}
+
+fn default_limit() -> u32 {
+    crate::cli::DEFAULT_HISTORY_LIMIT
+}
+
+/// `GET intel/history`: what `byrle intel history` prints on the deployment.
+#[utoipa::path(
+    get,
+    path = super::routes::INTEL_HISTORY_PATH,
+    tag = "commands",
+    security(("session" = []), ("token" = [])),
+    extensions(("x-byrle-permission" = json!("packages.read"))),
+    params(HistoryQuery),
+    responses(
+        (status = 200, description = "What the command printed, and its exit code", body = Printed),
+        (status = 400, description = "A limit that is not a whole number from 1", body = Problem),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 403, description = "The caller's roles do not grant packages.read", body = Problem),
+        (status = 503, description = "No proxy, or one with no intel store", body = Problem),
+    ),
+)]
+pub async fn history(site: Arc<Site>, parts: Parts) -> Response {
+    answered(histories(&site, &parts).await)
+}
+
+/// What `byrle intel history` prints for the query string of `parts`.
+async fn histories(site: &Site, parts: &Parts) -> Result<Printed, Refused> {
+    let asked = query::<HistoryQuery>(parts).map_err(Refused::bad)?;
+    if asked.limit == 0 {
+        return Err(Refused::bad("limit is at least 1".to_owned()));
+    }
+    let store = super::config::beside(site)?
+        .intel_store()
+        .ok_or_else(|| Refused::unavailable("the deployment has no intel store"))?;
+    Ok(match store.history(asked.limit).await {
+        Ok(entries) => Printed::of(
+            "intel history",
+            &[],
+            crate::intel::history::render(&entries),
+            0,
+        ),
+        Err(e) => Printed::of("intel history", &[e.to_string()], String::new(), 1),
+    })
+}
+
+/// `GET ecosystems`: what `byrle status` prints on the deployment.
+#[utoipa::path(
+    get,
+    path = super::routes::ECOSYSTEMS_PATH,
+    tag = "commands",
+    security(("session" = []), ("token" = [])),
+    extensions(("x-byrle-permission" = json!("packages.read"))),
+    responses(
+        (status = 200, description = "What the command printed, and its exit code", body = Printed),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 403, description = "The caller's roles do not grant packages.read", body = Problem),
+        (status = 503, description = "No proxy to answer from", body = Problem),
+    ),
+)]
+pub async fn ecosystems(site: Arc<Site>) -> Response {
+    answered(statused(&site).await)
+}
+
+/// What `byrle status` prints on the proxy beside `site`.
+async fn statused(site: &Site) -> Result<Printed, Refused> {
+    let proxy = super::config::beside(site)?;
+    let mut notes = Vec::new();
+    let snapshot = match proxy.intel_store() {
+        Some(store) => store.snapshot().await.unwrap_or_else(|e| {
+            notes.push(format!("the intel store could not be read: {e}"));
+            None
+        }),
+        None => None,
+    };
+    let report = crate::status::report(proxy.upstreams(), snapshot.as_ref());
+    Ok(Printed::of("status", &notes, report, 0))
+}
+
 /// The analysis store of the proxy beside `site`. 503 when it keeps none.
 fn analyses(site: &Site) -> Result<Arc<dyn crate::analysis::store::Analyses>, Refused> {
     super::config::beside(site)?
@@ -313,6 +399,71 @@ pub(crate) mod tests {
         }
     }
 
+    /// `intel history` and `status` are answered from the deployment's intel store and
+    /// upstreams; a store that cannot be read says so.
+    #[tokio::test]
+    async fn intel_history_and_status_are_answered_from_the_deployment() {
+        use crate::console::routes::{ECOSYSTEMS_PATH, INTEL_HISTORY_PATH};
+        use crate::intel::store::testing::{Unsnapshotted, knowing_nothing};
+        let knowing = policed().with_intel(Some(Arc::new(knowing_nothing())));
+        let url = console_beside(knowing).await;
+        let carol = asking(&url, "carol");
+        let history = carol.get("intel history", INTEL_HISTORY_PATH, &[]).await;
+        assert_eq!(history.code, 0, "{history:?}");
+        assert_eq!(
+            history.stdout,
+            crate::intel::history::render(&[]),
+            "a store that records no ingestion"
+        );
+        let status = carol.get("status", ECOSYSTEMS_PATH, &[]).await;
+        assert_eq!(status.code, 0, "{status:?}");
+        assert!(status.stdout.starts_with("byrle status\n"), "{status:?}");
+        let zero = carol
+            .get(
+                "intel history",
+                INTEL_HISTORY_PATH,
+                &[("limit", "0".to_owned())],
+            )
+            .await;
+        assert!(zero.stderr.contains("limit is at least 1"), "{zero:?}");
+        let word = carol
+            .get(
+                "intel history",
+                INTEL_HISTORY_PATH,
+                &[("limit", "some".to_owned())],
+            )
+            .await;
+        assert!(word.stderr.contains("400 Bad Request"), "{word:?}");
+
+        let broken = console_beside(policed().with_intel(Some(Arc::new(Unsnapshotted)))).await;
+        let carol = asking(&broken, "carol");
+        let history = carol.get("intel history", INTEL_HISTORY_PATH, &[]).await;
+        assert_eq!(history.code, 1, "{history:?}");
+        assert!(
+            history.stderr.starts_with("byrle intel history: "),
+            "{history:?}"
+        );
+        let status = carol.get("status", ECOSYSTEMS_PATH, &[]).await;
+        assert!(
+            status
+                .stderr
+                .starts_with("byrle status: the intel store could not be read"),
+            "{status:?}"
+        );
+        let storeless = console_beside(policed()).await;
+        let refused = asking(&storeless, "carol")
+            .get("intel history", INTEL_HISTORY_PATH, &[])
+            .await;
+        assert!(
+            refused.stderr.contains("the deployment has no intel store"),
+            "{refused:?}"
+        );
+        let plain = asking(&storeless, "carol")
+            .get("status", ECOSYSTEMS_PATH, &[])
+            .await;
+        assert_eq!((plain.code, plain.stderr.as_str()), (0, ""));
+    }
+
     /// A deployment with no policy says so; a console beside no proxy is 503, and a query
     /// that does not parse 400.
     #[tokio::test]
@@ -348,6 +499,9 @@ pub(crate) mod tests {
         ] {
             assert!(matches!(refused, Err(Refused(status, _)) if status == 503));
         }
+        assert!(matches!(statused(&alone).await, Err(Refused(status, _)) if status == 503));
+        let alone_history = histories(&alone, &parts("/x")).await;
+        assert!(matches!(alone_history, Err(Refused(status, _)) if status == 503));
         let twice = exported(&alone, &parts("/x?since=2026-01-01&since=2026-01-02")).await;
         assert!(matches!(twice, Err(Refused(status, _)) if status == 400));
         let url = console_beside(Proxy::new(reqwest::Client::new())).await;
