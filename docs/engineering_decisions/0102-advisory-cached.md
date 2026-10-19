@@ -30,10 +30,13 @@ say how old every record is. `cached` can.
 
 A refresh deletes a source's rows and copies them again. Before the delete, `write_source`
 copies `(publisher_id, cached)` for that source into the temporary table `prior_cached`.
-After the copy, it sets `cached` from that table on every row whose `publisher_id` matches,
-and drops the table. Every source is written in one transaction, so the table is dropped
-per source, not at commit. Those three statements use `sqlx::query`, because `query!`
-checks a statement at build time, when `prior_cached` does not exist.
+The advisories are copied into the temporary table `advisory_load`, then inserted with
+`cached` from `prior_cached` where its `publisher_id` matches, else `now()`
+([advisory-rows-unkeyed](0121-advisory-rows-unkeyed.md)). Before 2026-10-19 each row was
+updated after the copy instead. Every source is written in one transaction, so the tables
+are dropped per source, not at commit. Those statements use `sqlx::query`, because `query!`
+checks a statement at build time, when the tables do not exist. A source whose digest is the
+one stored is not written, and keeps every `cached`.
 
 ## What it is not part of
 

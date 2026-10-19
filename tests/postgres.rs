@@ -438,6 +438,7 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
     assert_eq!(
         loaded,
         Loaded {
+            unchanged: 0,
             advisories: 1,
             aliases: 0,
             affected: 1,
@@ -545,6 +546,33 @@ async fn a_refresh_replaces_what_the_source_held() {
             osv::bundle::NPM_STREAM,
             std::slice::from_ref(&kept)
         )]))
+    );
+}
+
+/// A source loaded again with the rows it holds is not written again, and its records stay.
+#[tokio::test]
+async fn a_source_whose_rows_did_not_change_is_not_written_again() {
+    let intel = skip_without_database!("t_load_unchanged");
+    let rows = osv_fixture("MAL-2022-174");
+    let (s1, s2) = (fetch("s1"), fetch("s2"));
+    let load = |at| intel.replace_source(osv::bundle::NPM_STREAM, std::slice::from_ref(&rows), at);
+
+    let first = load(&s1).await.expect("first load");
+    let second = load(&s2).await.expect("second load");
+    assert_eq!((first.unchanged, first.advisories), (0, 1));
+    assert_eq!(
+        (second.unchanged, second.advisories, second.affected),
+        (1, 0, 0)
+    );
+    assert_eq!(second.snapshot, first.snapshot);
+    let (name, version) = target(&rows);
+    assert_eq!(
+        intel
+            .lookup("npm", &name, &version.expect("listed"))
+            .await
+            .expect("query")
+            .len(),
+        1
     );
 }
 
@@ -1143,9 +1171,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "account_password",
         "account_role",
         "advisory",
-        "advisory_affected",
         "advisory_alias",
-        "advisory_range",
         "artifact_analysis",
         "artifact_attestation",
         "artifact_claim",
@@ -1171,6 +1197,12 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
             "{table}: {keys:?}"
         );
     }
+    for table in KEYED_BY_THEIR_UNIQUE_INDEX {
+        assert!(
+            !keys.iter().any(|k| k.0 == format!("{table}.id")),
+            "{table}: {keys:?}"
+        );
+    }
     for (column, data_type, _) in keys.iter().filter(|k| k.0.ends_with(".advisory_id")) {
         assert_eq!(data_type, "bigint", "{column}");
     }
@@ -1193,6 +1225,9 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         tables.map(|t| (t.to_owned(), "id".to_owned())).to_vec()
     );
 }
+
+/// The tables with no `id`, each row named by its unique index: see 0121-advisory-rows-unkeyed.md.
+const KEYED_BY_THEIR_UNIQUE_INDEX: [&str; 2] = ["advisory_affected", "advisory_range"];
 
 /// A stream a refresh did not read because it is not configured is recorded so, and the
 /// snapshot reports it until a later refresh records the stream otherwise.
@@ -1673,7 +1708,10 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         )
         .await
         .expect("load");
-    assert_eq!((loaded.advisories, loaded.exploited), (3, 3));
+    assert_eq!(
+        (loaded.unchanged, loaded.advisories, loaded.exploited),
+        (1, 0, 3)
+    );
     assert_eq!(snapshots(&intel).await, before + 1);
     assert_eq!(
         loaded.manifest,

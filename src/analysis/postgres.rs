@@ -636,8 +636,13 @@ impl PgAnalyses {
             } => {
                 sqlx::query_scalar!(
                     r#"
-                    SELECT decision::text AS "decision!" FROM artifact_disposition
-                    WHERE ecosystem = $1 AND name = $2 AND version = $3 ORDER BY id
+                    SELECT decision::text AS "decision!" FROM (
+                        SELECT DISTINCT ON (digest) id, decision FROM artifact_decision
+                        WHERE digest IS NOT NULL
+                          AND ecosystem = $1 AND name = $2 AND version = $3
+                        ORDER BY digest, id DESC
+                    ) latest
+                    ORDER BY id
                     "#,
                     ecosystem,
                     name,

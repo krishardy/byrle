@@ -1,0 +1,120 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH v AS (\n                    SELECT advisory_id, array_agg(version ORDER BY version) AS versions\n                    FROM advisory_affected WHERE ecosystem = $1 AND name = $2\n                    GROUP BY advisory_id\n                ),\n                r AS (\n                    SELECT advisory_id, array_agg(introduced ORDER BY o) AS introduced,\n                        array_agg(introduced_excluded ORDER BY o) AS introduced_excluded,\n                        array_agg(fixed ORDER BY o) AS fixed,\n                        array_agg(last_affected ORDER BY o) AS last_affected\n                    FROM advisory_range,\n                        LATERAL (SELECT ROW(introduced, introduced_excluded, fixed, last_affected) AS o) k\n                    WHERE ecosystem = $1 AND name = $2 GROUP BY advisory_id\n                ),\n                adv AS (\n                    SELECT a.id, a.publisher_id, a.source, a.cvss, a.cvss_source,\n                        a.severity_band, a.malware, a.informational, a.cached,\n                        (a.exploited\n                            OR EXISTS (SELECT 1 FROM exploited_cve k WHERE k.cve_id = a.publisher_id)\n                            OR EXISTS (SELECT 1 FROM advisory_alias al JOIN exploited_cve k\n                                ON k.cve_id = al.alias WHERE al.advisory_id = a.id)) AS exploited,\n                        ARRAY(SELECT al.alias FROM advisory_alias al\n                            WHERE al.advisory_id = a.id ORDER BY al.alias) AS aliases\n                    FROM advisory a\n                    WHERE a.id IN (SELECT advisory_id FROM v UNION SELECT advisory_id FROM r)\n                )\n                SELECT\n                    s.digest        AS \"snapshot!\",\n                    EXISTS (SELECT 1 FROM intel_source WHERE source = $3)\n                                    AS \"exploitation_loaded!\",\n                    adv.publisher_id AS \"advisory_id?\", adv.source AS \"source?\",\n                    adv.cvss AS \"cvss?\", adv.cvss_source AS \"cvss_source?\",\n                    adv.severity_band AS \"severity_band?\", adv.exploited AS \"exploited?\",\n                    adv.malware AS \"malware?\", adv.informational AS \"informational?\",\n                    to_char(adv.cached AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"cached?\",\n                    COALESCE(adv.aliases, ARRAY[]::varchar[]) AS \"aliases!\",\n                    COALESCE(v.versions, ARRAY[]::varchar[]) AS \"versions!: Vec<Option<String>>\",\n                    COALESCE(r.introduced, ARRAY[]::varchar[]) AS \"introduced!: Vec<Option<String>>\",\n                    COALESCE(r.introduced_excluded, ARRAY[]::boolean[]) AS \"introduced_excluded!\",\n                    COALESCE(r.fixed, ARRAY[]::varchar[]) AS \"fixed!: Vec<Option<String>>\",\n                    COALESCE(r.last_affected, ARRAY[]::varchar[])\n                        AS \"last_affected!: Vec<Option<String>>\"\n                FROM (SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s\n                LEFT JOIN adv ON TRUE\n                LEFT JOIN v ON v.advisory_id = adv.id\n                LEFT JOIN r ON r.advisory_id = adv.id\n                ORDER BY adv.publisher_id\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "snapshot!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "exploitation_loaded!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "advisory_id?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "source?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "cvss?",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 5,
+        "name": "cvss_source?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "severity_band?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "exploited?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "malware?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "informational?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "cached?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "aliases!",
+        "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 12,
+        "name": "versions!: Vec<Option<String>>",
+        "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 13,
+        "name": "introduced!: Vec<Option<String>>",
+        "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 14,
+        "name": "introduced_excluded!",
+        "type_info": "BoolArray"
+      },
+      {
+        "ordinal": 15,
+        "name": "fixed!: Vec<Option<String>>",
+        "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 16,
+        "name": "last_affected!: Vec<Option<String>>",
+        "type_info": "VarcharArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false,
+      true,
+      true,
+      true,
+      null,
+      false,
+      true,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "ed9a688229f6bde88b914ab2a0ce667e0c2b529875c4b377384f173adafa655f"
+}

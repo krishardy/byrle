@@ -72,6 +72,7 @@ pub fn report(
     let mut count = |label: &str, value: u64| {
         let _ = writeln!(out, "{label:32} {value:>8}");
     };
+    count("sources unchanged", written.unchanged);
     count("advisories written", written.advisories);
     count("aliases written", written.aliases);
     count("affected rows written", written.affected);
@@ -169,6 +170,7 @@ mod tests {
     #[test]
     fn the_report_counts_what_was_written_and_names_the_snapshot() {
         let written = crate::intel::postgres::Loaded {
+            unchanged: 1,
             advisories: 3,
             aliases: 2,
             affected: 7,
@@ -188,6 +190,7 @@ mod tests {
         assert_eq!(
             printed.lines().collect::<Vec<_>>(),
             [
+                "sources unchanged                       1",
                 "advisories written                      3",
                 "aliases written                         2",
                 "affected rows written                   7",
@@ -241,6 +244,7 @@ mod tests {
             }],
         };
         let written = crate::intel::postgres::Loaded {
+            unchanged: 0,
             advisories: 1,
             aliases: 0,
             affected: 1,
@@ -275,6 +279,7 @@ mod tests {
     #[test]
     fn a_refresh_that_keeps_no_snapshot_prints_no_file() {
         let written = crate::intel::postgres::Loaded {
+            unchanged: 0,
             advisories: 0,
             aliases: 0,
             affected: 0,
@@ -344,6 +349,7 @@ mod tests {
             }],
         };
         let written = crate::intel::postgres::Loaded {
+            unchanged: 0,
             advisories: 1,
             aliases: 0,
             affected: 0,

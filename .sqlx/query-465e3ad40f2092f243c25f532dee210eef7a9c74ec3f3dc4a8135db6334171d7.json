@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT decision::text AS \"decision!\" FROM (\n                        SELECT DISTINCT ON (digest) id, decision FROM artifact_decision\n                        WHERE digest IS NOT NULL\n                          AND ecosystem = $1 AND name = $2 AND version = $3\n                        ORDER BY digest, id DESC\n                    ) latest\n                    ORDER BY id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "decision!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "465e3ad40f2092f243c25f532dee210eef7a9c74ec3f3dc4a8135db6334171d7"
+}

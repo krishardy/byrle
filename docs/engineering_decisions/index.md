@@ -42,7 +42,7 @@ Implemented means it is in the code, and the file names where.
 | 0028 | [sqlx held at 0.8, and RUSTSEC-2023-0071 accepted while `rsa` is not built](0028-sqlx-0-8-and-rsa-advisory.md) | Implemented |  |
 | 0029 | [OSV version ranges and CVSS scores](0029-osv-ranges-and-scores.md) | Implemented |  |
 | 0030 | [Policy schema version 1 is frozen](0030-policy-schema-v1-frozen.md) | Decided 2026-09-13 |  |
-| 0031 | [Intel schema: surrogate keys and sized types](0031-intel-schema-keys-and-types.md) | Implemented 2026-09-13 |  |
+| 0031 | [Intel schema: surrogate keys and sized types](0031-intel-schema-keys-and-types.md) | Implemented 2026-09-13 | the identity key of `advisory_affected` and `advisory_range`, by [0121](0121-advisory-rows-unkeyed.md) |
 | 0032 | [Command line: clap, default features off](0032-cli-parser-clap.md) | Implemented 2026-09-13 |  |
 | 0033 | [Environment variables: one module](0033-environment-variables.md) | Implemented 2026-09-13 |  |
 | 0034 | [`byrle policy check`](0034-policy-check.md) | Implemented |  |
@@ -132,3 +132,4 @@ Implemented means it is in the code, and the file names where.
 | 0118 | [The analysis commands are answered by a deployed byrle, through the console API](0118-remote-analysis-commands.md) | Implemented 2026-10-19 |  |
 | 0119 | [A request path the proxy does not recognise is refused](0119-unrecognised-paths-refused.md) | Implemented 2026-10-19 |  |
 | 0120 | [The allocator returns freed memory at once](0120-allocator-purge-delay.md) | Implemented 2026-10-19 |  |
+| 0121 | [Advisory rows are named by their unique index, and a refresh writes only what changed](0121-advisory-rows-unkeyed.md) | Implemented 2026-10-19 |  |

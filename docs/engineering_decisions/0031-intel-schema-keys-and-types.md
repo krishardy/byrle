@@ -4,6 +4,7 @@
 - **Status:** Implemented 2026-09-13. `migrations/0001_intel.sql` and
   `migrations/0002_ranges.sql` (rewritten), `src/intel/load.rs`, `PgIntel::replace_source` in
   `src/intel/postgres.rs`.
+- **Superseded by:** the identity key of `advisory_affected` and `advisory_range`, by [0121-advisory-rows-unkeyed](0121-advisory-rows-unkeyed.md)
 - **Related:** [storage-sqlx-postgres](0025-storage-sqlx-postgres.md),
   [osv-malware-load](0027-osv-malware-load.md), [osv-ranges-and-scores](0029-osv-ranges-and-scores.md)
 

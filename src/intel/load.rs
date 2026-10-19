@@ -8,7 +8,11 @@ use super::refresh::{StreamDigest, sha256_hex};
 use super::rows::{Affected, Ranged, Rows};
 use std::collections::{BTreeSet, HashMap};
 
-pub const ADVISORY: &str = "COPY advisory (publisher_id, source, summary, cvss, modified, \
+/// The columns of `advisory` a source's first table sends, in the order it sends them.
+pub const ADVISORY_COLUMNS: &str =
+    "publisher_id, source, summary, cvss, modified, malware, severity_band, informational";
+/// The `COPY` of a source's first table, into the table `PgIntel` keys it in from.
+pub const ADVISORY: &str = "COPY advisory_load (publisher_id, source, summary, cvss, modified, \
                             malware, severity_band, informational) FROM STDIN (FORMAT csv)";
 pub const ALIAS: &str = "COPY advisory_alias (advisory_id, alias) FROM STDIN (FORMAT csv)";
 pub const AFFECTED: &str =
@@ -724,6 +728,15 @@ mod tests {
     use super::*;
     use crate::intel::range::{End, Interval};
     use crate::intel::rows::{Affected, Ranged};
+
+    /// The `COPY` of a source's first table sends the columns its insert reads, in order.
+    #[test]
+    fn the_advisory_copy_names_the_advisory_columns() {
+        assert_eq!(
+            ADVISORY,
+            format!("COPY advisory_load ({ADVISORY_COLUMNS}) FROM STDIN (FORMAT csv)")
+        );
+    }
 
     fn rows() -> Rows {
         Rows {

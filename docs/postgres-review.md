@@ -4,8 +4,8 @@ A performance review of the schema in `migrations/` (0001 to 0029) and the queri
 it, for TODO.md ad-hoc #48. Measured 2026-10-19 at `e32c6a2` on Postgres 18, a local
 cluster from `scripts/make/lib/postgres.sh`. Intel came from `byrle refresh` of every stream
 but GitHub's, each served from a local copy so the network adds no time. The analysis tables
-came from `make bench`'s `npm ci` and `uv pip install` through the proxy. Nothing here is
-changed yet: each finding ends with what would change.
+came from `make bench`'s `npm ci` and `uv pip install` through the proxy. Sections 1 to 4
+were implemented 2026-10-19 ([advisory-rows-unkeyed](engineering_decisions/0121-advisory-rows-unkeyed.md)).
 
 ## Sizes
 
@@ -97,8 +97,9 @@ With the unique indexes led by `(ecosystem, name)`, plain indexes on `advisory_i
 two primary keys and `advisory_alias_by_alias` dropped, after one refresh and `VACUUM FULL`,
 `advisory_affected`'s indexes were 162 MB rather than 219 MB, and its total 337 MB rather
 than 393 MB. Refresh times over the next three refreshes, 29.0 to 69.2 s, were too noisy to
-compare. Change: those indexes, and drop the `id` columns of `advisory_affected` and
-`advisory_range`.
+compare. Change: drop the `id` columns of `advisory_affected` and `advisory_range` and
+`advisory_alias_by_alias`. Done with the unique indexes left led by `advisory_id`: see
+[advisory-rows-unkeyed](engineering_decisions/0121-advisory-rows-unkeyed.md) for why.
 
 ## 5. `VARCHAR(n)` and `TEXT`
 

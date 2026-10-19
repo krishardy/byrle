@@ -19,6 +19,8 @@ const COPY_CHUNK: usize = 1 << 20;
 /// Rows written by [`PgIntel::replace`], and the snapshot the store contains after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Loaded {
+    /// Sources whose digest was the one stored, so not written again.
+    pub unchanged: u64,
     pub advisories: u64,
     pub aliases: u64,
     pub affected: u64,
@@ -185,6 +187,7 @@ impl PgIntel {
 
         tx.commit().await.map_err(IntelError::Backend)?;
         Ok(Loaded {
+            unchanged: written.unchanged,
             advisories: written.advisories,
             aliases: written.aliases,
             affected: written.affected,
@@ -247,6 +250,7 @@ impl PgIntel {
 /// Rows [`PgIntel::replace`] has copied so far, per table.
 #[derive(Default)]
 struct Written {
+    unchanged: u64,
     advisories: u64,
     aliases: u64,
     affected: u64,
@@ -254,9 +258,42 @@ struct Written {
     exploited: u64,
 }
 
-/// Delete the rows `replacement`'s source supplied before, copy its new rows, and store its
-/// digest and streams in `intel_source`. Keeps each advisory's `cached`: see 0102-advisory-cached.md.
+/// Replace the rows `replacement`'s source supplied before with its new rows, and store its
+/// digest and streams in `intel_source`. A source whose digest is the one stored is not
+/// written again. Keeps each advisory's `cached`: see 0102-advisory-cached.md.
 async fn write_source(
+    conn: &mut PgConnection,
+    replacement: &Replacement<'_>,
+    written: &mut Written,
+) -> Result<(), IntelError> {
+    let encoded = replacement.encoded;
+    let source = encoded.source.as_str();
+    let stored = sqlx::query_scalar!("SELECT digest FROM intel_source WHERE source = $1", source)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(IntelError::Backend)?;
+    if stored.as_deref() == Some(encoded.digest.as_str()) {
+        written.unchanged += 1;
+    } else {
+        replace_rows(conn, replacement, written).await?;
+    }
+    sqlx::query!(
+        "INSERT INTO intel_source (source, digest, streams) \
+         VALUES ($1, $2, $3::text::jsonb) \
+         ON CONFLICT (source) DO UPDATE \
+         SET digest = EXCLUDED.digest, streams = EXCLUDED.streams",
+        source,
+        encoded.digest,
+        load::streams_json(replacement.streams)
+    )
+    .execute(conn)
+    .await
+    .map_err(IntelError::Backend)?;
+    Ok(())
+}
+
+/// Delete the rows `replacement`'s source supplied before and copy its new rows.
+async fn replace_rows(
     conn: &mut PgConnection,
     replacement: &Replacement<'_>,
     written: &mut Written,
@@ -285,43 +322,45 @@ async fn write_source(
         }
         Kind::Advisories => write_advisories(conn, replacement, written).await?,
     }
-    sqlx::query(
-        "UPDATE advisory a SET cached = p.cached FROM prior_cached p \
-         WHERE a.source = $1 AND a.publisher_id = p.publisher_id",
-    )
-    .bind(source)
-    .execute(&mut *conn)
-    .await
-    .map_err(IntelError::Backend)?;
     sqlx::query("DROP TABLE prior_cached")
         .execute(&mut *conn)
         .await
         .map_err(IntelError::Backend)?;
-
-    sqlx::query!(
-        "INSERT INTO intel_source (source, digest, streams) \
-         VALUES ($1, $2, $3::text::jsonb) \
-         ON CONFLICT (source) DO UPDATE \
-         SET digest = EXCLUDED.digest, streams = EXCLUDED.streams",
-        source,
-        encoded.digest,
-        load::streams_json(replacement.streams)
-    )
-    .execute(conn)
-    .await
-    .map_err(IntelError::Backend)?;
     Ok(())
 }
 
-/// Copy `advisory`, read back the keys Postgres assigned, and copy the alias, affected and
-/// range rows carrying them.
+/// Copy `advisory` through `advisory_load`, each keeping the `cached` of the one it replaces,
+/// read back the keys Postgres assigned, and copy the alias, affected and range rows carrying
+/// them.
 async fn write_advisories(
     conn: &mut PgConnection,
     replacement: &Replacement<'_>,
     written: &mut Written,
 ) -> Result<(), IntelError> {
     let encoded = replacement.encoded;
-    written.advisories += copy(conn, load::ADVISORY, &encoded.first_table).await?;
+    let columns = load::ADVISORY_COLUMNS;
+    sqlx::query(&format!(
+        "CREATE TEMP TABLE advisory_load ON COMMIT DROP AS \
+         SELECT {columns} FROM advisory WITH NO DATA"
+    ))
+    .execute(&mut *conn)
+    .await
+    .map_err(IntelError::Backend)?;
+    copy(conn, load::ADVISORY, &encoded.first_table).await?;
+    let loaded = format!(
+        "INSERT INTO advisory ({columns}, cached) \
+         SELECT l.*, COALESCE(p.cached, now()) \
+         FROM advisory_load l LEFT JOIN prior_cached p ON p.publisher_id = l.publisher_id"
+    );
+    written.advisories += sqlx::query(&loaded)
+        .execute(&mut *conn)
+        .await
+        .map_err(IntelError::Backend)?
+        .rows_affected();
+    sqlx::query("DROP TABLE advisory_load")
+        .execute(&mut *conn)
+        .await
+        .map_err(IntelError::Backend)?;
     let keys: HashMap<String, i64> = sqlx::query!(
         "SELECT publisher_id, id FROM advisory WHERE source = $1",
         encoded.source
@@ -444,6 +483,47 @@ async fn copy(conn: &mut PgConnection, statement: &str, data: &[u8]) -> Result<u
     copy.finish().await.map_err(IntelError::Backend)
 }
 
+/// One advisory's ranges as `PgIntel::package` reads them: one column each, in one order.
+struct Bounds<'a> {
+    introduced: &'a [Option<String>],
+    excluded: &'a [bool],
+    fixed: &'a [Option<String>],
+    last_affected: &'a [Option<String>],
+}
+
+impl Bounds<'_> {
+    /// Each range as an interval in `ecosystem`'s order. Errs naming `advisory_id` when one
+    /// does not read.
+    fn intervals(
+        &self,
+        ecosystem: &str,
+        advisory_id: &str,
+    ) -> Result<Vec<Interval<super::range::Ordered>>, IntelError> {
+        let columns = self
+            .introduced
+            .iter()
+            .zip(self.excluded)
+            .zip(self.fixed.iter().zip(self.last_affected));
+        columns
+            .map(|((introduced, excluded), (fixed, last_affected))| {
+                VersionOrder::of(ecosystem)
+                    .and_then(|order| {
+                        Interval::from_columns(
+                            order,
+                            introduced.as_deref(),
+                            *excluded,
+                            fixed.as_deref(),
+                            last_affected.as_deref(),
+                        )
+                    })
+                    .ok_or_else(|| IntelError::Range {
+                        advisory_id: advisory_id.to_owned(),
+                    })
+            })
+            .collect()
+    }
+}
+
 impl Intel for PgIntel {
     fn lookup<'a>(
         &'a self,
@@ -533,17 +613,21 @@ impl Intel for PgIntel {
         Box::pin(async move {
             let rows = sqlx::query!(
                 r#"
-                WITH m AS (
-                    SELECT advisory_id, FALSE AS is_range, version,
-                           NULL::varchar AS introduced, NULL::boolean AS introduced_excluded,
-                           NULL::varchar AS fixed, NULL::varchar AS last_affected
+                WITH v AS (
+                    SELECT advisory_id, array_agg(version ORDER BY version) AS versions
                     FROM advisory_affected WHERE ecosystem = $1 AND name = $2
-                    UNION ALL
-                    SELECT advisory_id, TRUE, NULL, introduced, introduced_excluded,
-                           fixed, last_affected
-                    FROM advisory_range WHERE ecosystem = $1 AND name = $2
+                    GROUP BY advisory_id
                 ),
-                adv AS MATERIALIZED (
+                r AS (
+                    SELECT advisory_id, array_agg(introduced ORDER BY o) AS introduced,
+                        array_agg(introduced_excluded ORDER BY o) AS introduced_excluded,
+                        array_agg(fixed ORDER BY o) AS fixed,
+                        array_agg(last_affected ORDER BY o) AS last_affected
+                    FROM advisory_range,
+                        LATERAL (SELECT ROW(introduced, introduced_excluded, fixed, last_affected) AS o) k
+                    WHERE ecosystem = $1 AND name = $2 GROUP BY advisory_id
+                ),
+                adv AS (
                     SELECT a.id, a.publisher_id, a.source, a.cvss, a.cvss_source,
                         a.severity_band, a.malware, a.informational, a.cached,
                         (a.exploited
@@ -553,26 +637,29 @@ impl Intel for PgIntel {
                         ARRAY(SELECT al.alias FROM advisory_alias al
                             WHERE al.advisory_id = a.id ORDER BY al.alias) AS aliases
                     FROM advisory a
-                    WHERE a.id IN (SELECT advisory_id FROM m)
+                    WHERE a.id IN (SELECT advisory_id FROM v UNION SELECT advisory_id FROM r)
                 )
                 SELECT
                     s.digest        AS "snapshot!",
                     EXISTS (SELECT 1 FROM intel_source WHERE source = $3)
                                     AS "exploitation_loaded!",
-                    m.is_range AS "is_range?", m.version AS "version?",
-                    m.introduced AS "introduced?", m.introduced_excluded AS "introduced_excluded?",
-                    m.fixed AS "fixed?", m.last_affected AS "last_affected?",
                     adv.publisher_id AS "advisory_id?", adv.source AS "source?",
                     adv.cvss AS "cvss?", adv.cvss_source AS "cvss_source?",
                     adv.severity_band AS "severity_band?", adv.exploited AS "exploited?",
                     adv.malware AS "malware?", adv.informational AS "informational?",
                     to_char(adv.cached AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "cached?",
-                    COALESCE(adv.aliases, ARRAY[]::varchar[]) AS "aliases!"
+                    COALESCE(adv.aliases, ARRAY[]::varchar[]) AS "aliases!",
+                    COALESCE(v.versions, ARRAY[]::varchar[]) AS "versions!: Vec<Option<String>>",
+                    COALESCE(r.introduced, ARRAY[]::varchar[]) AS "introduced!: Vec<Option<String>>",
+                    COALESCE(r.introduced_excluded, ARRAY[]::boolean[]) AS "introduced_excluded!",
+                    COALESCE(r.fixed, ARRAY[]::varchar[]) AS "fixed!: Vec<Option<String>>",
+                    COALESCE(r.last_affected, ARRAY[]::varchar[])
+                        AS "last_affected!: Vec<Option<String>>"
                 FROM (SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s
-                LEFT JOIN m ON TRUE
-                LEFT JOIN adv ON adv.id = m.advisory_id
-                ORDER BY adv.publisher_id, m.is_range, m.version, m.introduced,
-                         m.introduced_excluded, m.fixed, m.last_affected
+                LEFT JOIN adv ON TRUE
+                LEFT JOIN v ON v.advisory_id = adv.id
+                LEFT JOIN r ON r.advisory_id = adv.id
+                ORDER BY adv.publisher_id
                 "#,
                 ecosystem,
                 name,
@@ -609,23 +696,17 @@ impl Intel for PgIntel {
                     informational: row.informational,
                     cached: row.cached,
                 };
-                if row.is_range == Some(true) {
-                    let interval = VersionOrder::of(ecosystem)
-                        .and_then(|order| {
-                            Interval::from_columns(
-                                order,
-                                row.introduced.as_deref(),
-                                row.introduced_excluded.unwrap_or(false),
-                                row.fixed.as_deref(),
-                                row.last_affected.as_deref(),
-                            )
-                        })
-                        .ok_or_else(|| IntelError::Range {
-                            advisory_id: record.advisory_id.clone(),
-                        })?;
-                    intel.ranges.push((interval, record));
-                } else {
-                    intel.records.push((row.version, record));
+                let bounds = Bounds {
+                    introduced: &row.introduced,
+                    excluded: &row.introduced_excluded,
+                    fixed: &row.fixed,
+                    last_affected: &row.last_affected,
+                };
+                for interval in bounds.intervals(ecosystem, &record.advisory_id)? {
+                    intel.ranges.push((interval, record.clone()));
+                }
+                for version in row.versions {
+                    intel.records.push((version, record.clone()));
                 }
             }
             Ok(Some(intel))
