@@ -472,6 +472,8 @@ Items that I've added that are not stage-bound.
     a bounded type would do. Raised 2026-10-19.
 49. Full logic flow diagrams: every entry point, each request to a backend, how the risk
     vector is built, the risk score, the decision and the response. Raised 2026-10-19.
+    Done 2026-10-19: [logic-flow](docs/logic-flow.md), and `request-flow.md` corrected
+    against the code at `3ade87d`.
 50. Step-wise security reviews of each step in #49's diagrams. For each step: is it
     vulnerable, what does abnormal data do there, can a malicious package be coaxed
     through, and can malicious input make a score ignored or overridden. After #49.

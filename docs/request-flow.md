@@ -9,7 +9,8 @@ Read from
 `handle`, `admit` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document`
 in `src/proxy.rs`, on 2026-09-28, `admit` on 2026-10-11, Go's claim on 2026-10-16, and
 Maven's on 2026-10-17 ([maven-plan](maven-plan.md) step 4.3), and `unrecognised` on
-2026-10-19.
+2026-10-19. Checked against the code at `3ade87d` on 2026-10-19 for
+[logic-flow](logic-flow.md).
 
 With `BYRLE_MODE=observe`, a refusal by policy is logged at WARN and the request goes on
 to the next check, and a metadata document keeps the versions the policy refuses, and an unrecognised path is
@@ -27,8 +28,10 @@ policy's; under it, each serves what it can, as
 
 "Refusal status" is `BYRLE_REFUSAL_STATUS`: 403 by default, settable per ecosystem and
 client to any code from 400 to 599. Every 503 carries `Retry-After` and
-`x-byrle-not-ready` naming the case. `Retry-After` is 1, except for a download waiting on
-an awaited detector: then it is that detector's runs in flight times one run's time.
+Every 503 the proxy writes, but `/-/byrle/ready`'s, carries `Retry-After` and
+`x-byrle-not-ready` naming the case. `Retry-After` is 1, but `BYRLE_CLAIM_RETRY_AFTER`, 2 by
+default, while a claim is checked, and for a download waiting on an awaited detector that
+detector's runs in flight times one run's time.
 
 ```mermaid
 flowchart TD
@@ -36,7 +39,7 @@ flowchart TD
     MOUNT -->|no| M404[404: outside the proxy's path]
     MOUNT -->|yes, read below it| OWN{path}
     OWN -->|/-/byrle/health| H200[200: counters]
-    OWN -->|/-/byrle/ready| READY{intel store configured<br/>and not loaded?}
+    OWN -->|/-/byrle/ready| READY{policy and intel store set,<br/>and intel not loaded<br/>or with a gap?}
     READY -->|no| R200[200]
     READY -->|yes| R503[503]
     OWN -->|anything else| PREFIX{under /npm/, /pypi/,<br/>/cargo/, /go/, /maven/<br/>or /gradle-plugins/?}
@@ -48,24 +51,26 @@ flowchart TD
     HELD -->|no token, or one unknown,<br/>revoked or of a disabled account| T401[401: WWW-Authenticate<br/>Basic realm=byrle]
     HELD -->|valid| KIND
 
-    KIND -->|artifact, GET| LOOKUP{metadata for the package<br/>held, or fetched now}
+    KIND -->|cargo index/config.json| CFG[200, written by the proxy;<br/>400 without Host]
+    KIND -->|Maven maven-metadata.xml<br/>.sha1 or .md5| MSC[digest of the filtered<br/>document, or forwarded]
+    KIND -->|artifact GET, or<br/>Maven artifact HEAD| LOOKUP{metadata for the package<br/>held, or fetched now}
     KIND -->|metadata document| FWD
     KIND -->|Go sumdb/sum.golang.org/supported| SUP[200, written by the proxy]
-    KIND -->|Go sumdb/sum.golang.org/ anything else| FWD
-    KIND -->|Go .mod| MOD{sum.golang.org's claim<br/>for the version}
+    KIND -->|Go sumdb/sum.golang.org/<br/>latest, lookup/, tile/| FWD
+    KIND -->|Go .mod, Maven<br/>.pom or .module, GET| MOD{claim: sum.golang.org's,<br/>or the sidecar's}
     MOD -->|no proved answer| M503[503 checksum-database]
     MOD -->|no record| MREF[forwarded unverified;<br/>refusal status while<br/>no_strong_digest weighs<br/>the threshold]
     MOD -->|a record| MFWD[fetched; 502 when its h1:<br/>is not the one claimed]
-    KIND -->|artifact HEAD, or a path<br/>of a shape the adapter lists| FWD
+    KIND -->|any other method, a HEAD<br/>but a Maven artifact's, or a path<br/>of a shape the adapter lists| FWD
     KIND -->|a path of no shape<br/>the adapter lists| UNREC{BYRLE_MODE}
     UNREC -->|enforce| UREF[refusal status:<br/>unrecognised path]
     UNREC -->|observe, logged at WARN| FWD
 
     LOOKUP -->|registry gave none| A502M[502: the registry gave<br/>no metadata]
-    LOOKUP -->|names neither the version<br/>nor the file| AREF1[refusal status:<br/>cannot be assessed]
-    LOOKUP -->|record found| CLAIM{Go: sum.golang.org's<br/>claim for the zip}
+    LOOKUP -->|does not list the version| AREF1[refusal status:<br/>cannot be assessed]
+    LOOKUP -->|record found; a file it does not<br/>name is decided as its first| CLAIM{Go: sum.golang.org's claim<br/>for the zip; Maven: its sidecar's}
     CLAIM -->|no proved answer| C503[503 checksum-database]
-    CLAIM -->|a record, no record,<br/>or not Go| INTEL{intel store, when a<br/>policy and a store are set}
+    CLAIM -->|a record, no record,<br/>or neither| INTEL{intel store, when a<br/>policy and a store are set}
 
     INTEL -->|cannot answer| A503I[503 intel-store]
     INTEL -->|no stream covers<br/>the ecosystem| A503E[503 no-stream-for-ecosystem]
@@ -102,20 +107,21 @@ flowchart TD
     BUF -->|body failed, or 30 s<br/>without a byte| D502[502]
     BUF -->|yes| DINTEL{intel store}
     DINTEL -->|cannot answer, or no stream<br/>covers npm| D503[503]
-    DINTEL -->|answers, or no stream covers PyPI<br/>and its files answer 503| FILTER[200: refused versions removed,<br/>artifact URLs pointed here]
+    DINTEL -->|answers, or no stream covers<br/>PyPI, cargo, Go or Maven,<br/>and their files answer 503| FILTER[upstream's 2xx: refused versions removed;<br/>npm and PyPI: a version with a file on<br/>an unserved origin removed, artifact<br/>URLs pointed here]
 ```
 
 ## Status codes
 
 | Code | Produced by | When |
 |---|---|---|
-| 200 | proxy | health; ready; a verified artifact; a filtered and rewritten metadata document; Go's `sumdb/sum.golang.org/supported`, empty |
+| 200 | proxy | health; ready; a verified artifact; a filtered and rewritten metadata document; Go's `sumdb/sum.golang.org/supported`, empty; cargo's `index/config.json`; a `maven-metadata.xml`'s `.sha1` or `.md5`, computed |
+| 400 | proxy | cargo's `index/config.json` asked with no `Host` |
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
-| refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
+| refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata does not list the version; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
 | 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
-| 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
+| 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` while a policy is set and intel has not loaded or has a gap |
 
 An artifact whose bytes do not match the digest has already been sent a 200. The last
 chunk is held back, so the body ends short and the client's install fails. The 502 for a
@@ -124,16 +130,19 @@ in process.
 
 With no stream covering PyPI, a simple index is filtered without intel rather than
 answered 503, because pip reports an index 503 as `No matching distribution found`. Its
-files are answered 503 ([pypi-index-filtering](engineering_decisions/0050-pypi-index-filtering.md)).
+files are answered 503. Cargo, Go and Maven documents are filtered the same way ([pypi-index-filtering](engineering_decisions/0050-pypi-index-filtering.md)).
 
 A Maven file's claim is the first of the `.sha512`, `.sha256` and `.sha1` beside it
 ([maven-digests](engineering_decisions/0112-maven-digests.md)). A `.pom` and a `.module`
-are checked in the request against theirs, and are never refused by policy. A jar's
+are never refused by policy. With an analyser, a `.pom`'s or `.module`'s first fetch is
+503 `artifact-analysis` while a job checks it against its sidecar and its `.asc`; without
+one it is checked in the request against its sidecar. A jar's
 first fetch is 503 `artifact-analysis` while a job reads its sidecar, its `.asc` and the
 key; a jar with none of the three sidecars has no strong digest, and is forwarded unverified
-unless `no_strong_digest` weighs the threshold. A sidecar, an
-`.asc` and a `HEAD` are forwarded, and `maven-metadata.xml` is filtered as a metadata
-document. Under `/gradle-plugins/`, a portal 303 to `plugins-artifacts.gradle.org` names
+unless `no_strong_digest` weighs the threshold. A sidecar and an `.asc` are forwarded. A
+`HEAD` of a jar is decided as its GET is; one of a `.pom` or `.module` is forwarded.
+`maven-metadata.xml` is filtered as a metadata document, and its `.sha1` and `.md5` are
+computed from what the proxy serves. Under `/gradle-plugins/`, a portal 303 to `plugins-artifacts.gradle.org` names
 the file's sha256 in its path, which is the claim; one to Central is decided as under
 `/maven/`.
 
@@ -162,6 +171,6 @@ signals, known once its artifact is analysed. A version the policy
 refuses is also removed from the metadata document, so a resolver picks another version
 and never asks for it.
 
-Debug builds also answer `BYRLE_DEFER_TEST`'s scripted deferrals, after the token check
-and before anything else. See
+Debug builds also answer `BYRLE_DEFER_TEST`'s scripted deferrals, after the token check,
+the proxy-written files and the unrecognised-path refusal, and before anything else. See
 [deferral-status-codes](engineering_decisions/0021-deferral-status-codes.md).
