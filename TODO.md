@@ -455,6 +455,8 @@ Items that I've added that are not stage-bound.
     proxy neither serves nor allows, under the same rule as npm's packument.
 44. Go's `@latest` is 404 for a module with no versions: `Latest::names_none`
     (`go/inspect.rs:90`) is `all()` over the records, true for none. Raised 2026-10-18.
+    Done 2026-10-19: `names_none` is false for no records. Not reachable before: `wire::latest`
+    builds one record, and a module with no tagged version answers a pseudo-version.
 45. A request path `classify_path` cannot read is `RequestTarget::Other` and forwarded
     unread, so a PyPI `.tgz` sdist or an npm tarball not named `<name>-<version>.tgz` is
     served with no decision. Raised 2026-10-19. Planned in

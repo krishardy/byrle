@@ -88,10 +88,12 @@ impl Document for Latest {
     }
 
     fn names_none(&self, refused: &HashSet<String>) -> bool {
-        self.0
-            .records
-            .iter()
-            .all(|record| refused.contains(record.package.version()))
+        !self.0.records.is_empty()
+            && self
+                .0
+                .records
+                .iter()
+                .all(|record| refused.contains(record.package.version()))
     }
 }
 
@@ -203,6 +205,21 @@ mod tests {
         assert_eq!(read.rewrite(&rewriting(&body, &refused, &origins)), None);
         assert!(read.names_none(&refused));
         assert!(!read.names_none(&HashSet::new()));
+    }
+
+    /// A `@latest` with no version is not one naming a refused version: removing nothing
+    /// from nothing leaves it as it came.
+    #[test]
+    fn latest_with_no_version_never_names_none() {
+        let key = PackageKey::from_registry_name(Ecosystem::Go, "golang.org/x/text").unwrap();
+        let empty = Latest(PackageMetadata {
+            key,
+            latest: None,
+            records: Vec::new(),
+            skipped: Vec::new(),
+        });
+        assert!(!empty.names_none(&HashSet::new()));
+        assert!(!empty.names_none(&["v0.43.0".to_owned()].into()));
     }
 
     /// Anything else is forwarded as it came.
