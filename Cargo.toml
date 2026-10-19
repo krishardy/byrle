@@ -66,6 +66,9 @@ jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_
 # The binary's allocator. A release is a static musl binary, and musl's own allocator is
 # slow under many threads; see docs/engineering_decisions/0108-release-provenance.md.
 mimalloc = "0.1.52"
+# mimalloc's options, to set how soon it returns freed memory; see
+# docs/engineering_decisions/0120-allocator-purge-delay.md.
+libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 # killpg, to end a detector with the processes it started. Already in the tree through
 # tokio and others.
 libc = "0.2.189"

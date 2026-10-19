@@ -466,6 +466,7 @@ async fn run_refresh() -> std::process::ExitCode {
 /// `byrle daemon`: serve the proxy until the process is stopped.
 async fn run_daemon() -> std::process::ExitCode {
     let environment = env::process();
+    byrle::allocator::set_purge_delay(or_exit(environment.allocator_purge_delay_ms()));
     let filter = or_exit(environment.log_filter());
     let filter = tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|e| {
         eprintln!("byrle: {}: `{filter}` {e}", env::LOG_FILTER);

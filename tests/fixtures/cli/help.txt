@@ -112,6 +112,8 @@ Proxy configuration, all through the environment:
   BYRLE_MAX_TRAFFIC_CLIENTS         client names counted apart in a traffic window (default 256)
   BYRLE_WATCH_INTERVAL              seconds between checks of served packages for new versions to analyse
                                     before a client asks for them; 0 turns it off (default 900)
+  BYRLE_ALLOCATOR_PURGE_DELAY_MS    milliseconds the allocator keeps freed memory before returning it to the
+                                    system; 0 returns it at once (default 0)
   BYRLE_SOURCE_ARCHIVES             host of the GitHub archives each artifact is compared with, the source
                                     its metadata names; off turns the comparison off (default https://codeload.github.com)
   BYRLE_DETECTORS                   detectors run on each version served, `name=command argument...`, separated by `;`;

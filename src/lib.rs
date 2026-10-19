@@ -4,6 +4,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod account;
+pub mod allocator;
 pub mod analysis;
 pub mod audit;
 pub mod cli;

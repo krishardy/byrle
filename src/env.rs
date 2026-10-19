@@ -109,6 +109,7 @@ pub const DEFAULT_MAX_TRAFFIC_CLIENTS: usize = 256;
 
 /// Default seconds between the watcher's passes over the packages the proxy has served.
 pub const DEFAULT_WATCH_INTERVAL_SECONDS: u64 = 900;
+pub const DEFAULT_ALLOCATOR_PURGE_DELAY_MS: usize = 0;
 
 /// Default ceiling on one artifact written to the spool.
 pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1 << 30;
@@ -525,6 +526,15 @@ pub const WATCH_INTERVAL: Var = runtime(
     ],
 )
 .with_default(Default::Number(DEFAULT_WATCH_INTERVAL_SECONDS));
+pub const ALLOCATOR_PURGE_DELAY_MS: Var = runtime(
+    "BYRLE_ALLOCATOR_PURGE_DELAY_MS",
+    "",
+    &[
+        "milliseconds the allocator keeps freed memory before returning it to the",
+        "system; 0 returns it at once",
+    ],
+)
+.with_default(Default::Number(DEFAULT_ALLOCATOR_PURGE_DELAY_MS as u64));
 pub const SOURCE_ARCHIVES: Var = runtime(
     "BYRLE_SOURCE_ARCHIVES",
     "",
@@ -770,7 +780,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 94] = [
+pub const ALL: [Var; 95] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -824,6 +834,7 @@ pub const ALL: [Var; 94] = [
     MAX_CONCURRENT_ANALYSES,
     MAX_TRAFFIC_CLIENTS,
     WATCH_INTERVAL,
+    ALLOCATOR_PURGE_DELAY_MS,
     SOURCE_ARCHIVES,
     DETECTORS,
     DETECTOR_SOCKS,
@@ -1294,6 +1305,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
             PROVENANCE_HISTORY,
             crate::analysis::attestation::DEFAULT_HISTORY,
         )
+    }
+
+    pub fn allocator_purge_delay_ms(&self) -> Result<usize, EnvError> {
+        self.count(ALLOCATOR_PURGE_DELAY_MS, DEFAULT_ALLOCATOR_PURGE_DELAY_MS)
     }
 
     pub fn max_concurrent_metadata(&self) -> Result<usize, EnvError> {
@@ -2225,6 +2240,20 @@ mod tests {
             "BYRLE_POLICY: `f\u{fffd}` is not UTF-8"
         );
         assert!(!env.bless());
+    }
+
+    /// The allocator returns freed memory at once unless told a delay in milliseconds.
+    #[test]
+    fn the_allocator_purge_delay_is_milliseconds_and_0_by_default() {
+        let delay = |value: &str| {
+            testing::with(&[(ALLOCATOR_PURGE_DELAY_MS, value)]).allocator_purge_delay_ms()
+        };
+        assert_eq!(testing::with(&[]).allocator_purge_delay_ms().unwrap(), 0);
+        assert_eq!(delay("1000").unwrap(), 1000);
+        assert_eq!(
+            delay("1s").unwrap_err().to_string(),
+            "BYRLE_ALLOCATOR_PURGE_DELAY_MS: `1s` is not a whole number"
+        );
     }
 
     /// The watcher waits the given seconds, is off at 0, and refuses anything else.

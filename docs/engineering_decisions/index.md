@@ -131,3 +131,4 @@ Implemented means it is in the code, and the file names where.
 | 0117 | [Every `packages` entry that matches a version applies, in file order](0117-every-matching-entry-applies.md) | Implemented 2026-10-19 |  |
 | 0118 | [The analysis commands are answered by a deployed byrle, through the console API](0118-remote-analysis-commands.md) | Implemented 2026-10-19 |  |
 | 0119 | [A request path the proxy does not recognise is refused](0119-unrecognised-paths-refused.md) | Implemented 2026-10-19 |  |
+| 0120 | [The allocator returns freed memory at once](0120-allocator-purge-delay.md) | Implemented 2026-10-19 |  |

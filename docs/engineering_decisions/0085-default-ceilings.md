@@ -22,6 +22,7 @@
 | `BYRLE_SOURCE_ARCHIVES` | `https://codeload.github.com` | the host of GitHub's archives, which each artifact is compared with. 2 comparisons run at once, apart from the analyses, and the last 8 archives read are kept so one repository's packages fetch it once. `off` turns it off ([source-diff](0091-source-diff.md)) |
 | `BYRLE_DETECTORS` | none | a detector runs a program per version: 1.2 s median for GuardDog, 40 s the slowest measured. 2 run at once, each killed after 300 s or 16 MiB of output ([detectors](0092-detectors.md)) |
 | `BYRLE_EXPIRY_CEILING_DAYS` | 90 | long enough for a review cycle, and an entry nobody looks at again lapses within a quarter |
+| `BYRLE_ALLOCATOR_PURGE_DELAY_MS` | 0 | mimalloc's 1000 ms purged only when the freeing thread next allocated, so an idle proxy held its peak ([allocator-purge-delay](0120-allocator-purge-delay.md)) |
 | `BYRLE_SNAPSHOT_LIMIT` | 30 | a month of daily refreshes. npm's rows were 5,577,231 bytes gzipped on 2026-09-13, and a source whose rows did not change is not written again |
 
 Over the metadata ceiling the proxy forwards the response without normalising it: an
@@ -83,6 +84,16 @@ release ([release-provenance](0108-release-provenance.md)), the same loads, in M
 | `uv pip install`, 18 packages, cold proxy | 173 | 123 | 125 |
 | 8 at once: vite's full document | 776 | 230 | 101 |
 | 24 at once: the 8 largest documents, 3 times each | 597 | 298 | 196 |
+
+With `BYRLE_ALLOCATOR_PURGE_DELAY_MS` at its default of 0, 2026-10-19
+([allocator-purge-delay](0120-allocator-purge-delay.md)), the same loads, in MB:
+
+| Load | peak | median while loaded | idle |
+|---|---|---|---|
+| `npm ci`, 207 packages, cold proxy | 200 | 128 | 130 |
+| `uv pip install`, 18 packages, cold proxy | 153 | 110 | 115 |
+| 8 at once: vite's full document | 529 | 215 | 67 |
+| 24 at once: the 8 largest documents, 3 times each | 356 | 173 | 101 |
 
 `MALLOC_ARENA_MAX=2`, with glibc's allocator before the change, lowered idle RSS by about 40%: `npm ci` 586 to
 349 MB, the 24 documents 1,093 to 689 MB. Peaks moved less: 586 to 448 and 1,181 to 809.

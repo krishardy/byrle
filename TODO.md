@@ -2972,7 +2972,7 @@ role gets 403 from every endpoint except `GET health`.
                   reason on anything older.
             - [ ] yarn 2+ is skipped on this machine, where the default node is 16. It
                   passes under node 24.
-- [ ] **The bound caps live memory, and RSS barely moves: 1,501 MB unbounded against
+- [x] **The bound caps live memory, and RSS barely moves: 1,501 MB unbounded against
       1,436 MB at 8, and still 882 MB at 1.** Peak RSS is dominated by glibc holding
       freed allocations rather than by what is live. `MALLOC_ARENA_MAX=1` cuts the
       peak to 919 MB and raises the median from 223 MB to 703 MB, so it trades one
@@ -2987,6 +2987,11 @@ role gets 403 from every endpoint except `GET health`.
       read as slices, 700 MB, idle 499 MB. `MALLOC_ARENA_MAX=2` cut idle by about 40%
       before the change; not set
       ([default-ceilings](docs/engineering_decisions/0085-default-ceilings.md#as-deployed-2026-10-14)).
+      Done 2026-10-19: with mimalloc, idle RSS held the peak, since a page was purged only when
+      the thread that freed it allocated again. `BYRLE_ALLOCATOR_PURGE_DELAY_MS`, default 0,
+      returns it at once: idle 410 to 67 MB after 8 vite documents, 336 to 101 MB after the
+      24 largest, no change in `make bench`
+      ([allocator-purge-delay](docs/engineering_decisions/0120-allocator-purge-delay.md)).
 - [ ] The store is per-process and dies with the proxy. It also holds the whole
       `NormalizedPackument`, not just what the fetch path needs, which makes the
       concurrency-memory item worse rather than better. Measured RSS after an
