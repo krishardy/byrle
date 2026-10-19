@@ -47,6 +47,12 @@ among the configuration; no route decides a package.
   in force is the deployment's.
 - **What the deployment uses.** Its policy in force, its intel store, its analysis store,
   its audit log and its upstreams: what the proxy itself decides on.
+- **Names asked upstream.** `explain`, `policy check` and `policy diff` fetch a name from the
+  deployment's upstreams only when its registry could publish it (`ecosystem::askable`).
+  For npm that means `encodeURIComponent`'s safe characters, and for PyPI PEP 508's. No
+  path segment may be `.` or `..`. So a reader cannot add a query, a fragment or
+  `..` to a URL the deployment fetches with its upstream credentials. The check is not in
+  `split_name`: a name the proxy cannot classify is forwarded uninspected.
 - **Nothing local is read** under `BYRLE_REMOTE_URL` but the files named on the command
   line. `BYRLE_POLICY` and `BYRLE_DATABASE_URL` set too are ignored, with a note on stderr.
 - **Refusals.** No token: exit 2 naming `BYRLE_TOKEN`. 401 or 403: exit 2 with the

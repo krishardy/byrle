@@ -528,6 +528,9 @@ impl Comparison {
         reference: &crate::identity::PackageRef,
         version: &str,
     ) -> Result<Compared, String> {
+        if let Err(e) = crate::ecosystem::askable(reference.key()) {
+            return Ok(Compared::Unread(e));
+        }
         let metadata =
             match crate::ecosystem::fetched(self.clients.metadata(at, reference.key()).await) {
                 Ok(metadata) => metadata,
@@ -777,7 +780,7 @@ mod run_tests {
             &with(&[(crate::env::UPSTREAM_NPM, &format!("http://{addr}"))]),
         )
         .await;
-        assert_eq!(run.code, ERROR, "{:?} {:?}", run.notes, run.summary);
+        assert_eq!(run.code, ERROR);
         assert!(
             run.notes
                 .iter()
@@ -791,6 +794,36 @@ mod run_tests {
                 "0 loosened, 0 incomparable, 0 tightened, 1 could not be read".to_owned(),
                 "none of the 1 package versions listed was judged".to_owned()
             ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A listed name its registry could not publish is counted as unread, and the registry
+    /// is not asked. The purl decodes `%3F` to `?`.
+    #[tokio::test]
+    async fn a_package_whose_name_could_not_be_published_is_counted() {
+        let (dir, args) = written(
+            "diff-unpublishable",
+            "version: 1\ncooldown_days: 0\n",
+            "version: 1\ncooldown_days: 0\n",
+        );
+        std::fs::write(
+            &args.lockfile[0],
+            r#"{"lockfileVersion":3,"packages":{"node_modules/lo%3Fdash":{"version":"1.0.0"}}}"#,
+        )
+        .expect("writes");
+        let run = run(
+            &args,
+            &with(&[(
+                crate::env::UPSTREAM_NPM,
+                crate::util::test_support::NO_UPSTREAM,
+            )]),
+        )
+        .await;
+        assert_eq!(run.code, ERROR, "{:?} {:?}", run.notes, run.summary);
+        assert_eq!(
+            run.notes,
+            ["pkg:npm/lo%3Fdash@1.0.0: `lo?dash` is not a name the npm registry publishes"]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -53,6 +53,7 @@ pub const REGISTRY: Registry = Registry {
     versions: VersionOrder::SemVer,
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
+    published_name: None,
     upstream: crate::env::UPSTREAM_CARGO,
     upstream_url,
     read: |reading| {

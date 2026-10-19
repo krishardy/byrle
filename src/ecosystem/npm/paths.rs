@@ -34,6 +34,26 @@ pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError>
     Ok((Some(scope.to_owned()), rest.to_owned()))
 }
 
+/// Whether npm could publish `name`: the scope and the name in characters
+/// `encodeURIComponent` leaves alone, and an unscoped name not starting with `.` or `_`.
+pub fn published_name(name: &str) -> bool {
+    match name
+        .strip_prefix('@')
+        .and_then(|scoped| scoped.split_once('/'))
+    {
+        Some((scope, bare)) => url_safe(scope) && url_safe(bare),
+        None => url_safe(name) && !name.starts_with(['.', '_']),
+    }
+}
+
+/// Whether `part` is non-empty and every character is one a URL carries unescaped.
+fn url_safe(part: &str) -> bool {
+    !part.is_empty()
+        && part
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b))
+}
+
 /// Classify a request path.
 /// `path` is the request path, with or without a query.
 /// Returns [`RequestTarget::Other`] for a path that names no package.
@@ -246,6 +266,31 @@ mod tests {
             "/npm/@scope/",
         ] {
             assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+        }
+    }
+
+    /// validate-npm-package-name's rules, with the capitals and `~!*'()` legacy names have.
+    #[test]
+    fn a_published_name_is_url_safe_and_an_unscoped_one_starts_with_neither_dot_nor_underscore() {
+        for (name, published) in [
+            ("lodash", true),
+            ("JSONStream", true),
+            ("@babel/core", true),
+            ("@scope/_private", true),
+            ("cheerio!(beta)~*'", true),
+            ("", false),
+            (".hidden", false),
+            ("_private", false),
+            ("lo?dash", false),
+            ("lo#dash", false),
+            ("lo%2edash", false),
+            ("lo dash", false),
+            ("@foo", false),
+            ("@/core", false),
+            ("@sc?pe/core", false),
+            ("@scope/co?re", false),
+        ] {
+            assert_eq!(published_name(name), published, "{name}");
         }
     }
 

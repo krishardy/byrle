@@ -422,6 +422,7 @@ async fn package_answer(
     let reference = argument
         .parse::<PackageRef>()
         .map_err(|e| stopped(2, format!("`{argument}` is not a package reference: {e}")))?;
+    crate::ecosystem::askable(reference.key()).map_err(|e| stopped(2, e))?;
 
     let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
     let metadata = crate::ecosystem::fetched(clients.metadata(at, reference.key()).await)
@@ -612,6 +613,29 @@ mod run_tests {
             answered.notes[0].starts_with("`lodash` is not a package reference"),
             "{:?}",
             answered.notes
+        );
+    }
+
+    /// A name its registry could not publish is exit 2, before anything is fetched: the
+    /// purl's `%3F` is a `?` that would otherwise become the upstream URL's query.
+    #[tokio::test]
+    async fn a_name_the_registry_could_not_publish_is_refused() {
+        let path = written("explain-unpublishable", "version: 1\ncooldown_days: 0\n");
+        let answered = run(
+            &asked(Some("pkg:npm/lo%3Fdash@1.0.0")),
+            &with(&[
+                (crate::env::POLICY, &path.display().to_string()),
+                (
+                    crate::env::UPSTREAM_NPM,
+                    crate::util::test_support::NO_UPSTREAM,
+                ),
+            ]),
+        )
+        .await;
+        assert_eq!(answered.code, 2);
+        assert_eq!(
+            answered.notes,
+            ["`lo?dash` is not a name the npm registry publishes"]
         );
     }
 

@@ -21,6 +21,12 @@ pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError>
     Ok((None, normalised))
 }
 
+/// Whether PyPI could publish the [`normalise`]d `name`. PEP 508 allows ASCII letters,
+/// digits and `-_.`, which normalising leaves as ASCII letters, digits and `-`.
+pub fn published_name(name: &str) -> bool {
+    name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
 /// A name in a policy selector, [`normalise`]d. A trailing separator is kept as `-`, so the
 /// prefix `zope.` in `zope.*` covers `zope-interface` and not `zopefoo`.
 pub fn canonical_name(name: &str) -> String {
@@ -181,6 +187,21 @@ mod tests {
                 normalise(name),
                 "normalising {name} twice gives the same name"
             );
+        }
+    }
+
+    /// PEP 508 names, read after normalising: `?`, `#`, `%` and non-ASCII letters are not.
+    #[test]
+    fn a_published_name_is_ascii_letters_digits_and_hyphens() {
+        for (name, published) in [
+            ("zope-interface", true),
+            ("pip2", true),
+            ("lo?dash", false),
+            ("lo#dash", false),
+            ("lo%2edash", false),
+            ("caf\u{e9}", false),
+        ] {
+            assert_eq!(published_name(name), published, "{name}");
         }
     }
 

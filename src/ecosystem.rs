@@ -508,6 +508,9 @@ pub struct Registry {
     /// A name as a policy selector compares it, prefix or exact.
     pub canonical_name: fn(&str) -> String,
 
+    /// Whether the registry could publish a registry name; `None` when `split_name` checks it.
+    pub published_name: Option<fn(&str) -> bool>,
+
     /// The variable naming where this ecosystem's requests are forwarded.
     pub upstream: Var,
 
@@ -780,6 +783,23 @@ pub const TABLE: &[Registry] = &[
     maven::REGISTRY,
 ];
 
+/// Refuses `key` when its registry could not publish its name, so a command that asks the
+/// upstream for it builds a URL to the package's own document and to no other path.
+pub fn askable(key: &PackageKey) -> Result<(), String> {
+    let name = key.registry_name();
+    let dotted = name.split('/').any(|part| part == "." || part == "..");
+    let published = of(key.ecosystem())
+        .published_name
+        .is_none_or(|rule| rule(&name));
+    if dotted || !published {
+        return Err(format!(
+            "`{name}` is not a name the {} registry publishes",
+            key.ecosystem()
+        ));
+    }
+    Ok(())
+}
+
 /// The row for `ecosystem`.
 ///
 /// Panics if the table has no row for it, which `every_expressible_ecosystem_has_a_row`
@@ -841,6 +861,30 @@ mod table {
         assert!(
             error.starts_with("metadata could not be fetched"),
             "{error}"
+        );
+    }
+
+    /// A name the registry could not publish, or a `.` or `..` path segment, is refused
+    /// before a URL is built from it. An ecosystem with no rule takes what `split_name` takes.
+    #[test]
+    fn a_command_asks_only_for_names_the_registry_could_publish() {
+        for (ecosystem, name, askable) in [
+            (Ecosystem::Npm, "lodash", true),
+            (Ecosystem::Npm, "lo?dash", false),
+            (Ecosystem::Npm, "..", false),
+            (Ecosystem::PyPI, "Zope.Interface", true),
+            (Ecosystem::PyPI, "zope#x", false),
+            (Ecosystem::Maven, "..:x", false),
+            (Ecosystem::Maven, "a.b:c", true),
+            (Ecosystem::Cargo, "serde", true),
+        ] {
+            let key = PackageKey::from_registry_name(ecosystem, name).expect("split_name takes it");
+            assert_eq!(super::askable(&key).is_ok(), askable, "{ecosystem} {name}");
+        }
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lo?dash").unwrap();
+        assert_eq!(
+            super::askable(&key),
+            Err("`lo?dash` is not a name the npm registry publishes".to_owned())
         );
     }
 

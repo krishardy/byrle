@@ -209,6 +209,7 @@ async fn published(
     clients: &crate::ecosystem::Clients,
     reference: &crate::identity::PackageRef,
 ) -> Result<Option<Date>, String> {
+    crate::ecosystem::askable(reference.key())?;
     let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
     let metadata = crate::ecosystem::fetched(clients.metadata(at, reference.key()).await)?;
     let Some(record) = metadata.version(reference.version()) else {
@@ -652,6 +653,26 @@ mod tests {
         assert!(outlived.is_empty());
         assert_eq!(notes.len(), 1);
         assert!(notes[0].contains("pkg:npm/lodash@4.17.21"), "{notes:?}");
+    }
+
+    /// A waiver naming a package its registry could not publish is a note, and the
+    /// registry is not asked.
+    #[tokio::test]
+    async fn a_waiver_whose_name_could_not_be_published_is_a_note() {
+        let clients = crate::ecosystem::Clients::from_env(&crate::env::testing::with(&[(
+            crate::env::UPSTREAM_NPM,
+            crate::util::test_support::NO_UPSTREAM,
+        )]))
+        .expect("the upstream parses");
+        let policy = waiving("ecosystem: npm, purl: \"pkg:npm/lo%3Fdash@1.0.0\"");
+
+        let (outlived, notes) = outlived_waivers(&policy, &clients, TODAY).await;
+        assert!(outlived.is_empty());
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("`lo?dash` is not a name the npm registry publishes"),
+            "{notes:?}"
+        );
     }
 
     fn fixture(name: &str) -> std::path::PathBuf {
