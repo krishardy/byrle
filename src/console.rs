@@ -3,6 +3,7 @@
 
 pub mod alerts;
 pub mod api;
+pub mod commands;
 pub mod config;
 pub mod login;
 pub mod logs;

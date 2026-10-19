@@ -459,6 +459,28 @@
         ],
         "type": "object"
       },
+      "Printed": {
+        "description": "What a command printed on the deployment, and the code it exited with.",
+        "properties": {
+          "code": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stdout": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "stdout",
+          "stderr",
+          "code"
+        ],
+        "type": "object"
+      },
       "Problem": {
         "description": "Why a request was not answered.",
         "properties": {
@@ -1135,6 +1157,87 @@
           "logs"
         ],
         "x-byrle-permission": "events.read"
+      }
+    },
+    "/api/v1/explain": {
+      "get": {
+        "operationId": "explain",
+        "parameters": [
+          {
+            "description": "The package version, such as `pkg:npm/lodash@4.17.21`. Without it, the policy.",
+            "in": "query",
+            "name": "purl",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Printed"
+                }
+              }
+            },
+            "description": "What the command printed, and its exit code"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A query string that does not parse"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant packages.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No proxy to answer from"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET explain`: what `byrle explain` prints on the deployment, for `purl` or the policy.",
+        "tags": [
+          "commands"
+        ],
+        "x-byrle-permission": "packages.read"
       }
     },
     "/api/v1/health": {

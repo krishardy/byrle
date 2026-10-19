@@ -76,6 +76,26 @@ pub fn client_builder(read_timeout: Duration) -> reqwest::ClientBuilder {
         .http2_adaptive_window(true)
 }
 
+/// A client sending `token` on every request, as [`crate::account::gate::TOKEN_HEADER`].
+/// Errors when the token is no value a header can carry.
+pub fn token_client(token: Option<String>) -> Result<reqwest::Client, String> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = token {
+        let mut value = reqwest::header::HeaderValue::from_str(&token).map_err(|_| {
+            format!(
+                "{} is not a value an HTTP header can carry",
+                crate::env::TOKEN
+            )
+        })?;
+        value.set_sensitive(true);
+        headers.insert(crate::account::gate::TOKEN_HEADER, value);
+    }
+    Ok(client_builder(READ_TIMEOUT)
+        .default_headers(headers)
+        .build()
+        .expect("a client with no TLS settings of its own builds"))
+}
+
 /// Whether `url` is `https`, or `http` to loopback, where nothing between can read it.
 pub fn secure_or_loopback(url: &reqwest::Url) -> bool {
     let loopback = url.host_str().is_some_and(|host| {

@@ -58,7 +58,9 @@ among the configuration; no route decides a package.
 2. `Permission::PackagesRead` and `Role::Reader`; `account create --role reader`. Done 2026-10-19.
 3. The client: `BYRLE_REMOTE_URL` and `BYRLE_TOKEN` in `env.rs`, a `remote` module that asks
    a route and prints the answer, and `explain` (`GET api/v1/explain?purl=`, and `GET
-   api/v1/explain` for `--policy`) on both sides.
+   api/v1/explain` for `--policy`) on both sides. Done 2026-10-19: `remote::Remote` and `remote::Printed`,
+   `console::commands::explain`, and `explain::run_on` on the proxy's policy, intel store and
+   clients. `warm`'s token client moved to `http::token_client` for both.
 4. `artifact show` (`GET api/v1/artifacts/{digest or purl}`) and `artifact export` (`GET
    api/v1/artifacts?since=&until=`, NDJSON).
 5. `intel history` (`GET api/v1/intel/history?limit=`) and `status` (`GET

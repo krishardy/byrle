@@ -120,7 +120,31 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
 }
 
 /// `byrle explain`: what the policy says, or what it says about one package.
+/// The deployment [`env::REMOTE_URL`] names, or the code to exit with when it is set and
+/// cannot be asked.
+fn remote(command: &str) -> Result<Option<byrle::remote::Remote>, std::process::ExitCode> {
+    byrle::remote::Remote::from_env(&env::process()).map_err(|e| {
+        eprintln!("byrle {command}: {e}");
+        std::process::ExitCode::from(2)
+    })
+}
+
 async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
+    match remote("explain") {
+        Err(code) => return code,
+        Ok(Some(remote)) => {
+            let query: Vec<(&str, String)> = target
+                .purl
+                .iter()
+                .map(|purl| ("purl", purl.clone()))
+                .collect();
+            let printed = remote
+                .get("explain", byrle::console::routes::EXPLAIN_PATH, &query)
+                .await;
+            return std::process::ExitCode::from(printed.print());
+        }
+        Ok(None) => {}
+    }
     let answered = explain::run(&target, &env::process()).await;
     for note in &answered.notes {
         eprintln!("byrle explain: {note}");

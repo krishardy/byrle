@@ -76,7 +76,7 @@ pub async fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
     let http = match environment
         .token()
         .map_err(|e| e.to_string())
-        .and_then(client)
+        .and_then(crate::http::token_client)
     {
         Ok(http) => http,
         Err(e) => return unread(e),
@@ -131,25 +131,6 @@ fn plan(lockfiles: &[PathBuf], targets: Option<&[Target]>) -> Result<Plan, Lockf
         }
     }
     Ok(plan)
-}
-
-/// The client warm asks the proxy with, sending `token` on every request when there is one.
-fn client(token: Option<String>) -> Result<reqwest::Client, String> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(token) = token {
-        let mut value = reqwest::header::HeaderValue::from_str(&token).map_err(|_| {
-            format!(
-                "{} is not a value an HTTP header can carry",
-                crate::env::TOKEN
-            )
-        })?;
-        value.set_sensitive(true);
-        headers.insert(crate::account::gate::TOKEN_HEADER, value);
-    }
-    Ok(crate::http::client_builder(crate::http::READ_TIMEOUT)
-        .default_headers(headers)
-        .build()
-        .expect("a client with no TLS settings of its own builds"))
 }
 
 /// `plan`'s artifacts asked of the proxy at `base`, labelled. Every artifact is asked for

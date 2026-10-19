@@ -60,12 +60,21 @@ pub async fn config(site: Arc<Site>) -> Response {
     answered(loaded(&site).await)
 }
 
+/// What the console was given of the proxy beside it. 503 when there is none.
+fn configured(site: &Site) -> Result<&Configured, Refused> {
+    site.configured
+        .as_ref()
+        .ok_or_else(|| Refused::unavailable("this console runs beside no proxy"))
+}
+
+/// The proxy beside the console. 503 when there is none.
+pub fn beside(site: &Site) -> Result<&crate::proxy::Proxy, Refused> {
+    configured(site).map(|configured| &configured.proxy)
+}
+
 /// The proxy's health, its policy and its environment, as loaded.
 pub async fn loaded(site: &Site) -> Result<Config, Refused> {
-    let configured = site
-        .configured
-        .as_ref()
-        .ok_or_else(|| Refused::unavailable("this console runs beside no proxy"))?;
+    let configured = configured(site)?;
     let proxy = &configured.proxy;
     let policy = match proxy.policy() {
         Some(policy) => {

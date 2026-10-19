@@ -306,15 +306,22 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
     target: &crate::cli::Explain,
     environment: &Env<L>,
 ) -> Answered {
-    let mut out = Answered::default();
-    match answer(target, environment).await {
-        Ok(answer) => out.answer = answer,
-        Err(Stopped { code, note }) => {
-            out.notes.push(note);
-            return out.stop(code);
+    answered(answer(target, environment).await)
+}
+
+/// What is printed for `result`: the answer, or the note that stopped it and its code.
+fn answered(result: Result<String, Stopped>) -> Answered {
+    match result {
+        Ok(answer) => Answered {
+            answer,
+            ..Answered::default()
+        },
+        Err(Stopped { code, note }) => Answered {
+            notes: vec![note],
+            ..Answered::default()
         }
+        .stop(code),
     }
-    out
 }
 
 /// Why `explain` answered nothing: the note it prints and the code it exits with.
@@ -349,7 +356,7 @@ async fn answer<L: Fn(&str) -> Option<OsString>>(
     answer_using(target, environment, &policy, store.as_deref()).await
 }
 
-/// [`answer`] with `policy` and `store` already open.
+/// [`answer`] with `policy` and `store` already open, and the registries `environment` names.
 async fn answer_using<L: Fn(&str) -> Option<OsString>>(
     target: &crate::cli::Explain,
     environment: &Env<L>,
@@ -357,9 +364,30 @@ async fn answer_using<L: Fn(&str) -> Option<OsString>>(
     store: Option<&dyn IntelStore>,
 ) -> Result<String, Stopped> {
     match target.purl.as_deref() {
-        Some(argument) => package_answer(policy, store, argument, environment).await,
+        Some(argument) => {
+            let clients = Clients::from_env(environment).map_err(|e| stopped(2, e))?;
+            package_answer(policy, store, argument, &clients).await
+        }
         None => Ok(policy_report(policy, consulted(store).await?)),
     }
+}
+
+/// [`run`] on what a running proxy holds: the policy in force, its intel store and the
+/// clients it asks the registries with. The console answers a remote `explain` with it.
+pub async fn run_on(
+    target: &crate::cli::Explain,
+    policy: Option<&Policy>,
+    store: Option<&dyn IntelStore>,
+    clients: &Clients,
+) -> Answered {
+    let answered_on = match (policy, target.purl.as_deref()) {
+        (None, _) => Err(stopped(2, "the deployment has no policy in force")),
+        (Some(policy), Some(argument)) => package_answer(policy, store, argument, clients).await,
+        (Some(policy), None) => consulted(store)
+            .await
+            .map(|intel| policy_report(policy, intel)),
+    };
+    answered(answered_on)
 }
 
 /// Whether the checks that need intel can be enforced. A store with no snapshot answers
@@ -385,17 +413,16 @@ pub async fn intel_of(
 }
 
 /// The decision `policy` makes about the package `argument` names, as of today.
-async fn package_answer<L: Fn(&str) -> Option<OsString>>(
+async fn package_answer(
     policy: &Policy,
     store: Option<&dyn IntelStore>,
     argument: &str,
-    environment: &Env<L>,
+    clients: &Clients,
 ) -> Result<String, Stopped> {
     let reference = argument
         .parse::<PackageRef>()
         .map_err(|e| stopped(2, format!("`{argument}` is not a package reference: {e}")))?;
 
-    let clients = Clients::from_env(environment).map_err(|e| stopped(2, e))?;
     let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
     let metadata = crate::ecosystem::fetched(clients.metadata(at, reference.key()).await)
         .map_err(|e| stopped(1, e))?;

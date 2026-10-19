@@ -23,6 +23,7 @@ holds this table to the routes the console answers.
 | GET | `api/v1/requests` | `requests.read` | audit log lines, filtered; R5 is `answered=refused&check=known_malware`, R9 |
 | GET | `api/v1/metrics/failures` | `requests.read` | failures by hour and case, R6 |
 | GET | `api/v1/config` | `config.read` | the configuration, secrets removed, R7 |
+| GET | `api/v1/explain` | `packages.read` | what `byrle explain` prints on the deployment, `{"stdout", "stderr", "code"}`; `purl` for a package, none for the policy ([remote-cli-plan](remote-cli-plan.md)) |
 | GET | `api/v1/events` | `events.read` | the account event log, R8 |
 | GET | `api/v1/logs/{day}` | `requests.read` | a UTC day of the audit log as written, NDJSON, R9 |
 | GET | `api/v1/status` | `status.read` | each component's status, R10 |

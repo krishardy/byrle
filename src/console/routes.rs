@@ -85,8 +85,11 @@ pub const ALERTS_PATH: &str = "/api/v1/alerts";
 /// Under the console's path: `GET` each component's status, R10.
 pub const STATUS_PATH: &str = "/api/v1/status";
 
+/// Under the console's path: `GET` what `byrle explain` prints on the deployment.
+pub const EXPLAIN_PATH: &str = "/api/v1/explain";
+
 /// Every console route.
-pub const ROUTES: [Route; 28] = [
+pub const ROUTES: [Route; 29] = [
     Route {
         method: Method::GET,
         path: super::pages::HOME_PATH,
@@ -279,6 +282,14 @@ pub const ROUTES: [Route; 28] = [
         kind: Kind::Api,
         guard: Guard::Needs(Permission::ConfigRead, |site, _| {
             Box::pin(super::config::config(site))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: EXPLAIN_PATH,
+        kind: Kind::Api,
+        guard: Guard::Needs(Permission::PackagesRead, |site, asked| {
+            Box::pin(super::commands::explain(site, asked.parts))
         }),
     },
     Route {

@@ -383,6 +383,11 @@ impl Proxy {
         Ok(self)
     }
 
+    /// The clients it asks the registries with, for what it was not asked.
+    pub fn clients(&self) -> &Clients {
+        &self.config.clients
+    }
+
     /// The intel store the policy is decided against, when one is configured.
     pub fn intel_store(&self) -> Option<Arc<dyn Intel>> {
         self.config.intel.clone()

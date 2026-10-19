@@ -318,9 +318,20 @@ pub const REQUIRE_TOKEN: Var = runtime(
 pub const TOKEN: Var = runtime(
     "BYRLE_TOKEN",
     "",
-    &["proxy token `byrle warm` sends, from `byrle token create`"],
+    &[
+        "proxy token `byrle warm` and the remote commands send, from",
+        "`byrle token create`",
+    ],
 )
 .secret();
+pub const REMOTE_URL: Var = runtime(
+    "BYRLE_REMOTE_URL",
+    "",
+    &[
+        "a deployed byrle's console URL, which explain, artifact, intel",
+        "history, status and policy check and diff then ask",
+    ],
+);
 pub const ARTIFACT_ORIGINS: Var = runtime(
     "BYRLE_ARTIFACT_ORIGINS",
     "",
@@ -759,7 +770,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 93] = [
+pub const ALL: [Var; 94] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -785,6 +796,7 @@ pub const ALL: [Var; 93] = [
     LOGIN_FAILURES_PER_ADDRESS,
     REQUIRE_TOKEN,
     TOKEN,
+    REMOTE_URL,
     ARTIFACT_ORIGINS,
     ALLOW_DIRECT_ORIGINS,
     REWRITE_ARTIFACTS,
@@ -1004,6 +1016,11 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     }
 
     /// The value, with empty treated as unset.
+    /// Whether `var` holds anything, readable or not.
+    pub fn is_set(&self, var: Var) -> bool {
+        !matches!(self.text(var), Ok(None))
+    }
+
     fn text(&self, var: Var) -> Result<Option<String>, EnvError> {
         match (self.lookup)(var.name) {
             None => Ok(None),
@@ -1113,6 +1130,11 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     /// [`CONSOLE_URL`] and its path. `None` when there is no console.
     pub fn console_url(&self) -> Result<Option<(String, Mount)>, EnvError> {
         self.url_and_mount(CONSOLE_URL)
+    }
+
+    /// [`REMOTE_URL`] and its path. `None` when the commands run on this machine.
+    pub fn remote_url(&self) -> Result<Option<(String, Mount)>, EnvError> {
+        self.url_and_mount(REMOTE_URL)
     }
 
     /// [`CONSOLE_LISTEN`]. `None` when the console shares [`LISTEN`].

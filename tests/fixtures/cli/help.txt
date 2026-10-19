@@ -61,7 +61,10 @@ Proxy configuration, all through the environment:
   BYRLE_REQUIRE_TOKEN=0             answer requests that carry no proxy token. Unset, each
                                     request needs one, and BYRLE_DATABASE_URL is required,
                                     since accounts and tokens are kept there
-  BYRLE_TOKEN                       proxy token `byrle warm` sends, from `byrle token create`
+  BYRLE_TOKEN                       proxy token `byrle warm` and the remote commands send, from
+                                    `byrle token create`
+  BYRLE_REMOTE_URL                  a deployed byrle's console URL, which explain, artifact, intel
+                                    history, status and policy check and diff then ask
   BYRLE_ARTIFACT_ORIGINS            comma-separated origins this proxy also serves
   BYRLE_ALLOW_DIRECT_ORIGINS        comma-separated origins the proxy does not serve and
                                     permits anyway, fetched directly and unexamined
