@@ -35,7 +35,7 @@ status_mb() { awk -v f="$1:" '$1 == f { printf "%.0f", $2 / 1024 }' "/proc/$prox
 documents() {
     local name pids=() pid
     for name in "$@"; do
-        curl -sf -o /dev/null -m 300 -H "authorization: Bearer $token" "$proxy/$name" &
+        curl -sf -o /dev/null -m 300 -H "authorization: Bearer $token" "${npm_through}${name}" &
         pids+=($!)
     done
     for pid in "${pids[@]}"; do
