@@ -1,4 +1,4 @@
-# The build context for Containerfile. Podman reads this file when there is no
+# The build context for container/Containerfile, the repository root. Podman reads this file when there is no
 # .containerignore. target/ is the host's build output, tens of gigabytes.
 target
 .git

@@ -2,7 +2,9 @@
 
 - **Number:** 0101
 - **Status:** Implemented 2026-10-12. `compose.yaml`, `Containerfile`, `.dockerignore`,
-  `scripts/make/run-dev.sh`.
+  `scripts/make/run-dev.sh`. `compose.yaml` and `Containerfile` moved to `container/` on
+  2026-10-19 (TODO.md ad-hoc #47); the build context is still the repository root, where
+  `.dockerignore` stays.
 
 ## Decision
 

@@ -1,5 +1,6 @@
 # The development environment: byrle and its Postgres. Started by `make run-dev`, which
-# sets DEV_DB_USER, DEV_DB_PASSWORD and DEV_DB_NAME from the Makefile.
+# sets DEV_DB_USER, DEV_DB_PASSWORD and DEV_DB_NAME from the Makefile. Paths are read from
+# this directory: the build context is the repository root, `..`.
 #
 # Postgres reads them only when it creates the volume. To change them after that, delete
 # the volume: podman-compose down -v
@@ -32,8 +33,8 @@ services:
 
   byrle:
     build:
-      context: .
-      dockerfile: Containerfile
+      context: ..
+      dockerfile: container/Containerfile
     # For `podman exec -it byrle-dev sh`. `podman-compose exec` sets the environment
     # below again from the current shell, where DEV_DB_* are usually unset.
     container_name: byrle-dev
@@ -50,7 +51,7 @@ services:
     # renaming it leaves a single-file mount on the old one. Read-only: byrle reads the
     # policy at startup and on SIGHUP, and never writes it.
     volumes:
-      - ./dev:/etc/byrle:ro
+      - ../dev:/etc/byrle:ro
     ports:
       - "127.0.0.1:8080:8080"
     # The daemon applies migrations at startup, so it waits for Postgres to answer.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build byrle and start it with its Postgres in podman, from compose.yaml. Returns once
+# Build byrle and start it with its Postgres in podman, from container/compose.yaml. Returns once
 # both are up, and prints how to open a shell in the byrle container.
 #
 # Usage: run-dev.sh USER PASSWORD DATABASE
@@ -24,7 +24,7 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # --force-recreate: podman-compose 1.6.0 leaves a running container on its old image after
 # --build makes a new one, so a rebuilt byrle would not run.
-podman-compose -f "$repo_root/compose.yaml" up -d --build --force-recreate --wait
+podman-compose -f "$repo_root/container/compose.yaml" up -d --build --force-recreate --wait
 
 cat <<EOF
 

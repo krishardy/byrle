@@ -1,4 +1,5 @@
-# byrle for the development environment in compose.yaml, started by `make run-dev`.
+# byrle for the development environment in compose.yaml, started by `make run-dev`. Its
+# build context is the repository root.
 #
 # A debug build, as `cargo run` makes. `.sqlx/` holds the query cache, so the build needs
 # no database. The runtime image keeps a shell, so `podman exec -it byrle-dev sh` can run

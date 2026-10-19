@@ -2,7 +2,7 @@
 # Container scanning with trivy, for `make sast`.
 #
 # Two passes, both run even if the first fails:
-#   config  misconfigurations in Containerfile. trivy has no checks for compose.yaml
+#   config  misconfigurations in container/Containerfile. trivy has no checks for compose.yaml
 #   image   known vulnerabilities in the packages of the image `make run-dev` runs
 #
 # The image is built here with podman, from the build cache, so the scan is of the current
@@ -33,7 +33,7 @@ trap 'rm -rf "$archive"; podman rmi "$image" >/dev/null 2>&1 || true' EXIT
 trivy_args=(--quiet --exit-code 1 --severity "${TRIVY_SEVERITY:-HIGH,CRITICAL}")
 failed=0
 
-echo "--- config: Containerfile"
+echo "--- config: container/Containerfile"
 # target/ is the host's build output, tens of gigabytes, and holds no configuration.
 rc=0
 trivy config "${trivy_args[@]}" --skip-dirs target --skip-dirs .git . || rc=$?
@@ -42,9 +42,9 @@ if [[ "$rc" -ne 0 ]]; then
     failed=1
 fi
 
-echo "--- image: Containerfile, built as $image"
+echo "--- image: container/Containerfile, built as $image"
 rc=0
-{ podman build --quiet -t "$image" -f Containerfile . >/dev/null \
+{ podman build --quiet -t "$image" -f container/Containerfile . >/dev/null \
     && podman save --quiet -o "$archive/image.tar" "$image" \
     && trivy image "${trivy_args[@]}" --input "$archive/image.tar"; } || rc=$?
 if [[ "$rc" -ne 0 ]]; then

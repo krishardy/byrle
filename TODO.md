@@ -468,7 +468,9 @@ Items that I've added that are not stage-bound.
     `make signed-off` on each pull request, refusing a commit, but a merge, with no
     sign-off naming its author's email.
 47. `compose.yaml`, `Containerfile` and `Containerfile.release` move from the repository
-    root to `container/`. Raised 2026-10-19.
+    root to `container/`. Raised 2026-10-19. Done 2026-10-19: each build's context is
+    still the repository root, where `.dockerignore` stays. Not run here: no podman,
+    docker or trivy on this machine.
 48. A performance review of the Postgres schema and migrations: which data types or
     structures could change to make queries faster or rows smaller, such as `TEXT` where
     a bounded type would do. Raised 2026-10-19.

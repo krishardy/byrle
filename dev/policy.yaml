@@ -1,4 +1,4 @@
-# The policy the development environment enforces. compose.yaml mounts it read-only at
+# The policy the development environment enforces. container/compose.yaml mounts it read-only at
 # /etc/byrle/policy.yaml and sets BYRLE_POLICY to that path.
 #
 # Edit it, then reload it without a restart:

@@ -8,7 +8,7 @@ help:
 	@echo "  lint           rustfmt, clippy and shellcheck, warnings as errors"
 	@echo "  semgrep        pattern-based static analysis"
 	@echo "  trufflehog     credential scanning (working tree and git history)"
-	@echo "  trivy          Containerfile misconfigurations and dev image vulnerabilities"
+	@echo "  trivy          container/Containerfile misconfigurations and dev image vulnerabilities"
 	@echo "  sast           semgrep + trufflehog + trivy"
 	@echo "  test           unit tests"
 	@echo "  test-integration  tests needing a real Postgres, in a container or local cluster"
@@ -18,7 +18,7 @@ help:
 	@echo "  mutants-status how far the current or last mutants run is, and what it missed"
 	@echo "  release-check  whether TAG names the version in Cargo.toml"
 	@echo "  release-binary a release tarball for this machine in dist/, with its sha256"
-	@echo "  release-image-context  unpack dist/ tarballs for Containerfile.release"
+	@echo "  release-image-context  unpack dist/ tarballs for container/Containerfile.release"
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
@@ -55,7 +55,7 @@ help:
 TRUFFLEHOG_REPO_ROOT ?= $(CURDIR)
 
 # The development database's role, password and database, for run-dev. Postgres reads
-# them only when it creates its volume; see compose.yaml.
+# them only when it creates its volume; see container/compose.yaml.
 DEV_DB_USER ?= byrle
 DEV_DB_PASSWORD ?= byrle
 DEV_DB_NAME ?= byrle

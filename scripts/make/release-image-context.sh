@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The build context of Containerfile.release: each attested binary from dist/*.tar.gz,
-# unpacked to dist/image/<arch>/byrle under the architecture name a container platform
+# The build context of container/Containerfile.release, the repository root: each attested
+# binary from dist/*.tar.gz, unpacked to dist/image/<arch>/byrle under the architecture name a container platform
 # uses, so the image holds the binaries the release attested rather than a second build.
 set -euo pipefail
 

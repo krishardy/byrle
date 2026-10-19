@@ -122,7 +122,7 @@ system_package podman-compose podman-compose "'make run-dev' cannot start byrle 
 
 echo "==> trivy (container scanning, used by 'make sast')"
 # Not in Debian's or Ubuntu's archive; apt-get needs Aqua Security's repository first.
-system_package trivy trivy "'make sast' cannot scan the Containerfile or the dev image."
+system_package trivy trivy "'make sast' cannot scan container/Containerfile or the dev image."
 
 echo "==> shellcheck (shell linting, used by 'make lint')"
 if need shellcheck; then
