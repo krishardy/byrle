@@ -46,13 +46,16 @@ pub fn filename(key: &PackageKey, version: &str) -> String {
     format!("{}-{version}.crate", key.name())
 }
 
-/// An index file is a crate's metadata, a download its artifact, and anything else under
-/// [`PREFIX`], such as `config.json`, neither.
+/// An index file is a crate's metadata, a download its artifact, `config.json`, which the
+/// proxy writes, neither, and any other path under [`PREFIX`] unrecognised.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let Some(rest) = path.strip_prefix(PREFIX) else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
+    if rest == super::CONFIG {
+        return RequestTarget::Other;
+    }
     let segments: Vec<&str> = rest.split('/').collect();
     if let [CRATES, name, version, "download"] = segments[..] {
         return match PackageKey::from_registry_name(Ecosystem::Cargo, name) {
@@ -61,13 +64,13 @@ pub fn classify_path(path: &str) -> RequestTarget {
                 claimed_version: version.to_owned(),
                 key,
             },
-            _ => RequestTarget::Other,
+            _ => RequestTarget::Unrecognised,
         };
     }
     let name = segments.last().copied().unwrap_or_default();
     match PackageKey::from_registry_name(Ecosystem::Cargo, name) {
         Ok(key) if index_path(key.name()) == rest => RequestTarget::Metadata(key),
-        _ => RequestTarget::Other,
+        _ => RequestTarget::Unrecognised,
     }
 }
 
@@ -143,8 +146,8 @@ mod tests {
                 filename: "inflector-0.11.4.crate".into(),
             }
         );
+        assert_eq!(classify_path("/cargo/config.json"), RequestTarget::Other);
         for other in [
-            "/cargo/config.json",
             "/cargo/se/rd/itoa",
             "/cargo/crates/serde/1.0.0/other",
             "/cargo/crates/serde//download",
@@ -152,7 +155,7 @@ mod tests {
             "/cargo/",
             "/serde",
         ] {
-            assert_eq!(classify_path(other), RequestTarget::Other, "{other}");
+            assert_eq!(classify_path(other), RequestTarget::Unrecognised, "{other}");
         }
     }
 

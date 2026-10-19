@@ -104,21 +104,24 @@ fn key(escaped: &str) -> Option<PackageKey> {
 }
 
 /// `@v/list` and `@latest` are a module's metadata, a `.zip` its artifact and a `.mod` its
-/// manifest. Anything else under [`PREFIX`], `.info` and the checksum database among them,
-/// is none of those.
+/// manifest. A version's `.info` and the checksum database's `sumdb/<db>/` paths are none of
+/// those, and any other path under [`PREFIX`] is unrecognised.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let Some(rest) = path.strip_prefix(PREFIX) else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
+    if is_checksum_database(rest) {
+        return RequestTarget::Other;
+    }
     if let Some(module) = rest.strip_suffix(LATEST).or(rest.strip_suffix(LIST)) {
-        return key(module).map_or(RequestTarget::Other, RequestTarget::Metadata);
+        return key(module).map_or(RequestTarget::Unrecognised, RequestTarget::Metadata);
     }
     let Some((module, file)) = rest.split_once(FILES) else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
     let (Some(key), Some((version, kind))) = (key(module), file.rsplit_once('.')) else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
     match (unescape(version), kind) {
         (Some(version), "zip") if is_version(&version) => RequestTarget::Artifact {
@@ -131,8 +134,23 @@ pub fn classify_path(path: &str) -> RequestTarget {
             key,
             version,
         },
-        _ => RequestTarget::Other,
+        (Some(version), "info") if is_version(&version) => RequestTarget::Other,
+        _ => RequestTarget::Unrecognised,
     }
+}
+
+/// Whether `rest` is a checksum database path go asks a proxy for: `sumdb/<db>/supported`,
+/// `latest`, `lookup/...` or `tile/...`.
+fn is_checksum_database(rest: &str) -> bool {
+    let Some((_, asked)) = rest
+        .strip_prefix("sumdb/")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return false;
+    };
+    matches!(asked, "supported" | "latest")
+        || asked.starts_with("lookup/")
+        || asked.starts_with("tile/")
 }
 
 /// Whether a path's version can be one: not empty, and no path of its own.
@@ -248,18 +266,33 @@ mod tests {
         );
         for other in [
             "/go/golang.org/x/text/@v/v0.20.0.info",
-            "/go/golang.org/x/text/@v/.mod",
-            "/go/golang.org/x/text/@v/v1",
             "/go/sumdb/sum.golang.org/supported",
+            "/go/sumdb/sum.golang.org/latest",
             "/go/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.20.0",
+            "/go/sumdb/sum.golang.org/tile/8/0/x123/456",
+        ] {
+            assert_eq!(classify_path(other), RequestTarget::Other, "{other}");
+        }
+        for unrecognised in [
+            "/go/golang.org/x/text/@v/.mod",
+            "/go/golang.org/x/text/@v/.info",
+            "/go/golang.org/x/text/@v/v1",
+            "/go/golang.org/x/text/@v/v0.20.0.ziphash",
+            "/go/sumdb/sum.golang.org",
+            "/go/sumdb/sum.golang.org/other",
             "/go/golang.org/x/text/@v/.zip",
             "/go/golang.org/x/text/@v/a/b.zip",
             "/go/golang.org/x/text/@v/V1.zip",
             "/go/Golang.org/x/text/@v/v1.0.0.zip",
+            "/go/Golang.org/x/text/@latest",
             "/go/golang.org/x/text",
             "/golang.org/x/text/@v/list",
         ] {
-            assert_eq!(classify_path(other), RequestTarget::Other, "{other}");
+            assert_eq!(
+                classify_path(unrecognised),
+                RequestTarget::Unrecognised,
+                "{unrecognised}"
+            );
         }
     }
 

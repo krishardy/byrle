@@ -25,6 +25,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/recognised.sh
+. "$repo_root/scripts/make/lib/recognised.sh"
 # shellcheck source=scripts/make/lib/postgres.sh
 . "$repo_root/scripts/make/lib/postgres.sh"
 # shellcheck source=scripts/make/lib/token.sh
@@ -72,6 +74,7 @@ stop_proxy() {
     if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; fi
     wait "$proxy_pid" 2>/dev/null || true
     proxy_pid=""
+    recognised "$log"
 }
 
 clean_log() { sed -E 's/\x1b\[[0-9;]*m//g' "$log"; }
@@ -221,6 +224,7 @@ if ! choose_postgres >/dev/null; then
     echo "    skipped (neither docker nor initdb and pg_ctl are available)"
     echo "==> 7/8  skipped (no snapshot to read advisories from)"
     echo "==> 8/8  skipped (no Postgres to keep the accounts and tokens in)"
+    recognised "$log"
     echo "PASS: the proxy serves cargo, without the steps that need Postgres."
     exit 0
 fi
@@ -280,5 +284,7 @@ fi
 client_token="$saved"
 echo "    ok (401 without a token; fetched with one)"
 stop_proxy
+
+recognised "$log"
 
 echo "PASS: the proxy serves cargo as Stage 6 requires."

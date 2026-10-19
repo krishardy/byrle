@@ -18,6 +18,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/recognised.sh
+. "$repo_root/scripts/make/lib/recognised.sh"
 # shellcheck source=scripts/make/lib/postgres.sh
 . "$repo_root/scripts/make/lib/postgres.sh"
 # shellcheck source=scripts/make/lib/token.sh
@@ -92,6 +94,7 @@ stop_proxy() {
     if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; fi
     wait "$proxy_pid" 2>/dev/null || true
     proxy_pid=""
+    recognised "$log"
 }
 
 clean_log() { sed -E 's/\x1b\[[0-9;]*m//g' "$log"; }
@@ -226,6 +229,7 @@ echo "==> 5/6  an osv/go advisory over max_cvss is refused"
 if ! choose_postgres >/dev/null; then
     echo "    skipped (neither docker nor initdb and pg_ctl are available)"
     echo "==> 6/6  skipped (no Postgres to keep the accounts and tokens in)"
+    recognised "$log"
     echo "PASS: the proxy serves Go, without the steps that need Postgres."
     exit 0
 fi
@@ -269,5 +273,7 @@ fi
 assert_token_absent "$token" "$log"
 echo "    ok (401 without a token; resolved with one)"
 stop_proxy
+
+recognised "$log"
 
 echo "PASS: the proxy serves Go as Stage 6 requires."

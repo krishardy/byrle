@@ -2604,7 +2604,7 @@ impl Traffic {
         match target {
             RequestTarget::Metadata(_) | RequestTarget::Manifest { .. } => counts.documents += 1,
             RequestTarget::Artifact { .. } => counts.artifacts += 1,
-            RequestTarget::Other => {}
+            RequestTarget::Other | RequestTarget::Unrecognised => {}
         }
     }
 
@@ -3096,6 +3096,11 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     if let Some(response) = sidecar(&proxy, repository, &path, req.headers()).await {
         return response;
     }
+    if target == RequestTarget::Unrecognised
+        && let Some(response) = unrecognised(&proxy, repository, &path, &client)
+    {
+        return response;
+    }
     #[cfg(debug_assertions)]
     if let Some((deferral, since)) = &proxy.config.defer_test
         && let Some((status, retry_after)) = deferral.applies_to(&target, since.elapsed())
@@ -3131,6 +3136,25 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         .audit_upstream(held, Some(upstream.status))
         .map(Box::new);
     exchange.respond(upstream, artifact).await
+}
+
+/// The refusal for a path of no shape the adapter lists, which may name a file no check
+/// read. `None` in observe mode, where it is forwarded. Logged at WARN either way.
+fn unrecognised(proxy: &Proxy, at: Repository, path: &str, client: &str) -> Option<Response> {
+    let url_path = crate::http::url_path(path);
+    if proxy.config.mode == Mode::Observe {
+        warn!(url.path = %url_path, user_agent.original = %client, "unrecognised path: forwarded in observe mode");
+        return None;
+    }
+    let status = refusal_status(proxy, at.ecosystem(), Some(client));
+    warn!(url.path = %url_path, user_agent.original = %client, http.response.status_code = status.as_u16(), "unrecognised path: refused");
+    Some(
+        (
+            status,
+            format!("byrle: {url_path} is not a {at} path the proxy reads, so it is not served\n"),
+        )
+            .into_response(),
+    )
 }
 
 /// A document the row writes itself, such as cargo's `config.json`, answered without asking
@@ -3312,7 +3336,9 @@ fn audit_refused(proxy: &Proxy, at: Repository, target: &RequestTarget, answered
             claimed_version,
             ..
         } => (key, Some(claimed_version.as_str())),
-        RequestTarget::Manifest { .. } | RequestTarget::Other => return,
+        RequestTarget::Manifest { .. } | RequestTarget::Other | RequestTarget::Unrecognised => {
+            return;
+        }
     };
     if let Some(line) = undecided_line(proxy, at, key, version, answered, None) {
         write_audit(proxy, &line);
@@ -3419,9 +3445,10 @@ impl Exchange<'_> {
                 version,
                 filename,
             } if self.method == Method::GET => self.manifest_claim(key, version, filename).await,
-            RequestTarget::Manifest { .. } | RequestTarget::Metadata(_) | RequestTarget::Other => {
-                ArtifactStep::Fetch(ArtifactFetch::default())
-            }
+            RequestTarget::Manifest { .. }
+            | RequestTarget::Metadata(_)
+            | RequestTarget::Other
+            | RequestTarget::Unrecognised => ArtifactStep::Fetch(ArtifactFetch::default()),
         }
     }
 
@@ -9949,6 +9976,97 @@ mod tests {
         }
     }
 
+    /// A path of no shape its adapter lists is refused with the refusal status, logged at
+    /// WARN, and not asked upstream: a PyPI `.tgz` sdist would otherwise be served unread.
+    #[tokio::test]
+    async fn an_unrecognised_path_is_refused_and_not_asked_upstream() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/octet-stream",
+            None,
+            b"x".to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, &upstream)
+                .with_upstream(Ecosystem::PyPI, &upstream)
+                .with_upstream(Ecosystem::Cargo, &upstream)
+                .with_upstream(Ecosystem::Go, &upstream)
+                .with_upstream(Ecosystem::Maven, &upstream)
+                .router(),
+        )
+        .await;
+        let (guard, log) = capture(tracing::Level::WARN);
+        for path in [
+            "/npm/lodash/-/other-4.17.21.tgz",
+            "/pypi/packages/ab/cd/requests-2.32.3.tgz",
+            "/cargo/se/rd/itoa",
+            "/go/golang.org/x/text/@v/v0.20.0.ziphash",
+            "/maven/org/x/maven-metadata.xml.bak",
+            "/gradle-plugins/x/1/x-1.jar",
+        ] {
+            let response = reqwest::get(format!("{base}{path}")).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+            assert!(
+                response
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains("path the proxy reads, so it is not served"),
+                "{path}"
+            );
+        }
+        drop(guard);
+        assert!(
+            seen.lock().unwrap().paths.is_empty(),
+            "nothing asked upstream"
+        );
+        let log = text(&log);
+        assert_eq!(
+            log.lines()
+                .filter(|l| l.contains("unrecognised path: refused"))
+                .count(),
+            6,
+            "{log}"
+        );
+        assert!(
+            log.contains("url.path=/pypi/packages/ab/cd/requests-2.32.3.tgz"),
+            "{log}"
+        );
+    }
+
+    /// In observe mode an unrecognised path is forwarded, and logged at WARN as one.
+    #[tokio::test]
+    async fn an_unrecognised_path_is_forwarded_in_observe_mode() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/octet-stream",
+            None,
+            b"x".to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, upstream)
+                .with_mode(Mode::Observe)
+                .router(),
+        )
+        .await;
+        let (guard, log) = capture(tracing::Level::WARN);
+        let response = reqwest::get(format!("{base}/npm/lodash/-/other-4.17.21.tgz"))
+            .await
+            .unwrap();
+        drop(guard);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(seen.lock().unwrap().paths.len(), 1);
+        assert!(
+            text(&log).contains("unrecognised path: forwarded in observe mode"),
+            "{}",
+            text(&log)
+        );
+    }
+
     /// `/-/` is the registry's own namespace, and everything else under it still goes
     /// upstream. Only the one exact path is claimed.
     #[tokio::test]
@@ -10350,14 +10468,14 @@ mod tests {
             }
         }
 
-        /// A PEP 658 probe is the resolver looking. An index page and a file are not, and
-        /// npm has no equivalent, so its own unclassified traffic keeps its level.
+        /// A PEP 658 probe is the resolver looking. An index page, a file and an unrecognised
+        /// path are not, and npm has no equivalent, so its own endpoints keep their level.
         #[test]
         fn a_pep_658_probe_is_the_resolver_looking() {
             for (path, expected) in [
                 ("/pypi/packages/ab/cd/x-1.0-py3-none-any.whl.metadata", true),
                 ("/pypi/simple/", true),
-                ("/pypi/packages/nonsense", true),
+                ("/pypi/packages/nonsense", false),
                 ("/pypi/simple/requests/", false),
                 ("/pypi/packages/ab/cd/x-1.0-py3-none-any.whl", false),
                 ("/npm/-/v1/search?text=lodash", false),

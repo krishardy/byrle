@@ -140,7 +140,7 @@ their input with npm's normaliser, which is a test dependency and not a producti
 | `classify_path` | what does this path refer to | `npm::classify_path` | `pypi::classify_path` |
 | `read_media_type` | which document is this response | `npm::detail_from_content_type` | `pypi::SIMPLE_JSON` |
 | `publish_times` | where a version's publish time comes from | `FullPackument`, fetched separately | `Record`, from each file's `upload-time` |
-| `other_is_probe` | whether an unclassified request is a resolver probe, logged at DEBUG | no | yes: PEP 658 `.metadata` requests |
+| `other_is_probe` | whether a `RequestTarget::Other` request is a resolver probe, logged at DEBUG. Since [0119](0119-unrecognised-paths-refused.md), `Other` is only a shape the adapter lists | no | yes: PEP 658 `.metadata` requests |
 | `streams` | which package-keyed advisory streams cover it | `osv/npm`, `datadog/npm`, `github/npm` | none yet |
 | `lockfiles` | which lockfile names `policy diff` reads, and with which reader | `npm::lockfile::LOCKFILES` | none yet |
 | `unread_lockfiles` | which lockfile names are refused with a specific reason | `bun.lockb` | none |
@@ -257,7 +257,9 @@ A backtracking resolver fetches far more metadata than it installs. Measured 202
 Nothing treats a probe as install intent, and the log is the proof: 679 probes produced 7
 record lookups and 7 policy decisions, one of each per artifact actually fetched. A probe
 classifies as `RequestTarget::Other`, so it is forwarded to `pypi::FILES` with its path and
-nothing else happens to it.
+nothing else happens to it. Until [0119](0119-unrecognised-paths-refused.md), so was every
+other path `classify_path` could not read, a `.tgz` sdist among them; it is now
+`RequestTarget::Unrecognised` and refused.
 
 Two things did read as intent and no longer do:
 

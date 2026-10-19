@@ -119,10 +119,12 @@ pub fn document_from_content_type(content_type: Option<&str>) -> Option<Document
     }
 }
 
+/// What a request path refers to. The project list and a PEP 658 `.metadata` file are
+/// [`RequestTarget::Other`]; any other path naming no project or file is unrecognised.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let Some(path) = crate::ecosystem::within(super::PREFIX, path) else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
     let path = path.trim_start_matches('/');
 
@@ -135,17 +137,27 @@ pub fn classify_path(path: &str) -> RequestTarget {
             return artifact(name.rsplit('/').next().unwrap_or_default());
         }
         return PackageKey::from_registry_name(Ecosystem::PyPI, name)
-            .map_or(RequestTarget::Other, RequestTarget::Metadata);
+            .map_or(RequestTarget::Unrecognised, RequestTarget::Metadata);
+    }
+    if path == "simple" {
+        return RequestTarget::Other;
     }
 
     let Some(rest) = path.strip_prefix("packages/") else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
     artifact(rest.rsplit('/').next().unwrap_or_default())
 }
 
-/// The request for one file, named by a filename this build can read a version out of.
+/// The request for one file, named by a filename this build can read a version out of. A
+/// PEP 658 `<file>.metadata` is forwarded; any other filename is unrecognised.
 fn artifact(filename: &str) -> RequestTarget {
+    if filename
+        .strip_suffix(".metadata")
+        .is_some_and(|file| filename_parts(file).is_some())
+    {
+        return RequestTarget::Other;
+    }
     filename_parts(filename)
         .and_then(|(name, version, _)| {
             PackageKey::from_registry_name(Ecosystem::PyPI, &name)
@@ -156,7 +168,7 @@ fn artifact(filename: &str) -> RequestTarget {
                     filename: filename.to_owned(),
                 })
         })
-        .unwrap_or(RequestTarget::Other)
+        .unwrap_or(RequestTarget::Unrecognised)
 }
 
 #[cfg(test)]
@@ -330,23 +342,34 @@ mod tests {
         );
     }
 
+    /// The project list and a PEP 658 `.metadata` file are forwarded. Any other path naming no
+    /// project or file `filename_parts` reads, such as a `.tgz` sdist pip installs, is not.
     #[test]
-    fn anything_that_names_no_project_is_other() {
+    fn anything_that_names_no_project_is_other_or_unrecognised() {
+        for path in [
+            "/pypi/simple/",
+            "/pypi/simple",
+            "/pypi/simple/requests/requests-2.32.3-py3-none-any.whl.metadata",
+            "/pypi/packages/a/b/c/requests-2.32.3.tar.gz.metadata",
+        ] {
+            assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+        }
         for path in [
             "",
             "/",
-            "/pypi/simple/",
-            "/pypi/simple",
             "/pypi/simple/a/b/",
             "/pypi/simple/./",
             "/pypi/packages/",
             "/pypi/packages/a/b/c/",
             "/pypi/packages/a/b/c/notadistribution.txt",
+            "/pypi/packages/a/b/c/notadistribution.txt.metadata",
             "/pypi/packages/a/b/c/x-py3-none-any.whl",
             "/pypi/packages/a/b/c/-1.0.tar.gz",
+            "/pypi/packages/a/b/c/requests-2.32.3.tgz",
+            "/pypi/packages/a/b/c/requests-2.32.3.tar",
             "/pypi/requests/json",
         ] {
-            assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+            assert_eq!(classify_path(path), RequestTarget::Unrecognised, "{path}");
         }
     }
 
@@ -355,8 +378,8 @@ mod tests {
     fn an_sdist_with_no_version_is_not_read() {
         assert_eq!(filename_parts("requests.tar.gz"), None);
         assert_eq!(
-            classify_path("packages/ab/requests.tar.gz"),
-            RequestTarget::Other
+            classify_path("/pypi/packages/ab/requests.tar.gz"),
+            RequestTarget::Unrecognised
         );
     }
 }

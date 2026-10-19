@@ -12,6 +12,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/recognised.sh
+. "$repo_root/scripts/make/lib/recognised.sh"
 # shellcheck source=scripts/make/lib/postgres.sh
 . "$repo_root/scripts/make/lib/postgres.sh"
 # shellcheck source=scripts/make/lib/dex.sh
@@ -288,4 +290,5 @@ grep -q "403" "$workdir/remote.err" || fail "bob's refusal said $(cat "$workdir/
 echo "    ok (explain, artifact, intel history, status, policy check and diff; bob 403; no token 2)"
 
 echo
+recognised "$workdir/proxy.log"
 echo "PASS: the console meets the Stage 4.9 exit criterion."

@@ -152,6 +152,11 @@ measure() {
         echo "FAIL: $client fetched $artifacts artifacts but only $verified were verified"
         failed=1
     fi
+    if grep -q 'unrecognised path' "$log"; then
+        echo "FAIL: $client asked a path the proxy does not recognise:"
+        grep 'unrecognised path' "$log" | head -3
+        failed=1
+    fi
     if grep -q 'UNINSPECTED' "$log"; then
         echo "FAIL: something went unexamined for $client:"
         grep 'UNINSPECTED' "$log" | head -3
@@ -163,7 +168,7 @@ failed=0
 
 echo "==> installing '$package' through the proxy with each client"
 measure npm npm install "$package" --registry "$registry" \
-    --cache "$workdir/npm/cache" --no-audit --no-fund --loglevel=error
+    --cache "$workdir/npm/cache" --no-fund --loglevel=error
 # npm_config_cache_dir as well as --store-dir. pnpm keeps packument metadata in a cache
 # of its own, keyed by registry host and port, which --store-dir does not cover, so a
 # second run at the same port can resolve without asking the proxy anything.

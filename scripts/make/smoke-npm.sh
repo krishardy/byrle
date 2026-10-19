@@ -23,6 +23,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/recognised.sh
+. "$repo_root/scripts/make/lib/recognised.sh"
 # shellcheck source=scripts/make/lib/node.sh
 . "$repo_root/scripts/make/lib/node.sh"
 # shellcheck source=scripts/make/lib/postgres.sh
@@ -72,6 +74,7 @@ stop_proxy() {
     if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; fi
     wait "$proxy_pid" 2>/dev/null || true
     proxy_pid=""
+    recognised "$log"
 }
 
 # A fresh cache per install, since npm serves from its cache without consulting the
@@ -330,4 +333,5 @@ $(tail -20 "$workdir/refresh.out")"
 fi
 
 echo
+recognised "$log"
 echo "PASS: Stage 1 proxy behaves as the exit criterion requires."

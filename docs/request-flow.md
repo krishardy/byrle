@@ -8,11 +8,12 @@ under `https://h/registry/`. Each ecosystem is served under its own prefix, `/np
 Read from
 `handle`, `admit` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document`
 in `src/proxy.rs`, on 2026-09-28, `admit` on 2026-10-11, Go's claim on 2026-10-16, and
-Maven's on 2026-10-17 ([maven-plan](maven-plan.md) step 4.3).
+Maven's on 2026-10-17 ([maven-plan](maven-plan.md) step 4.3), and `unrecognised` on
+2026-10-19.
 
 With `BYRLE_MODE=observe`, a refusal by policy is logged at WARN and the request goes on
-to the next check, and a metadata document keeps the versions the policy refuses. Every
-other answer is the same in both modes
+to the next check, and a metadata document keeps the versions the policy refuses, and an unrecognised path is
+forwarded, logged at WARN. Every other answer is the same in both modes
 ([observe-mode](engineering_decisions/0071-observe-mode.md)).
 
 The policy's checks, the detectors' and advisories' signals, and the proxy's own refusals
@@ -55,7 +56,10 @@ flowchart TD
     MOD -->|no proved answer| M503[503 checksum-database]
     MOD -->|no record| MREF[forwarded unverified;<br/>refusal status while<br/>no_strong_digest weighs<br/>the threshold]
     MOD -->|a record| MFWD[fetched; 502 when its h1:<br/>is not the one claimed]
-    KIND -->|artifact HEAD, or anything else| FWD
+    KIND -->|artifact HEAD, or a path<br/>of a shape the adapter lists| FWD
+    KIND -->|a path of no shape<br/>the adapter lists| UNREC{BYRLE_MODE}
+    UNREC -->|enforce| UREF[refusal status:<br/>unrecognised path]
+    UNREC -->|observe, logged at WARN| FWD
 
     LOOKUP -->|registry gave none| A502M[502: the registry gave<br/>no metadata]
     LOOKUP -->|names neither the version<br/>nor the file| AREF1[refusal status:<br/>cannot be assessed]
@@ -109,7 +113,7 @@ flowchart TD
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
-| refusal status, 403 by default | proxy | the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
+| refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
 | 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
 

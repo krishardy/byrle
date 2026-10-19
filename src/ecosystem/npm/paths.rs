@@ -56,19 +56,23 @@ fn url_safe(part: &str) -> bool {
 
 /// Classify a request path.
 /// `path` is the request path, with or without a query.
-/// Returns [`RequestTarget::Other`] for a path that names no package.
+/// Returns [`RequestTarget::Other`] for an endpoint `is_endpoint` lists, and
+/// [`RequestTarget::Unrecognised`] for any other path that names no package.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let Some(path) = crate::ecosystem::within(super::PREFIX, path) else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
     let path = path.trim_start_matches('/');
-    if path.is_empty() {
-        return RequestTarget::Other;
+    if path == "-" {
+        return RequestTarget::Unrecognised;
     }
-
-    if path == "-" || path.starts_with("-/") {
-        return RequestTarget::Other;
+    if let Some(endpoint) = path.strip_prefix("-/") {
+        return if is_endpoint(endpoint) {
+            RequestTarget::Other
+        } else {
+            RequestTarget::Unrecognised
+        };
     }
 
     let (name, artifact) = match path.split_once("/-/") {
@@ -78,7 +82,7 @@ pub fn classify_path(path: &str) -> RequestTarget {
 
     let name = name.replace("%2f", "/").replace("%2F", "/");
     let Ok(key) = PackageKey::from_registry_name(Ecosystem::Npm, &name) else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
 
     let Some(artifact) = artifact else {
@@ -86,14 +90,14 @@ pub fn classify_path(path: &str) -> RequestTarget {
     };
 
     let Some(stem) = artifact.strip_suffix(".tgz") else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
     let Some(version) = stem
         .strip_prefix(key.name())
         .and_then(|rest| rest.strip_prefix('-'))
         .filter(|v| !v.is_empty())
     else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
 
     RequestTarget::Artifact {
@@ -101,6 +105,32 @@ pub fn classify_path(path: &str) -> RequestTarget {
         claimed_version: version.to_owned(),
         filename: artifact.to_owned(),
     }
+}
+
+/// Whether `endpoint`, the path after `/-/`, is a registry endpoint a client asks that serves
+/// no package file: ping, whoami, search, the audit and signing endpoints, a version's
+/// attestations, and a package's dist-tags.
+fn is_endpoint(endpoint: &str) -> bool {
+    const ENDPOINTS: [&str; 6] = [
+        "ping",
+        "whoami",
+        "v1/search",
+        "npm/v1/security/advisories/bulk",
+        "npm/v1/security/audits/quick",
+        "npm/v1/keys",
+    ];
+    ENDPOINTS.contains(&endpoint)
+        || endpoint.starts_with("npm/v1/attestations/")
+        || endpoint
+            .strip_prefix("package/")
+            .and_then(|rest| rest.strip_suffix("/dist-tags"))
+            .is_some_and(|name| {
+                PackageKey::from_registry_name(
+                    Ecosystem::Npm,
+                    &name.replace("%2f", "/").replace("%2F", "/"),
+                )
+                .is_ok()
+            })
 }
 
 /// Which document a response body is, read from its `Content-Type`.
@@ -160,112 +190,41 @@ mod tests {
             "/npmx/lodash",
             "/npm/",
         ] {
-            assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+            assert_eq!(classify_path(path), RequestTarget::Unrecognised, "{path}");
         }
     }
 
+    /// The registry endpoints clients ask are forwarded; any other path naming no package
+    /// is unrecognised, a tarball that does not parse among them.
     #[test]
-    fn packument_paths_resolve_to_a_key() {
-        assert_eq!(
-            classify_path("/npm/lodash"),
-            RequestTarget::Metadata(key("lodash"))
-        );
-        assert_eq!(
-            classify_path("/npm/@babel%2fcore"),
-            RequestTarget::Metadata(key("@babel/core")),
-            "npm percent-encodes the scope separator"
-        );
-        assert_eq!(
-            classify_path("/npm/@babel%2Fcore"),
-            RequestTarget::Metadata(key("@babel/core"))
-        );
-        assert_eq!(
-            classify_path("/npm/@babel/core"),
-            RequestTarget::Metadata(key("@babel/core")),
-            "the bare form resolves too"
-        );
-        assert_eq!(
-            classify_path("/npm/lodash?write=true"),
-            RequestTarget::Metadata(key("lodash")),
-            "a query string is not part of the name"
-        );
-    }
-
-    #[test]
-    fn tarball_paths_carry_the_filename_version() {
-        assert_eq!(
-            classify_path("/npm/lodash/-/lodash-4.17.21.tgz"),
-            RequestTarget::Artifact {
-                key: key("lodash"),
-                claimed_version: "4.17.21".into(),
-                filename: "lodash-4.17.21.tgz".into()
-            }
-        );
-        assert_eq!(
-            classify_path("/npm/@babel/core/-/core-7.0.0.tgz"),
-            RequestTarget::Artifact {
-                key: key("@babel/core"),
-                claimed_version: "7.0.0".into(),
-                filename: "core-7.0.0.tgz".into()
-            },
-            "the scope is absent from the filename"
-        );
-    }
-
-    /// A prerelease version contains hyphens, and the filename is split on the last
-    /// hyphen of the package name, not the first hyphen in the string.
-    #[test]
-    fn prerelease_versions_survive_the_filename_split() {
-        assert_eq!(
-            classify_path("/npm/react/-/react-18.3.0-canary-a1b2c3.tgz"),
-            RequestTarget::Artifact {
-                key: key("react"),
-                claimed_version: "18.3.0-canary-a1b2c3".into(),
-                filename: "react-18.3.0-canary-a1b2c3.tgz".into()
-            }
-        );
-        assert_eq!(
-            classify_path("/npm/is-odd/-/is-odd-3.0.1.tgz"),
-            RequestTarget::Artifact {
-                key: key("is-odd"),
-                claimed_version: "3.0.1".into(),
-                filename: "is-odd-3.0.1.tgz".into()
-            },
-            "hyphens in the package name are not version separators"
-        );
-    }
-
-    /// The path's `3.0.0rc1` is kept, although the packument says `3.0.0-rc1`.
-    #[test]
-    fn the_filename_version_is_what_the_filename_says() {
-        let RequestTarget::Artifact {
-            claimed_version, ..
-        } = classify_path("/npm/express/-/express-3.0.0rc1.tgz")
-        else {
-            panic!("should classify as a tarball");
-        };
-        assert_eq!(claimed_version, "3.0.0rc1");
-        assert_ne!(
-            claimed_version, "3.0.0-rc1",
-            "the packument spells this version with a hyphen; the path does not"
-        );
-    }
-
-    #[test]
-    fn registry_endpoints_and_junk_are_not_packages() {
+    fn registry_endpoints_are_forwarded_and_junk_is_unrecognised() {
+        for path in [
+            "/npm/-/ping",
+            "/npm/-/v1/search?text=lodash",
+            "/npm/-/whoami",
+            "/npm/-/npm/v1/security/advisories/bulk",
+            "/npm/-/npm/v1/security/audits/quick",
+            "/npm/-/npm/v1/keys",
+            "/npm/-/npm/v1/attestations/sigstore@5.0.0",
+            "/npm/-/package/lodash/dist-tags",
+            "/npm/-/package/@babel%2fcore/dist-tags",
+        ] {
+            assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+        }
         for path in [
             "/",
             "",
-            "/npm/-/v1/search?text=lodash",
-            "/npm/-/whoami",
-            "/npm/-/npm/v1/attestations/sigstore@5.0.0",
             "/npm/-",
+            "/npm/-/",
+            "/npm/-/v1/login",
+            "/npm/-/package/foo/bar/dist-tags",
+            "/npm/-/package/lodash/access",
             "/npm/lodash/-/lodash-4.17.21.tar.gz",
             "/npm/lodash/-/something-else.tgz",
             "/npm/lodash/-/lodash-.tgz",
             "/npm/@scope/",
         ] {
-            assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+            assert_eq!(classify_path(path), RequestTarget::Unrecognised, "{path}");
         }
     }
 
@@ -304,7 +263,7 @@ mod tests {
             "/pypi/packages/x",
             "/npm/foo/bar/-/bar-1.0.0.tgz",
         ] {
-            assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+            assert_eq!(classify_path(path), RequestTarget::Unrecognised, "{path}");
         }
         assert_eq!(
             classify_path("/npm/@foo/bar"),

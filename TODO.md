@@ -457,6 +457,21 @@ Items that I've added that are not stage-bound.
     unread, so a PyPI `.tgz` sdist or an npm tarball not named `<name>-<version>.tgz` is
     served with no decision. Raised 2026-10-19. Planned in
     [unrecognised-paths-plan](docs/unrecognised-paths-plan.md), decision 0119.
+    Done 2026-10-19: any other path is `RequestTarget::Unrecognised` and refused, and
+    each smoke fails on one.
+46. The PR pre-merge checks refuse a pull request with a commit that has no
+    `Signed-off-by:` line. Raised 2026-10-19.
+47. `compose.yaml`, `Containerfile` and `Containerfile.release` move from the repository
+    root to `container/`. Raised 2026-10-19.
+48. A performance review of the Postgres schema and migrations: which data types or
+    structures could change to make queries faster or rows smaller, such as `TEXT` where
+    a bounded type would do. Raised 2026-10-19.
+49. Full logic flow diagrams: every entry point, each request to a backend, how the risk
+    vector is built, the risk score, the decision and the response. Raised 2026-10-19.
+50. Step-wise security reviews of each step in #49's diagrams. For each step: is it
+    vulnerable, what does abnormal data do there, can a malicious package be coaxed
+    through, and can malicious input make a score ignored or overridden. After #49.
+    Raised 2026-10-19.
 
 ## Architecture Refactor
 

@@ -24,8 +24,10 @@ pub enum RequestTarget {
         /// The file the path names, which a claim may be asked of.
         filename: String,
     },
-    /// Anything else the registry serves: npm's `/-/v1/search`, PyPI's `/simple/`.
+    /// A path of a shape the adapter lists and forwards: npm's `/-/v1/search`, PyPI's `/simple/`.
     Other,
+    /// A path under the prefix of no shape the adapter lists: refused, or forwarded in observe.
+    Unrecognised,
 }
 
 /// Which metadata document a response body is, read from its `Content-Type`.

@@ -117,7 +117,7 @@ pub const INDEX: &str = "https://index.crates.io";
 pub const FILES: &str = "https://static.crates.io";
 
 /// cargo's first request, which says where downloads are.
-const CONFIG: &str = "config.json";
+pub(super) const CONFIG: &str = "config.json";
 
 /// `config.json`, with `dl` at the proxy so each download is checked, and `auth-required`
 /// when the proxy asks for a token: without it cargo sends none with a download.

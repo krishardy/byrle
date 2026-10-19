@@ -71,23 +71,24 @@ fn key(group: &[&str], artifact: &str) -> Option<PackageKey> {
 }
 
 /// An artifact's `maven-metadata.xml` is its metadata, a version's `.pom` and `.module`
-/// its manifests, and any other file in its directory but a sidecar its artifact.
+/// its manifests, and any other file in its directory but a sidecar its artifact. A sidecar
+/// is none of those, and any other path is unrecognised.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let Some(rest) = PREFIXES.iter().find_map(|prefix| path.strip_prefix(prefix)) else {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     };
     let parts: Vec<&str> = rest.split('/').collect();
     if parts.iter().any(|part| part.is_empty()) {
-        return RequestTarget::Other;
+        return RequestTarget::Unrecognised;
     }
     match parts.as_slice() {
         [group @ .., artifact, file] if *file == METADATA => {
-            key(group, artifact).map_or(RequestTarget::Other, RequestTarget::Metadata)
+            key(group, artifact).map_or(RequestTarget::Unrecognised, RequestTarget::Metadata)
         }
         [group @ .., artifact, version, file] if is_versioned(file) => {
             let Some(key) = key(group, artifact) else {
-                return RequestTarget::Other;
+                return RequestTarget::Unrecognised;
             };
             let (filename, version) = ((*file).to_owned(), (*version).to_owned());
             if is_descriptor(file) {
@@ -104,7 +105,10 @@ pub fn classify_path(path: &str) -> RequestTarget {
                 }
             }
         }
-        _ => RequestTarget::Other,
+        [_, _, .., file] if SIDECARS.iter().any(|sidecar| file.ends_with(sidecar)) => {
+            RequestTarget::Other
+        }
+        _ => RequestTarget::Unrecognised,
     }
 }
 
@@ -217,22 +221,33 @@ mod tests {
         }
         assert_eq!(
             classify_path("/maven/commons-lang3/maven-metadata.xml"),
-            RequestTarget::Other,
+            RequestTarget::Unrecognised,
             "an artifact is in a group"
         );
-        for other in [
-            "/maven/org/apache/commons/commons-lang3/maven-metadata.xml.sha1",
+        for unrecognised in [
             "/maven/org/apache/commons/commons-lang3/",
             "/maven/org//commons-lang3/maven-metadata.xml",
+            "/maven/org/apache/commons/commons-lang3/maven-metadata.xml.bak",
+            "/maven/x.sha1",
+            "/maven/x/3.17.0/a.jar",
+            "/npm/org/x/1/x-1.jar",
+            "/maven/org/apache/comm ons/x/1/x-1.jar",
+        ] {
+            assert_eq!(
+                classify_path(unrecognised),
+                RequestTarget::Unrecognised,
+                "{unrecognised}"
+            );
+        }
+        for other in [
+            "/maven/org/apache/commons/commons-lang3/maven-metadata.xml.sha1",
             "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.sha1",
             "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.asc",
             "/maven/org/apache/commons/commons-lang3/3.17.0/maven-metadata.xml.md5",
             "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.sha256",
             "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.sha512",
             "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.md5",
-            "/maven/x/3.17.0/a.jar",
-            "/npm/org/x/1/x-1.jar",
-            "/maven/org/apache/comm ons/x/1/x-1.jar",
+            "/gradle-plugins/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.asc",
         ] {
             assert_eq!(classify_path(other), RequestTarget::Other, "{other}");
         }
@@ -255,7 +270,7 @@ mod tests {
         }
         assert_eq!(
             classify_path("/maven/x/3.17.0/a.pom"),
-            RequestTarget::Other,
+            RequestTarget::Unrecognised,
             "an artifact is in a group"
         );
     }

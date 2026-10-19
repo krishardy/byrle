@@ -22,6 +22,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/recognised.sh
+. "$repo_root/scripts/make/lib/recognised.sh"
 # shellcheck source=scripts/make/lib/python.sh
 . "$repo_root/scripts/make/lib/python.sh"
 # shellcheck source=scripts/make/lib/postgres.sh
@@ -75,6 +77,7 @@ stop_proxy() {
     if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; fi
     wait "$proxy_pid" 2>/dev/null || true
     proxy_pid=""
+    recognised "$log"
 }
 
 clean() { sed -E 's/\x1b\[[0-9;]*m//g' "$log" >"$clean_log"; }
@@ -323,4 +326,5 @@ else
 fi
 
 echo
+recognised "$log"
 echo "PASS: the proxy serves PyPI as Stage 3 requires."
