@@ -474,6 +474,9 @@ Items that I've added that are not stage-bound.
 48. A performance review of the Postgres schema and migrations: which data types or
     structures could change to make queries faster or rows smaller, such as `TEXT` where
     a bounded type would do. Raised 2026-10-19.
+    Reviewed 2026-10-19 in [postgres-review](docs/postgres-review.md); no change made yet.
+    A disposition by version reads every decision; a package's intel is one row per
+    affected version; a refresh rewrites every row; three indexes are never read.
 49. Full logic flow diagrams: every entry point, each request to a backend, how the risk
     vector is built, the risk score, the decision and the response. Raised 2026-10-19.
     Done 2026-10-19: [logic-flow](docs/logic-flow.md), and `request-flow.md` corrected

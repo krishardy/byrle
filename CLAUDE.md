@@ -10,6 +10,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * docs/fronting-tls.md - nginx in front of the proxy, tested by make smoke-tls-front
 * docs/request-flow.md - How the proxy answers a request, and each status code
 * docs/logic-flow.md - Entry points, backend requests, risk vector, score, decision and response, with step IDs
+* docs/postgres-review.md - Postgres schema and query performance, measured, with proposed changes
 * docs/break-glass.md - Installing when the proxy is down, and releasing a refused package
 * docs/threat-model.md - What byrle defends against, what it trusts, and its bypasses
 * docs/policy-reference.md - Every policy key, its default, and which way it loosens
