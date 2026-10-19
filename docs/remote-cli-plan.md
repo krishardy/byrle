@@ -75,4 +75,6 @@ among the configuration; no route decides a package.
    `policy diff` over its audit log; `--snapshot` is refused remotely.
 7. `make smoke-console` asks each route through the CLI with a `reader` token, and is
    refused with a token of an account with no role. Docs: `docs/console-api.md`,
-   `docs/admin-plan.md`, the README, `docs/runbook.md`.
+   `docs/admin-plan.md`, the README, `docs/runbook.md`. Done 2026-10-19: step 9/9 of
+   `make smoke-console` runs each command through the binary with a reader's token, and
+   bob's is 403.

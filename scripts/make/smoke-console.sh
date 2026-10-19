@@ -2,8 +2,9 @@
 # The Stage 4.9 exit test, docs/admin-plan.md §9: real npm and pip installs, each with its
 # own account's token, read back through the console's API with the account that made
 # them; a test MAL- record loaded after an install raising an alert; status degraded with
-# no snapshot; every route but health refusing an account without the role; and logins by
-# password and through Dex.
+# no snapshot; every route but health refusing an account without the role; logins by
+# password and through Dex; and the analysis commands asked of the deployment with
+# BYRLE_REMOTE_URL, by a reader.
 #
 # Needs Postgres (docker, or initdb and pg_ctl), Dex (docker, or Go to build it), node,
 # python3 and curl. The OSV streams are served from loopback with BYRLE_STREAM_URLS, so the
@@ -104,13 +105,15 @@ staticPasswords:
 EOF
 start_dex "$workdir/dex.yaml" "$dex_port" || fail "Dex did not start"
 
-step "accounts: alice an admin, bob with no role, a token each"
+step "accounts: alice an admin, bob with no role, carol a reader, a token each"
 "$binary" account create alice --role admin >/dev/null
 "$binary" account create bob >/dev/null
+"$binary" account create carol --role reader >/dev/null
 printf '%s\n' "$password" | "$binary" account password alice >/dev/null
 printf '%s\n' "$password" | "$binary" account password bob >/dev/null
 alice_token="$("$binary" token create alice laptop 2>/dev/null)"
 bob_token="$("$binary" token create bob laptop 2>/dev/null)"
+carol_token="$("$binary" token create carol laptop 2>/dev/null)"
 
 printf 'version: 1\ncooldown_days: 0\n' >"$workdir/policy.yaml"
 BYRLE_LISTEN="127.0.0.1:${port}" BYRLE_PROXY_URL="$proxy_url" BYRLE_CONSOLE_URL="${console}/" \
@@ -133,21 +136,21 @@ api() { curl -s -H "cookie: $1" "${console}/api/v1/$2"; }
 # GET $2 with cookie $1: the status.
 status_of() { curl -s -o /dev/null -w '%{http_code}' -H "cookie: $1" "${console}/api/v1/$2"; }
 
-step "1/8  status is degraded while the intel store holds no snapshot"
+step "1/9  status is degraded while the intel store holds no snapshot"
 admin="$(session alice)"
 [[ -n "$admin" ]] || fail "alice did not log in by password"
 readiness="$(api "$admin" status | json '[c["status"] for c in d["components"] if c["name"]=="readiness"][0]')"
 [[ "$readiness" == "degraded" ]] || fail "readiness was $readiness with no snapshot"
 echo "    ok (readiness degraded; alice logged in by password)"
 
-step "2/8  a refresh loads the test streams, and status is up"
+step "2/9  a refresh loads the test streams, and status is up"
 "$binary" refresh >"$workdir/refresh.out" 2>&1 || [[ $? -le 1 ]] || fail "byrle refresh failed"
 sleep 6
 states="$(api "$admin" status | json '",".join(sorted(set(c["status"] for c in d["components"])))')"
 [[ "$states" == "up" ]] || fail "status after the refresh: $states"
 echo "    ok (every component up)"
 
-step "3/8  npm with alice's token, pip with bob's"
+step "3/9  npm with alice's token, pip with bob's"
 since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 assert_unauthorized "${registry}is-number"
 mkdir -p "$workdir/npm"
@@ -162,7 +165,7 @@ python3 -m venv "$workdir/venv"
 sleep 2
 echo "    ok (401 without a token; is-number installed by alice, six by bob)"
 
-step "4/8  R3 to R9 name the account behind each request"
+step "4/9  R3 to R9 name the account behind each request"
 who="$(api "$admin" "dependencies?ecosystem=npm&name=is-number" | json 'd["versions"][0]["account"]')"
 [[ "$who" == "alice" ]] || fail "is-number was served to $who"
 who="$(api "$admin" "dependencies?ecosystem=pypi&name=six" | json 'd["versions"][0]["account"]')"
@@ -172,13 +175,13 @@ lines="$(api "$admin" "requests?since=${since}&account=alice&name=is-number" | j
 unauthorized="$(api "$admin" "metrics/failures?answered=unauthorized" | json 'sum(r["count"] for r in d["failures"])')"
 [[ "$unauthorized" -ge 1 ]] || fail "the request without a token is not counted"
 created="$(api "$admin" "events?action=account-created" | json 'sorted(l["account"] for l in d["lines"])')"
-[[ "$created" == "['alice', 'bob']" ]] || fail "account-created events: $created"
+[[ "$created" == "['alice', 'bob', 'carol']" ]] || fail "account-created events: $created"
 secret_shown="$(api "$admin" config | json '[s["value"] for s in d["environment"] if s["name"]=="BYRLE_OIDC_CLIENT_SECRET"][0]')"
 [[ "$secret_shown" == "set" ]] || fail "the client secret was shown as $secret_shown"
 grep -q '"name":"is-number"' < <(api "$admin" "logs/$(date -u +%Y-%m-%d)") || fail "the day's log holds no is-number line"
 echo "    ok (dependencies, requests, failures, events, config, logs)"
 
-step "5/8  a MAL record loaded after the install raises an alert, and refuses it now"
+step "5/9  a MAL record loaded after the install raises an alert, and refuses it now"
 bundles yes
 "$binary" refresh >"$workdir/refresh2.out" 2>&1 || [[ $? -le 1 ]] || fail "the second refresh failed"
 alert="$(api "$admin" alerts | json '[(a["served"]["account"], a["advisory_id"]) for a in d["alerts"]]')"
@@ -190,7 +193,7 @@ malware="$(api "$admin" "requests?since=${since}&answered=refused&check=known_ma
 [[ "$malware" -ge 1 ]] || fail "R5 shows no refusal for malware"
 echo "    ok (alice's is-number alerted; refused as known_malware)"
 
-step "6/8  bob, without the role, is 403 on every route that needs one"
+step "6/9  bob, without the role, is 403 on every route that needs one"
 user="$(session bob)"
 for route in accounts dependencies alerts requests "metrics/failures" config events \
     "logs/$(date -u +%Y-%m-%d)" status; do
@@ -225,7 +228,7 @@ through_dex() {
     curl -s -D "$workdir/callback.headers" -o "$workdir/callback.body" -H "cookie: $oidc_cookie" "$url"
 }
 
-step "7/8  through Dex: refused until linked, then logged in as alice"
+step "7/9  through Dex: refused until linked, then logged in as alice"
 through_dex
 grep -q '^HTTP/1.1 403' "$workdir/callback.headers" || fail "an unlinked identity was not 403"
 subject="$(grep -o '[^ >]* at [^ ]* is not linked' "$workdir/callback.body" | cut -d' ' -f1)"
@@ -238,10 +241,51 @@ who="$(api "$oidc_session" session | json 'd["account"] + " " + d["by"]')"
 [[ "$who" == "alice session" ]] || fail "the OIDC session is $who"
 echo "    ok (403 until linked; then a session as alice)"
 
-step "8/8  the account event log names each login"
+step "8/9  the account event log names each login"
 grep -q '"action":"login","account":"alice"' "$BYRLE_ACCOUNT_EVENT_LOG" || fail "no login line"
 grep -q '"action":"oidc-linked","account":"alice"' "$BYRLE_ACCOUNT_EVENT_LOG" || fail "no oidc-linked line"
 echo "    ok"
+
+# `byrle "$@"` asked of the deployment with token $1, nothing local but the files named:
+# stdout in $workdir/remote.out, stderr in $workdir/remote.err. Its exit code.
+remote() {
+    local token="$1" code=0
+    shift
+    env -u BYRLE_DATABASE_URL -u BYRLE_ACCOUNT_EVENT_LOG -u BYRLE_STREAM_URLS \
+        BYRLE_REMOTE_URL="${console}/" BYRLE_TOKEN="$token" \
+        "$binary" "$@" >"$workdir/remote.out" 2>"$workdir/remote.err" || code=$?
+    echo "$code"
+}
+
+step "9/9  the analysis commands are answered by the deployment, for a reader"
+[[ "$(remote "$carol_token" explain --policy)" == "0" ]] \
+    || fail "explain --policy: $(cat "$workdir/remote.err")"
+grep -q "cooldown_days    0" "$workdir/remote.out" || fail "explain --policy printed $(head -5 "$workdir/remote.out")"
+remote "$carol_token" explain pkg:npm/is-number@7.0.0 >/dev/null
+grep -q "known_malware    FAIL" "$workdir/remote.out" \
+    || fail "explain is-number printed $(head -20 "$workdir/remote.out") $(cat "$workdir/remote.err")"
+[[ "$(remote "$carol_token" artifact show pkg:npm/is-number@7.0.0)" == "0" ]] \
+    || fail "artifact show: $(cat "$workdir/remote.err")"
+grep -q '"name":"is-number"' "$workdir/remote.out" || fail "artifact show printed $(cat "$workdir/remote.out")"
+[[ "$(remote "$carol_token" artifact export)" == "0" ]] || fail "artifact export: $(cat "$workdir/remote.err")"
+[[ "$(wc -l <"$workdir/remote.out")" -ge 1 ]] || fail "artifact export printed nothing"
+[[ "$(remote "$carol_token" intel history --limit 100)" == "0" ]] \
+    || fail "intel history: $(cat "$workdir/remote.err")"
+grep -q "osv" "$workdir/remote.out" || fail "intel history printed $(cat "$workdir/remote.out")"
+[[ "$(remote "$carol_token" status)" == "0" ]] || fail "status: $(cat "$workdir/remote.err")"
+grep -q "^byrle status" "$workdir/remote.out" || fail "status printed $(cat "$workdir/remote.out")"
+printf 'version: 1\ncooldown_days: 0\n' >"$workdir/candidate.yaml"
+[[ "$(remote "$carol_token" policy check "$workdir/candidate.yaml")" == "0" ]] \
+    || fail "policy check: $(cat "$workdir/remote.err")"
+grep -q "package entries" "$workdir/remote.out" || fail "policy check printed $(cat "$workdir/remote.out")"
+printf 'version: 1\ncooldown_days: 0\nsignal_weights: { known_malware: 0 }\n' >"$workdir/looser.yaml"
+diffed="$(remote "$carol_token" policy diff "$workdir/looser.yaml")"
+[[ "$diffed" == "1" ]] || fail "policy diff exited $diffed: $(cat "$workdir/remote.err")"
+grep -q "LOOSER" "$workdir/remote.out" || fail "policy diff printed $(cat "$workdir/remote.out")"
+[[ "$(remote "$bob_token" explain --policy)" == "2" ]] || fail "bob was answered explain"
+grep -q "403" "$workdir/remote.err" || fail "bob's refusal said $(cat "$workdir/remote.err")"
+[[ "$(remote "" explain --policy)" == "2" ]] || fail "no token was not refused"
+echo "    ok (explain, artifact, intel history, status, policy check and diff; bob 403; no token 2)"
 
 echo
 echo "PASS: the console meets the Stage 4.9 exit criterion."

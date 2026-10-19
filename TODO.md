@@ -420,6 +420,9 @@ Items that I've added that are not stage-bound.
     own machine. Raised 2026-10-17.
     Planned 2026-10-19 in [remote-cli-plan](docs/remote-cli-plan.md), decided in
     [remote-analysis-commands](docs/engineering_decisions/0118-remote-analysis-commands.md).
+    Done 2026-10-19: with `BYRLE_REMOTE_URL` and a `reader`'s `BYRLE_TOKEN`, explain,
+    artifact show and export, intel history, status, and policy check and diff ask the
+    console.
 42. Next phase, after the Maven adapter: no outright blocks. Every rule a version is refused
     by today (`denials`, `cooldown_days`, `max_cvss`, `kev`, `install_scripts`, `yanked`,
     `deprecated`, `provenance`, known malware) becomes a weighted signal in the risk score,

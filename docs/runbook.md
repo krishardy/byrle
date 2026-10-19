@@ -66,7 +66,13 @@ For each refusal, decide one of:
 | the package is needed and the refusal is a false positive | a `packages` exception with a reason and an expiry ([policy-reference](policy-reference.md)) |
 | the version is needed and another one will do | change the lockfile |
 
-`byrle explain pkg:npm/<name>@<version>` says why one version is refused.
+`byrle explain pkg:npm/<name>@<version>` says why one version is refused. From another
+machine, set `BYRLE_REMOTE_URL` to the console's URL and `BYRLE_TOKEN` to a token of an
+account with the `reader` or `admin` role: `explain`, `artifact show` and `export`, `intel
+history`, `status`, and `policy check` and `policy diff <candidate>` are then answered by
+the deployment, from its policy, stores and audit log
+([remote-analysis-commands](engineering_decisions/0118-remote-analysis-commands.md)).
+`byrle account create <name> --role reader` makes such an account.
 
 ## 4. What the defaults are known to refuse
 

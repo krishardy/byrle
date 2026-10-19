@@ -2,7 +2,8 @@
 
 - **Number:** 0118
 - **Status:** Decided by the user 2026-10-19, as TODO.md ad-hoc #41 and
-  [remote-cli-plan](../remote-cli-plan.md). Not yet implemented.
+  [remote-cli-plan](../remote-cli-plan.md). Implemented 2026-10-19: `src/remote.rs`, the
+  client; `console::commands`, the routes; `make smoke-console` step 9.
 - **Related:** [admin-plan](../admin-plan.md) §4.2 and §5, [explain-output](0084-explain-output.md),
   [policy-check](0034-policy-check.md)
 

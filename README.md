@@ -99,7 +99,9 @@ GitHub advisories, Datadog's malicious-packages dataset and CISA KEV are all fre
 public.
 
 **A policy engine you can read.** `byrle explain` shows the policy in force, and for a
-package, the verdict and each check that produced it.
+package, the verdict and each check that produced it. With `BYRLE_REMOTE_URL` and a
+`reader` account's `BYRLE_TOKEN`, it and the other analysis commands ask a deployed byrle
+instead of reading its files.
 
 ## Ecosystem support
 

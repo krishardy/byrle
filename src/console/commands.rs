@@ -671,6 +671,36 @@ pub(crate) mod tests {
             garbled.stderr.contains("the body is not a policy check"),
             "{garbled:?}"
         );
+        let expiring = |day: &str| {
+            format!(
+                "version: 1\ncooldown_days: 7\npackages:\n  - match: {{ ecosystem: npm, name: ms }}\n    \
+                 set: {{ cooldown_days: 0 }}\n    reason: r\n    expires: \"{day}\"\n"
+            )
+        };
+        let within = carol
+            .post(
+                "policy check",
+                POLICY_CHECK_PATH,
+                &asked(&expiring("2026-10-13"), false),
+            )
+            .await;
+        assert_eq!(
+            within.code, 0,
+            "30 days, under the 90-day ceiling: {within:?}"
+        );
+        let past = carol
+            .post(
+                "policy check",
+                POLICY_CHECK_PATH,
+                &asked(&expiring("2027-06-01"), false),
+            )
+            .await;
+        assert!(past.stderr.contains("90-day ceiling"), "{past:?}");
+        let large = format!("version: 1\n# {}\n", "x".repeat(2 << 20));
+        let large = carol
+            .post("policy check", POLICY_CHECK_PATH, &asked(&large, false))
+            .await;
+        assert_eq!(large.code, 0, "a 2 MiB policy is read whole: {large:?}");
     }
 
     /// `policy diff` compares the policy in force with the one sent, over the versions sent;
