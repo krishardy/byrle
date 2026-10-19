@@ -208,6 +208,32 @@ pub enum Artifact {
     },
 }
 
+/// As [`Artifact::parse`] reads it: the digest, or the version's purl.
+impl std::fmt::Display for Artifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Digest(digest) => f.write_str(digest),
+            Self::Version {
+                ecosystem,
+                name,
+                version,
+            } => {
+                let reference = ecosystem
+                    .parse::<crate::identity::Ecosystem>()
+                    .ok()
+                    .and_then(|ecosystem| {
+                        crate::identity::PackageKey::from_registry_name(ecosystem, name).ok()
+                    })
+                    .and_then(|key| key.at_version(version).ok());
+                match reference {
+                    Some(reference) => write!(f, "{reference}"),
+                    None => write!(f, "pkg:{ecosystem}/{name}@{version}"),
+                }
+            }
+        }
+    }
+}
+
 impl Artifact {
     /// A digest, `sha512-...` or `sha256-...`, or a purl naming one version.
     pub fn parse(argument: &str) -> Result<Self, String> {
@@ -523,6 +549,32 @@ pub(crate) mod tests {
             assert!(e.starts_with(refused), "{e}");
             assert!(e.contains("pkg:npm/ms@2.1.3"), "{e}");
         }
+    }
+
+    /// An artifact is written as it is read, so a remote `artifact show` asks for the one
+    /// given; one of an ecosystem this build does not serve is written as a purl.
+    #[test]
+    fn an_artifact_is_written_as_it_is_read() {
+        let digest = format!("sha512-{}", "A".repeat(86) + "==");
+        for given in [
+            digest.as_str(),
+            "pkg:npm/%40scope/a@1.0.0",
+            "pkg:pypi/Foo_Bar@2.0",
+            "pkg:maven/org.apache.commons/commons-lang3@3.17.0",
+        ] {
+            let artifact = Artifact::parse(given).unwrap();
+            assert_eq!(
+                Artifact::parse(&artifact.to_string()),
+                Ok(artifact),
+                "{given}"
+            );
+        }
+        let unserved = Artifact::Version {
+            ecosystem: "gem".into(),
+            name: "rails".into(),
+            version: "7.0.0".into(),
+        };
+        assert_eq!(unserved.to_string(), "pkg:gem/rails@7.0.0");
     }
 
     #[test]

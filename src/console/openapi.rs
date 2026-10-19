@@ -38,6 +38,8 @@ pub const OPENAPI_PATH: &str = "/api/v1/openapi.json";
         super::alerts::alerts,
         super::status::status,
         super::commands::explain,
+        super::commands::artifact,
+        super::commands::artifacts,
     ),
     modifiers(&Credentials),
 )]

@@ -14,8 +14,8 @@ pub const PAGE: usize = 1000;
 pub async fn show(
     store: &dyn Analyses,
     artifact: &Artifact,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
+    out: &mut (dyn Write + Send),
+    err: &mut (dyn Write + Send),
 ) -> u8 {
     let found = match store.dispositions(artifact).await {
         Ok(found) => found,
@@ -39,8 +39,8 @@ pub async fn export(
     store: &dyn Analyses,
     since: Option<String>,
     until: Option<String>,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
+    out: &mut (dyn Write + Send),
+    err: &mut (dyn Write + Send),
 ) -> u8 {
     let mut page = Page {
         after: 0,
@@ -65,7 +65,7 @@ pub async fn export(
     }
 }
 
-fn failed(err: &mut dyn Write, why: &str) -> u8 {
+fn failed(err: &mut (dyn Write + Send), why: &str) -> u8 {
     let _ = writeln!(err, "byrle artifact: {why}");
     2
 }

@@ -88,8 +88,14 @@ pub const STATUS_PATH: &str = "/api/v1/status";
 /// Under the console's path: `GET` what `byrle explain` prints on the deployment.
 pub const EXPLAIN_PATH: &str = "/api/v1/explain";
 
+/// Under the console's path: `GET` what `byrle artifact show` prints on the deployment.
+pub const ARTIFACT_PATH: &str = "/api/v1/artifact";
+
+/// Under the console's path: `GET` what `byrle artifact export` prints on the deployment.
+pub const ARTIFACTS_PATH: &str = "/api/v1/artifacts";
+
 /// Every console route.
-pub const ROUTES: [Route; 29] = [
+pub const ROUTES: [Route; 31] = [
     Route {
         method: Method::GET,
         path: super::pages::HOME_PATH,
@@ -294,6 +300,22 @@ pub const ROUTES: [Route; 29] = [
     },
     Route {
         method: Method::GET,
+        path: ARTIFACT_PATH,
+        kind: Kind::Api,
+        guard: Guard::Needs(Permission::PackagesRead, |site, asked| {
+            Box::pin(super::commands::artifact(site, asked.parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: ARTIFACTS_PATH,
+        kind: Kind::Api,
+        guard: Guard::Needs(Permission::PackagesRead, |site, asked| {
+            Box::pin(super::commands::artifacts(site, asked.parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
         path: FAILURES_PATH,
         kind: Kind::Api,
         guard: Guard::Needs(Permission::RequestsRead, |site, asked| {
@@ -443,8 +465,11 @@ mod tests {
                     assert_eq!(status(by_session).await, 403, "{url}, {name}");
                     let by_token = request().bearer_auth("byrle_bob");
                     assert_eq!(status(by_token).await, 403, "{url}, {name}");
-                    let admin = request().header("cookie", &admin);
-                    assert_eq!(status(admin).await, 200, "{url}, {name}");
+                    let admin = status(request().header("cookie", &admin)).await;
+                    assert!(
+                        admin != 401 && admin != 403,
+                        "{url}, {name}: admitted, though it may need what is not asked: {admin}"
+                    );
                 }
                 Guard::Authenticated(_) => {
                     assert_eq!(status(request()).await, 401, "{url}");

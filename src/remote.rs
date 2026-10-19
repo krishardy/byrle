@@ -29,6 +29,15 @@ impl Printed {
         }
     }
 
+    /// What a command wrote to its two streams, and the code it returned.
+    pub fn written(out: &[u8], err: &[u8], code: u8) -> Self {
+        Self {
+            stdout: String::from_utf8_lossy(out).into_owned(),
+            stderr: String::from_utf8_lossy(err).into_owned(),
+            code,
+        }
+    }
+
     /// Stopped before the deployment answered, saying `why`.
     fn stopped(command: &str, why: &str) -> Self {
         Self::of(command, &[why.to_owned()], String::new(), 2)
@@ -189,7 +198,7 @@ mod tests {
         let router = axum::Router::new()
             .route(
                 "/admin/printed",
-                axum::routing::get(|| async { r#"{"stdout":"out\n","stderr":"","code":1}"# }),
+                axum::routing::get(|| async { r#"{"stdout":"out\n","stderr":"","code":3}"# }),
             )
             .route(
                 "/admin/garbled",
@@ -206,8 +215,8 @@ mod tests {
         .unwrap()
         .unwrap();
         let printed = remote.get("explain", "/printed", &[]).await;
-        assert_eq!((printed.stdout.as_str(), printed.code), ("out\n", 1));
-        assert_eq!(printed.print(), 1, "the code to exit with");
+        assert_eq!((printed.stdout.as_str(), printed.code), ("out\n", 3));
+        assert_eq!(printed.print(), 3, "the code to exit with");
         let unread = |var| {
             format!(
                 "byrle explain: {var} is not read: {REMOTE_URL} is set, so the deployment \

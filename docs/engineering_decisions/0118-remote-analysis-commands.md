@@ -17,7 +17,7 @@ analysis store, audit log and upstreams. Without it they run locally, as before.
 |---|---|
 | Where | routes under the console's `api/v1`, authenticated as every console route is: a session cookie, or a proxy token |
 | Who | `packages.read`, a new permission, held by `admin` and by `reader`, a new role holding every `*.read` permission and no `*.write` |
-| What a route returns | what the command printed on the deployment, `{"stdout", "stderr", "code"}`, which the client prints and exits with; `artifact export` streams its NDJSON |
+| What a route returns | what the command printed on the deployment, `{"stdout", "stderr", "code"}`, which the client prints and exits with; `artifact export`'s JSON Lines in `stdout` too |
 | What the client sends | the command's arguments; a candidate policy and a lockfile as a `POST` body. `policy diff` takes the candidate alone: the policy in force is the deployment's |
 
 ## Why

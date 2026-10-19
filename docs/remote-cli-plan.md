@@ -39,8 +39,8 @@ among the configuration; no route decides a package.
 - **The deployment runs the command and returns what it printed.** Each route answers
   `{"stdout": ..., "stderr": ..., "code": ...}`, from the same functions the local command
   calls, and the client prints them and exits with `code`. So the remote command prints
-  what the local one would on the deployment, and there is one renderer. `artifact export`
-  is the exception: its route streams the NDJSON, as `api/v1/logs/{day}` does.
+  what the local one would on the deployment, and there is one renderer. `artifact export`'s
+  JSON Lines are in `stdout` too, held in memory: `since` and `until` bound them.
 - **Inputs the client sends.** A purl, a digest, dates and limits as query parameters. A
   candidate policy for `check` or `diff`, and a lockfile for `diff --lockfile`, as the body
   of a `POST`. Under `BYRLE_REMOTE_URL`, `policy diff` takes the candidate alone: the policy
@@ -62,7 +62,9 @@ among the configuration; no route decides a package.
    `console::commands::explain`, and `explain::run_on` on the proxy's policy, intel store and
    clients. `warm`'s token client moved to `http::token_client` for both.
 4. `artifact show` (`GET api/v1/artifacts/{digest or purl}`) and `artifact export` (`GET
-   api/v1/artifacts?since=&until=`, NDJSON).
+   api/v1/artifacts?since=&until=`, its JSON Lines in `stdout`). Done 2026-10-19, from
+   `Proxy::analyses`, the analyser's store. An artifact is sent as `Artifact` writes it,
+   which reads back as the same artifact.
 5. `intel history` (`GET api/v1/intel/history?limit=`) and `status` (`GET
    api/v1/ecosystems`).
 6. `policy check` (`POST api/v1/policy/check`) and `policy diff` (`POST api/v1/policy/diff`).

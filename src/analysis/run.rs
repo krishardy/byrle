@@ -102,6 +102,11 @@ pub struct Analyser {
 }
 
 impl Analyser {
+    /// Where it keeps what it found.
+    pub fn store(&self) -> Arc<dyn Analyses> {
+        self.store.clone()
+    }
+
     pub fn new(
         client: reqwest::Client,
         spool: Arc<Spool>,

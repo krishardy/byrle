@@ -235,6 +235,31 @@ fn finish(
 /// `byrle artifact show|export`, against the analysis store at [`env::DATABASE_URL`].
 async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
     use byrle::analysis::decision::command;
+    match remote("artifact") {
+        Err(code) => return code,
+        Ok(Some(remote)) => {
+            let printed = match &command {
+                cli::ArtifactCommand::Show(args) => {
+                    let query = [("artifact", args.artifact.to_string())];
+                    remote
+                        .get("artifact", byrle::console::routes::ARTIFACT_PATH, &query)
+                        .await
+                }
+                cli::ArtifactCommand::Export(args) => {
+                    let query: Vec<(&str, String)> =
+                        [("since", &args.since), ("until", &args.until)]
+                            .into_iter()
+                            .filter_map(|(name, day)| Some((name, day.clone()?)))
+                            .collect();
+                    remote
+                        .get("artifact", byrle::console::routes::ARTIFACTS_PATH, &query)
+                        .await
+                }
+            };
+            return std::process::ExitCode::from(printed.print());
+        }
+        Ok(None) => {}
+    }
     let store = match postgres::required(&env::process()).await {
         Ok(intel) => byrle::analysis::postgres::PgAnalyses::new(intel.pool().clone()),
         Err(refused) => {
@@ -242,7 +267,7 @@ async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
             return std::process::ExitCode::from(refused.code);
         }
     };
-    let (mut out, mut err) = (std::io::stdout().lock(), std::io::stderr());
+    let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
     std::process::ExitCode::from(match command {
         cli::ArtifactCommand::Show(args) => {
             command::show(&store, &args.artifact, &mut out, &mut err).await

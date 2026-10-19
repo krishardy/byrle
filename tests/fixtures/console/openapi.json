@@ -817,6 +817,177 @@
         "x-byrle-permission": "alerts.read"
       }
     },
+    "/api/v1/artifact": {
+      "get": {
+        "operationId": "artifact",
+        "parameters": [
+          {
+            "description": "A digest, such as `sha512-...`, or one version's purl, such as `pkg:npm/ms@2.1.3`.",
+            "in": "query",
+            "name": "artifact",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Printed"
+                }
+              }
+            },
+            "description": "What the command printed, and its exit code"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An artifact that is neither a digest nor a purl"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant packages.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No proxy, or one keeping no analyses"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET artifact`: what `byrle artifact show` prints on the deployment.",
+        "tags": [
+          "commands"
+        ],
+        "x-byrle-permission": "packages.read"
+      }
+    },
+    "/api/v1/artifacts": {
+      "get": {
+        "operationId": "artifacts",
+        "parameters": [
+          {
+            "description": "The first day, `YYYY-MM-DD`, UTC.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The last day, `YYYY-MM-DD`, UTC, included.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Printed"
+                }
+              }
+            },
+            "description": "What the command printed, and its exit code"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A day that does not parse"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant packages.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No proxy, or one keeping no analyses"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET artifacts`: what `byrle artifact export` prints on the deployment, its JSON Lines.",
+        "tags": [
+          "commands"
+        ],
+        "x-byrle-permission": "packages.read"
+      }
+    },
     "/api/v1/config": {
       "get": {
         "operationId": "config",

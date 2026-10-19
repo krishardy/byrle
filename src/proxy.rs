@@ -383,6 +383,14 @@ impl Proxy {
         Ok(self)
     }
 
+    /// Where its analyses are kept, when it analyses artifacts.
+    pub fn analyses(&self) -> Option<Arc<dyn crate::analysis::store::Analyses>> {
+        self.config
+            .analyser
+            .as_ref()
+            .map(|analyser| analyser.store())
+    }
+
     /// The clients it asks the registries with, for what it was not asked.
     pub fn clients(&self) -> &Clients {
         &self.config.clients

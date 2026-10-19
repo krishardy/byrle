@@ -66,6 +66,100 @@ async fn explained(site: &Site, parts: &Parts) -> Result<Printed, Refused> {
     ))
 }
 
+/// `GET artifact`'s query string.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ArtifactQuery {
+    /// A digest, such as `sha512-...`, or one version's purl, such as `pkg:npm/ms@2.1.3`.
+    artifact: String,
+}
+
+/// `GET artifact`: what `byrle artifact show` prints on the deployment.
+#[utoipa::path(
+    get,
+    path = super::routes::ARTIFACT_PATH,
+    tag = "commands",
+    security(("session" = []), ("token" = [])),
+    extensions(("x-byrle-permission" = json!("packages.read"))),
+    params(ArtifactQuery),
+    responses(
+        (status = 200, description = "What the command printed, and its exit code", body = Printed),
+        (status = 400, description = "An artifact that is neither a digest nor a purl", body = Problem),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 403, description = "The caller's roles do not grant packages.read", body = Problem),
+        (status = 503, description = "No proxy, or one keeping no analyses", body = Problem),
+    ),
+)]
+pub async fn artifact(site: Arc<Site>, parts: Parts) -> Response {
+    answered(shown(&site, &parts).await)
+}
+
+/// What `byrle artifact show` prints for the query string of `parts`.
+async fn shown(site: &Site, parts: &Parts) -> Result<Printed, Refused> {
+    let asked = query::<ArtifactQuery>(parts).map_err(Refused::bad)?;
+    let artifact =
+        crate::analysis::decision::Artifact::parse(&asked.artifact).map_err(Refused::bad)?;
+    let store = analyses(site)?;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code =
+        crate::analysis::decision::command::show(&*store, &artifact, &mut out, &mut err).await;
+    Ok(Printed::written(&out, &err, code))
+}
+
+/// `GET artifacts`'s query string.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ArtifactsQuery {
+    /// The first day, `YYYY-MM-DD`, UTC.
+    since: Option<String>,
+    /// The last day, `YYYY-MM-DD`, UTC, included.
+    until: Option<String>,
+}
+
+/// `GET artifacts`: what `byrle artifact export` prints on the deployment, its JSON Lines.
+#[utoipa::path(
+    get,
+    path = super::routes::ARTIFACTS_PATH,
+    tag = "commands",
+    security(("session" = []), ("token" = [])),
+    extensions(("x-byrle-permission" = json!("packages.read"))),
+    params(ArtifactsQuery),
+    responses(
+        (status = 200, description = "What the command printed, and its exit code", body = Printed),
+        (status = 400, description = "A day that does not parse", body = Problem),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 403, description = "The caller's roles do not grant packages.read", body = Problem),
+        (status = 503, description = "No proxy, or one keeping no analyses", body = Problem),
+    ),
+)]
+pub async fn artifacts(site: Arc<Site>, parts: Parts) -> Response {
+    answered(exported(&site, &parts).await)
+}
+
+/// What `byrle artifact export` prints for the query string of `parts`.
+async fn exported(site: &Site, parts: &Parts) -> Result<Printed, Refused> {
+    let asked = query::<ArtifactsQuery>(parts).map_err(Refused::bad)?;
+    let day = |given: Option<String>| {
+        given
+            .map(|day| crate::analysis::decision::day(&day))
+            .transpose()
+            .map_err(Refused::bad)
+    };
+    let (since, until) = (day(asked.since)?, day(asked.until)?);
+    let store = analyses(site)?;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code =
+        crate::analysis::decision::command::export(&*store, since, until, &mut out, &mut err).await;
+    Ok(Printed::written(&out, &err, code))
+}
+
+/// The analysis store of the proxy beside `site`. 503 when it keeps none.
+fn analyses(site: &Site) -> Result<Arc<dyn crate::analysis::store::Analyses>, Refused> {
+    super::config::beside(site)?
+        .analyses()
+        .ok_or_else(|| Refused::unavailable("the deployment keeps no analyses"))
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
@@ -148,6 +242,77 @@ pub(crate) mod tests {
         );
     }
 
+    /// `artifact show` and `export` are answered from the deployment's analysis store; one
+    /// keeping none is 503, and an artifact or day that does not parse 400.
+    #[tokio::test]
+    async fn artifacts_are_answered_from_the_deployments_analyses() {
+        use crate::analysis::store::Analyses;
+        let store = Arc::new(crate::analysis::store::InProcess::new(8));
+        let rows = [
+            crate::analysis::decision::tests::decided("a", "sha512-1"),
+            crate::analysis::decision::tests::decided("b", "sha512-2"),
+        ];
+        store.put_decisions(&rows).await.unwrap();
+        let analyser = crate::analysis::run::tests::analyser("remote-artifacts", 1 << 20, store);
+        let url = console_beside(policed().with_analyser(Some(Arc::new(analyser)))).await;
+        let carol = asking(&url, "carol");
+        let shown = carol
+            .get(
+                "artifact",
+                crate::console::routes::ARTIFACT_PATH,
+                &[("artifact", "pkg:npm/a@1.0.0".to_owned())],
+            )
+            .await;
+        assert_eq!(shown.code, 0, "{shown:?}");
+        assert_eq!(shown.stdout.lines().count(), 1, "{shown:?}");
+        let exported = carol
+            .get(
+                "artifact",
+                crate::console::routes::ARTIFACTS_PATH,
+                &[("since", "2000-01-01".to_owned())],
+            )
+            .await;
+        assert_eq!(
+            (exported.code, exported.stdout.lines().count()),
+            (0, 2),
+            "{exported:?}"
+        );
+        for (path, query) in [
+            (crate::console::routes::ARTIFACT_PATH, ("artifact", "ms")),
+            (
+                crate::console::routes::ARTIFACTS_PATH,
+                ("until", "yesterday"),
+            ),
+            (
+                crate::console::routes::ARTIFACTS_PATH,
+                ("since", "yesterday"),
+            ),
+        ] {
+            let refused = carol
+                .get("artifact", path, &[(query.0, query.1.to_owned())])
+                .await;
+            assert!(refused.stderr.contains("400 Bad Request"), "{refused:?}");
+        }
+
+        let none = console_beside(policed()).await;
+        for path in [
+            crate::console::routes::ARTIFACT_PATH,
+            crate::console::routes::ARTIFACTS_PATH,
+        ] {
+            let refused = asking(&none, "carol")
+                .get(
+                    "artifact",
+                    path,
+                    &[("artifact", "pkg:npm/a@1.0.0".to_owned())],
+                )
+                .await;
+            assert!(
+                refused.stderr.contains("the deployment keeps no analyses"),
+                "{refused:?}"
+            );
+        }
+    }
+
     /// A deployment with no policy says so; a console beside no proxy is 503, and a query
     /// that does not parse 400.
     #[tokio::test]
@@ -177,6 +342,14 @@ pub(crate) mod tests {
             panic!("a purl given twice");
         };
         assert_eq!(status, 400, "{why}");
+        for refused in [
+            shown(&alone, &parts("/x?artifact=pkg:npm/a@1.0.0")).await,
+            exported(&alone, &parts("/x")).await,
+        ] {
+            assert!(matches!(refused, Err(Refused(status, _)) if status == 503));
+        }
+        let twice = exported(&alone, &parts("/x?since=2026-01-01&since=2026-01-02")).await;
+        assert!(matches!(twice, Err(Refused(status, _)) if status == 400));
         let url = console_beside(Proxy::new(reqwest::Client::new())).await;
         let printed = asking(&url, "alice")
             .get("explain", crate::console::routes::EXPLAIN_PATH, &[])
