@@ -31,7 +31,8 @@ client to any code from 400 to 599. Every 503 carries `Retry-After` and
 Every 503 the proxy writes, but `/-/byrle/ready`'s, carries `Retry-After` and
 `x-byrle-not-ready` naming the case. `Retry-After` is 1, but `BYRLE_CLAIM_RETRY_AFTER`, 2 by
 default, while a claim is checked, and for a download waiting on an awaited detector that
-detector's runs in flight times one run's time.
+detector's runs in flight times one run's time. An `artifact-analysis` 503 also carries
+`x-byrle-digest`, the digest of the artifact it waits on, as its log lines name it.
 
 ```mermaid
 flowchart TD
@@ -120,17 +121,19 @@ flowchart TD
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
 | refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata does not list the version; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
-| 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
+| 502 | proxy | the upstream could not be reached, or stalled before answering; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` while a policy is set and intel has not loaded or has a gap |
 
 An artifact whose bytes do not match the digest has already been sent a 200. The last
-chunk is held back, so the body ends short and the client's install fails. The 502 for a
+chunk is held back, so the body ends short and the client's install fails. A body that
+fails, or stalls 30 s, after its 200 also ends short. The 502 for a
 mismatch comes from the analysis job's own fetch of the same digest, which is remembered
 in process.
 
 With no stream covering PyPI, a simple index is filtered without intel rather than
 answered 503, because pip reports an index 503 as `No matching distribution found`. Its
-files are answered 503. Cargo, Go and Maven documents are filtered the same way ([pypi-index-filtering](engineering_decisions/0050-pypi-index-filtering.md)).
+files are answered 503 ([pypi-index-filtering](engineering_decisions/0050-pypi-index-filtering.md)).
+Cargo, Go and Maven documents are filtered the same way.
 
 A Maven file's claim is the first of the `.sha512`, `.sha256` and `.sha1` beside it
 ([maven-digests](engineering_decisions/0112-maven-digests.md)). A `.pom` and a `.module`
