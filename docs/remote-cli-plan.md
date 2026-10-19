@@ -55,7 +55,7 @@ among the configuration; no route decides a package.
 ## Steps
 
 1. Decision `0118` for the four answers, and `docs/admin-plan.md` §4.2's roles amended.
-2. `Permission::PackagesRead` and `Role::Reader`; `account create --role reader`.
+2. `Permission::PackagesRead` and `Role::Reader`; `account create --role reader`. Done 2026-10-19.
 3. The client: `BYRLE_REMOTE_URL` and `BYRLE_TOKEN` in `env.rs`, a `remote` module that asks
    a route and prints the answer, and `explain` (`GET api/v1/explain?purl=`, and `GET
    api/v1/explain` for `--policy`) on both sides.

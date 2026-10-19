@@ -18,11 +18,13 @@ pub enum Permission {
     AccountsRead,
     /// Accounts, their roles and tokens, changed.
     AccountsWrite,
+    /// The analysis commands, answered by the deployment: docs/remote-cli-plan.md.
+    PackagesRead,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Permission; 7] = [
+    pub const ALL: [Permission; 8] = [
         Self::RequestsRead,
         Self::AlertsRead,
         Self::ConfigRead,
@@ -30,6 +32,18 @@ impl Permission {
         Self::EventsRead,
         Self::AccountsRead,
         Self::AccountsWrite,
+        Self::PackagesRead,
+    ];
+
+    /// Every permission that reads and changes nothing.
+    pub const READ: [Permission; 7] = [
+        Self::RequestsRead,
+        Self::AlertsRead,
+        Self::ConfigRead,
+        Self::StatusRead,
+        Self::EventsRead,
+        Self::AccountsRead,
+        Self::PackagesRead,
     ];
 
     /// Its name, such as `requests.read`.
@@ -42,6 +56,7 @@ impl Permission {
             Self::EventsRead => "events.read",
             Self::AccountsRead => "accounts.read",
             Self::AccountsWrite => "accounts.write",
+            Self::PackagesRead => "packages.read",
         }
     }
 }
@@ -51,16 +66,19 @@ impl Permission {
 pub enum Role {
     /// Every permission.
     Admin,
+    /// Every permission that reads, [`Permission::READ`].
+    Reader,
 }
 
 impl Role {
     /// Every role.
-    pub const ALL: [Role; 1] = [Self::Admin];
+    pub const ALL: [Role; 2] = [Self::Admin, Self::Reader];
 
     /// Its name, as stored and as `--role` takes it.
     pub fn name(self) -> &'static str {
         match self {
             Self::Admin => "admin",
+            Self::Reader => "reader",
         }
     }
 
@@ -79,6 +97,7 @@ impl Role {
     pub fn permissions(self) -> &'static [Permission] {
         match self {
             Self::Admin => &Permission::ALL,
+            Self::Reader => &Permission::READ,
         }
     }
 }
@@ -109,6 +128,19 @@ mod tests {
         }
     }
 
+    /// A reader holds every permission that reads, and none that changes anything.
+    #[test]
+    fn a_reader_holds_every_read_permission_and_no_write() {
+        for permission in Permission::ALL {
+            assert_eq!(
+                permits(&[Role::Reader], permission),
+                permission.name().ends_with(".read"),
+                "{}",
+                permission.name()
+            );
+        }
+    }
+
     #[test]
     fn each_name_is_distinct() {
         let names: std::collections::BTreeSet<&str> =
@@ -121,6 +153,7 @@ mod tests {
     fn a_role_is_read_by_its_name() {
         assert_eq!(Role::parse("admin"), Ok(Role::Admin));
         assert_eq!(Role::Admin.to_string(), "admin");
+        assert_eq!(Role::parse("reader"), Ok(Role::Reader));
         let refused = Role::parse("root").unwrap_err();
         assert!(
             refused.contains("`root`") && refused.contains("admin"),
