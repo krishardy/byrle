@@ -14,7 +14,7 @@ help:
 	@echo "  test-integration  tests needing a real Postgres, in a container or local cluster"
 	@echo "  sqlx-prepare   regenerate .sqlx/, the offline query cache"
 	@echo "  coverage       unit test coverage, failing under the CLAUDE.md floor"
-	@echo "  mutants        mutation testing of the Rust changed since BASE (default HEAD)"
+	@echo "  mutants        mutation testing of the Rust changed since BASE (default HEAD), with a Postgres"
 	@echo "  mutants-status how far the current or last mutants run is, and what it missed"
 	@echo "  release-check  whether TAG names the version in Cargo.toml"
 	@echo "  release-binary a release tarball for this machine in dist/, with its sha256"

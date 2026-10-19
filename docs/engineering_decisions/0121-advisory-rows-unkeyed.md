@@ -66,4 +66,7 @@ hand stays changed until the source's rows change.
 `make mutants BASE=HEAD~1` over the change: 25 mutants, 9 missed, because
 `tests/postgres.rs` skips with no database. Run again with `BYRLE_TEST_DATABASE_URL` set
 to a local cluster and one job at a time, since the tests share database names: 12 caught,
-13 unviable, 0 missed.
+13 unviable, 0 missed. Since then `make mutants` starts a Postgres itself and sets
+`BYRLE_TEST_SCHEMA_PER_PROCESS=1`, so each job's tests use their own schemas. With 2 jobs:
+14 caught, 13 unviable, 0 missed. With the default 4, the out-of-memory killer ended 6 of
+the builds, which were reported unviable.

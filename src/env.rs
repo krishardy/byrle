@@ -703,6 +703,11 @@ pub const TEST_DATABASE_URL: Var = other(
     "BYRLE_TEST_DATABASE_URL",
     &["Postgres the integration tests run against, set by `make test-integration`"],
 );
+pub const TEST_SCHEMA_PER_PROCESS: Var = other(
+    Kind::Test,
+    "BYRLE_TEST_SCHEMA_PER_PROCESS",
+    &["1 suffixes each integration test's schema with the process id, set by `make mutants`"],
+);
 pub const HOME_DIR: Var = other(
     Kind::External,
     "HOME",
@@ -780,7 +785,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 95] = [
+pub const ALL: [Var; 96] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -861,6 +866,7 @@ pub const ALL: [Var; 95] = [
     NPM_CORPUS,
     NPM_CORPUS_FULL,
     TEST_DATABASE_URL,
+    TEST_SCHEMA_PER_PROCESS,
     HOME_DIR,
     BUN_CACHE,
     CARGO_DIR,
@@ -1610,6 +1616,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.text(TEST_DATABASE_URL)
     }
 
+    pub fn test_schema_per_process(&self) -> Result<bool, EnvError> {
+        self.flag(TEST_SCHEMA_PER_PROCESS, false)
+    }
+
     pub fn home(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(HOME_DIR)
     }
@@ -1883,6 +1893,7 @@ mod tests {
         assert_eq!(env.npm_corpus().unwrap(), None);
         assert_eq!(env.npm_corpus_full().unwrap(), None);
         assert_eq!(env.test_database_url().unwrap(), None);
+        assert!(!env.test_schema_per_process().unwrap());
         assert_eq!(env.home().unwrap(), None);
         assert_eq!(env.bun_install_cache_dir().unwrap(), None);
     }
@@ -1939,6 +1950,7 @@ mod tests {
             (NPM_CORPUS, "abbrev"),
             (NPM_CORPUS_FULL, "full"),
             (TEST_DATABASE_URL, "postgres://test"),
+            (TEST_SCHEMA_PER_PROCESS, "1"),
             (HOME_DIR, "/home/u"),
             (BUN_CACHE, "/cache"),
         ]);
@@ -2005,6 +2017,7 @@ mod tests {
             env.test_database_url().unwrap().as_deref(),
             Some("postgres://test")
         );
+        assert!(env.test_schema_per_process().unwrap());
         assert_eq!(env.home().unwrap(), Some(PathBuf::from("/home/u")));
         assert_eq!(
             env.bun_install_cache_dir().unwrap(),

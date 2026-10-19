@@ -17,6 +17,10 @@
 # An untracked `.rs` file is included whole: it is in no diff, and leaving it out reported
 # "every mutant caught" for a module nothing had mutated.
 #
+# The tests in tests/postgres.rs skip without a database, so a mutant in the Postgres code
+# would be missed. A Postgres is started for the run unless BYRLE_TEST_DATABASE_URL names
+# one, and BYRLE_TEST_SCHEMA_PER_PROCESS=1 gives each job's tests their own schemas in it.
+#
 # Exit codes are cargo-mutants' own: 0 every mutant caught, 2 some missed, 3 some timed
 # out, 4 the unmutated tree failed its tests. Results are in target/mutants.out.
 set -euo pipefail
@@ -41,6 +45,20 @@ if [[ ! -s "$diff" ]]; then
     echo "no Rust changes since $base"
     exit 0
 fi
+
+if [[ -z "${BYRLE_TEST_DATABASE_URL:-}" ]]; then
+    # shellcheck source=scripts/make/lib/postgres.sh
+    . "$repo_root/scripts/make/lib/postgres.sh"
+    choose_postgres || exit 1
+    port="${BYRLE_PG_PORT:-55435}"
+    echo "postgres ($postgres_where) on port $port, for tests/postgres.rs"
+    start_postgres "byrle-mutants-pg-$$" "$port"
+    # start_postgres sets its own EXIT trap; this one keeps removing the diff too.
+    trap 'rm -f "$diff"; stop_postgres' EXIT
+    export BYRLE_TEST_DATABASE_URL
+    BYRLE_TEST_DATABASE_URL="$(postgres_url "$port")"
+fi
+export BYRLE_TEST_SCHEMA_PER_PROCESS=1
 
 cd "$repo_root"
 cargo mutants --in-diff "$diff" --output "$repo_root/target" --profile mutants \

@@ -29,6 +29,19 @@ fn url() -> Option<String> {
         .unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// The schema test `name` uses: `name`, or with `TEST_SCHEMA_PER_PROCESS` set, `name` and this
+/// process's id, so `make mutants`'s jobs can share one database.
+fn schema(name: &'static str) -> String {
+    let per_process = byrle::env::process()
+        .test_schema_per_process()
+        .unwrap_or_else(|e| panic!("{e}"));
+    if per_process {
+        format!("{name}_{}", std::process::id())
+    } else {
+        name.to_owned()
+    }
+}
+
 /// A schema of its own per test, so tests cannot see each other's rows.
 /// `name` is formatted into the SQL, so it is a `'static` literal of `[a-z0-9_]` only.
 /// Returns the migrated store, or `None` without a database.
@@ -41,6 +54,7 @@ async fn fresh(name: &'static str) -> Option<PgIntel> {
         "schema name {name:?} must be [a-z0-9_]"
     );
     let pool = PgPool::connect(&url()?).await.expect("should connect");
+    let name = schema(name);
     sqlx::query(&format!("DROP SCHEMA IF EXISTS {name} CASCADE"))
         .execute(&pool)
         .await
@@ -54,17 +68,18 @@ async fn fresh(name: &'static str) -> Option<PgIntel> {
         .await
         .expect("should set");
 
-    let intel = PgIntel::new(connect(name).await?);
+    let intel = PgIntel::new(connect(&name).await?);
     intel.migrate().await.expect("migrations should apply");
     Some(intel)
 }
 
 /// A pool whose connection uses schema `name`, which `fresh` has created.
-async fn connect(name: &'static str) -> Option<PgPool> {
+async fn connect(name: &str) -> Option<PgPool> {
+    let schema = name.to_owned();
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .after_connect(move |conn, _| {
-            let name = name.to_owned();
+            let name = schema.clone();
             Box::pin(async move {
                 sqlx::query(&format!("SET search_path TO {name}"))
                     .execute(&mut *conn)
@@ -727,7 +742,7 @@ async fn the_snapshot_id_covers_every_source_in_the_store() {
 #[tokio::test]
 async fn a_refresh_waits_for_another_sources_uncommitted_digest() {
     let intel = skip_without_database!("t_load_lock");
-    let other = connect("t_load_lock")
+    let other = connect(&schema("t_load_lock"))
         .await
         .expect("connected a moment ago");
     let mut tx = other.begin().await.expect("begin");
