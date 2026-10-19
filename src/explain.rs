@@ -977,6 +977,36 @@ mod tests {
         assert!(out.contains("lapses on its own"), "{out}");
     }
 
+    /// A failed cooldown names the entry whose wait it was measured against, and only when
+    /// that wait is not the global one.
+    #[test]
+    fn a_failed_cooldown_names_the_entry_that_set_its_wait() {
+        let facts = Facts {
+            published: TODAY.checked_sub(jiff::Span::new().days(1)).ok(),
+            ..facts()
+        };
+        let waiting = |days: u32| {
+            rendered(
+                &format!(
+                    "version: 1\ncooldown_days: 30\npackages:\n  - match: {{ ecosystem: npm, name: lodash }}\n\
+                     \x20   set: {{ cooldown_days: {days} }}\n    reason: t\n    permanent: true\n"
+                ),
+                &facts,
+                &[],
+            )
+        };
+        let shorter = waiting(3);
+        assert!(
+            shorter.contains("cooldown_days 3, from packages[0]"),
+            "{shorter}"
+        );
+        let same = waiting(30);
+        assert!(
+            same.contains("cooldown_days 30") && !same.contains("from packages[0]"),
+            "{same}"
+        );
+    }
+
     #[test]
     fn an_excepted_check_names_the_entry_that_excused_it() {
         let facts = Facts {

@@ -43,7 +43,9 @@ Expiry inverts the default so an unexamined entry dies rather than persisting. A
 justification is true when written and stops being true silently.
 
 Specificity is strict subset containment, not a heuristic score. Incomparable overlaps
-are a load-time error rather than a silent guess.
+are a load-time error rather than a silent guess. Replaced 2026-10-18 by
+[every-matching-entry-applies](0117-every-matching-entry-applies.md): every matching entry
+applies, in file order, and overlaps load.
 
 ## Consequences
 

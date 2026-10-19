@@ -1,8 +1,9 @@
 # Every `packages` entry that matches a version applies, in file order
 
 - **Number:** 0117
-- **Status:** Decided by the user 2026-10-16 and 2026-10-18, as TODO.md ad-hoc #38. Not yet
-  implemented.
+- **Status:** Decided by the user 2026-10-16 and 2026-10-18, as TODO.md ad-hoc #38.
+  Implemented 2026-10-19: `policy::decide`'s `Applied` and `matching`, and
+  `policy::check`'s `overridden` and `Reset`.
 - **Related:** [policy-tier-resolution](0023-policy-tier-resolution.md), whose resolution of
   overlapping entries this replaces, [package-override-tier](0009-package-override-tier.md),
   [policy-check](0034-policy-check.md), [reproducible-verdicts](0070-reproducible-verdicts.md)

@@ -733,7 +733,7 @@ const POLICY_TITLE: &str = "policy";
 ///
 /// `loaded` is the report from [`crate::policy::check::load`], or its refusal as text. A
 /// refused policy is a problem, because the proxy does not start with it. An entry that
-/// changes nothing or never wins is a warning.
+/// changes nothing or never applies is a warning.
 pub fn check_policy(path: &str, loaded: Result<&Report, &str>) -> Vec<Finding> {
     let report = match loaded {
         Ok(report) => report,
@@ -760,14 +760,14 @@ pub fn check_policy(path: &str, loaded: Result<&Report, &str>) -> Vec<Finding> {
             .with_fix("delete it")
         })
         .collect();
-    findings.extend(report.never_wins().map(|shadowed| {
+    findings.extend(report.never_applies().map(|overridden| {
         Finding::new(
             Severity::Warn,
             POLICY_TITLE,
             format!(
-                "{} never wins: {}",
-                packages::label(shadowed.index),
-                shadowed.cover()
+                "{} never applies: {}",
+                packages::label(overridden.index),
+                overridden.cover()
             ),
         )
         .with_fix("delete it")
@@ -1509,7 +1509,8 @@ mod tests {
             details,
             [
                 "packages[6] changes nothing: every value it sets is already the global setting",
-                "packages[0] never wins: packages[1] and packages[2] match every package it does",
+                "packages[0] never applies: packages[1] and packages[2], after it, set every key \
+                 it sets again, for every package it matches",
             ]
         );
         assert!(found.iter().all(|f| f.severity == Severity::Warn));

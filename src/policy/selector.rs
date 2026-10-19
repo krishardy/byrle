@@ -435,77 +435,6 @@ fn pattern_of(name: Option<&str>) -> Result<NamePattern, SelectorError> {
     }
 }
 
-/// Two entries that cannot be ordered, or that are the same entry twice.
-#[derive(Debug, PartialEq)]
-pub enum OverlapError {
-    /// The same set of packages selected twice.
-    Duplicate { first: usize, second: usize },
-    /// Two entries match a common package and neither is more specific.
-    Incomparable {
-        first: usize,
-        second: usize,
-        first_selector: String,
-        second_selector: String,
-    },
-}
-
-impl fmt::Display for OverlapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Duplicate { first, second } => write!(
-                f,
-                "packages[{first}] and packages[{second}] select the same packages. One \
-                 of them can never win, and which one depends on the order they happen \
-                 to be written in"
-            ),
-            Self::Incomparable {
-                first,
-                second,
-                first_selector,
-                second_selector,
-            } => write!(
-                f,
-                "packages[{first}] ({first_selector}) and packages[{second}] \
-                 ({second_selector}) both match some packages, and neither is more \
-                 specific than the other. Most-specific-wins has no answer here, so one \
-                 of them has to be narrowed until it does"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for OverlapError {}
-
-/// Every pair of entries is either disjoint, or ordered by containment.
-///
-/// Checked at load rather than at the first request that hits the pair, because the
-/// request that would expose it may be months away and the file is in front of the
-/// operator now.
-pub fn check_overlaps<V: VersionSet>(selectors: &[Canonical<V>]) -> Result<(), OverlapError> {
-    for (i, a) in selectors.iter().enumerate() {
-        for (j, b) in selectors.iter().enumerate().skip(i + 1) {
-            if !a.overlaps(b) {
-                continue;
-            }
-            if a == b {
-                return Err(OverlapError::Duplicate {
-                    first: i,
-                    second: j,
-                });
-            }
-            if !a.contained_by(b) && !b.contained_by(a) {
-                return Err(OverlapError::Incomparable {
-                    first: i,
-                    second: j,
-                    first_selector: a.to_string(),
-                    second_selector: b.to_string(),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
 impl<V: VersionSet> fmt::Display for Canonical<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let version = self
@@ -841,39 +770,25 @@ mod tests {
             canon("npm", Some("b"), None, None),
             canon("pypi", Some("a"), None, None),
         ];
-        assert!(check_overlaps(&set).is_ok());
+        for (i, a) in set.iter().enumerate() {
+            assert!(set.iter().skip(i + 1).all(|b| !a.overlaps(b)), "{a}");
+        }
     }
 
-    /// A chain is fine: each is strictly inside the next, so most-specific-wins has an
-    /// answer for every package they share.
+    /// A chain: each is strictly inside the next.
     #[test]
-    fn a_chain_from_narrow_to_wide_is_fine() {
+    fn a_chain_from_narrow_to_wide_is_ordered() {
         let set = [
             canon("npm", Some("@mycompany/foo"), None, None),
             canon("npm", Some("@mycompany/*"), None, None),
             canon("npm", Some("*"), None, None),
         ];
-        assert!(check_overlaps(&set).is_ok());
-    }
-
-    #[test]
-    fn the_same_selector_written_twice_is_refused() {
-        let set = [
-            canon("npm", Some("x"), None, None),
-            canon("npm", Some("x"), None, None),
-        ];
-        assert_eq!(
-            check_overlaps(&set),
-            Err(OverlapError::Duplicate {
-                first: 0,
-                second: 1
-            })
-        );
+        assert!(set[0].strictly_contained_by(&set[1]) && set[1].strictly_contained_by(&set[2]));
     }
 
     /// The same set written two different ways is still the same set.
     #[test]
-    fn a_duplicate_written_as_a_purl_is_still_a_duplicate() {
+    fn a_selector_written_as_a_purl_is_the_same_set() {
         let set = [
             canon("npm", Some("chalk"), Some("5.6.2"), None),
             Canonical::of(&Selector {
@@ -885,39 +800,20 @@ mod tests {
             })
             .unwrap(),
         ];
-        assert!(matches!(
-            check_overlaps(&set),
-            Err(OverlapError::Duplicate { .. })
-        ));
+        assert_eq!(set[0], set[1]);
     }
 
-    /// One narrower by name and the other by predicate, sharing packages, are refused.
+    /// One narrower by name and the other by predicate share packages, and neither is
+    /// inside the other.
     #[test]
-    fn two_selectors_narrower_in_different_dimensions_are_refused() {
-        let set = [
+    fn two_selectors_narrower_in_different_dimensions_overlap() {
+        let (a, b) = (
             canon("npm", Some("a*"), None, Some(true)),
             canon("npm", Some("ab*"), None, None),
-        ];
-        let error = check_overlaps(&set).unwrap_err();
-        assert!(matches!(error, OverlapError::Incomparable { .. }));
-        let text = error.to_string();
-        assert!(
-            text.contains("npm:a*")
-                && text.contains("npm:ab*")
-                && text.contains("has_install_scripts"),
-            "the refusal has to show both selectors: {text}"
         );
-    }
-
-    /// Narrower in different dimensions but sharing nothing is not a problem: there is no
-    /// package for most-specific-wins to be asked about.
-    #[test]
-    fn incomparable_selectors_that_never_meet_are_fine() {
-        let set = [
-            canon("npm", Some("a*"), None, Some(true)),
-            canon("npm", Some("zz*"), None, None),
-        ];
-        assert!(check_overlaps(&set).is_ok());
+        assert!(a.overlaps(&b) && !a.contained_by(&b) && !b.contained_by(&a));
+        assert_eq!(a.to_string(), "npm:a* has_install_scripts=true");
+        assert!(!a.overlaps(&canon("npm", Some("zz*"), None, None)));
     }
 
     /// A predicate and its opposite select disjoint sets, however the names overlap.
@@ -927,13 +823,7 @@ mod tests {
             canon("npm", Some("*"), None, Some(true)),
             canon("npm", Some("x"), None, Some(false)),
         ];
-        assert!(check_overlaps(&set).is_ok());
-    }
-
-    #[test]
-    fn one_selector_has_nothing_to_overlap_with() {
-        assert!(check_overlaps(&[canon("npm", Some("x"), None, None)]).is_ok());
-        assert!(check_overlaps::<Versions>(&[]).is_ok());
+        assert!(!set[0].overlaps(&set[1]));
     }
 
     /// Matching a package reads the same four dimensions containment does, so a selector
@@ -999,16 +889,7 @@ mod tests {
         assert!(wide.overlaps(&crossing));
         assert!(!wide.contained_by(&crossing) && !crossing.contained_by(&wide));
         assert!(!wide.overlaps(&after));
-        assert_eq!(
-            check_overlaps(&[wide.clone(), crossing]),
-            Err(OverlapError::Incomparable {
-                first: 0,
-                second: 1,
-                first_selector: "npm:x@vers:npm/>=1.0.0|<2.0.0".to_owned(),
-                second_selector: "npm:x@vers:npm/>=1.5.0|<3.0.0".to_owned(),
-            })
-        );
-        assert_eq!(check_overlaps(&[wide.clone(), narrow, after]), Ok(()));
+        assert_eq!(crossing.to_string(), "npm:x@vers:npm/>=1.5.0|<3.0.0");
 
         assert!(wide.matches("npm", "x", "1.9.9", false));
         assert!(!wide.matches("npm", "x", "2.0.0", false));

@@ -3,8 +3,10 @@
 //!
 //! See docs/engineering_decisions/0034-policy-check.md.
 
+use super::merge::{self, Rule, RuleValues};
 use super::packages::{self, PackageError};
 use super::selector::Canonical;
+use super::strictness::Strictness;
 use super::{AdvisoryScore, Policy, PolicyError};
 use jiff::civil::Date;
 use std::fmt;
@@ -49,25 +51,34 @@ pub fn load(path: &Path, as_of: Date, ceiling_days: i64) -> Result<(Policy, Repo
     Ok((policy, report))
 }
 
-/// An entry, and the two narrower entries that between them match every package it does.
+/// An entry whose every key later entries set again, for every package it matches.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Shadowed {
+pub struct Overridden {
     pub index: usize,
-    /// The `has_install_scripts: true` entry, then the `false` one.
-    pub by: [usize; 2],
-    /// The last day the cover holds, the earlier expiry of the two. `None` when neither expires.
+    /// The later entries that set its keys again, in file order.
+    pub by: Vec<usize>,
+    /// The last day the cover holds, the earliest expiry of `by`. `None` when none expires.
     pub through: Option<Date>,
 }
 
-impl Shadowed {
+impl Overridden {
     /// Which entries cover this one.
     pub fn cover(&self) -> String {
+        let by: Vec<String> = self.by.iter().map(|&j| packages::label(j)).collect();
+        let verb = if by.len() == 1 { "sets" } else { "set" };
         format!(
-            "{} and {} match every package it does",
-            packages::label(self.by[0]),
-            packages::label(self.by[1])
+            "{}, after it, {verb} every key it sets again, for every package it matches",
+            by.join(" and ")
         )
     }
+}
+
+/// A later entry that sets a key back over an earlier one, for the packages both match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reset {
+    pub index: usize,
+    pub over: usize,
+    pub rule: Rule,
 }
 
 /// What a policy that loaded carries that does nothing.
@@ -78,8 +89,10 @@ pub struct Report {
     entries: Vec<(String, String)>,
     /// Entries that change nothing.
     pub unchanged: Vec<usize>,
-    /// Entries covered by narrower ones, on `as_of`.
-    pub shadowed: Vec<Shadowed>,
+    /// Entries whose every key later entries set again, on `as_of`.
+    pub overridden: Vec<Overridden>,
+    /// Keys a later entry sets stricter than an earlier one, on `as_of`.
+    pub resets: Vec<Reset>,
     /// Entries marked `permanent: true`, listed so each one stays visible.
     pub permanent: Vec<usize>,
     /// `advisory_scores` entries marked `permanent: true`, as their label, id and reason.
@@ -220,27 +233,37 @@ impl Report {
                 .is_some_and(|e| e.has_passed(as_of))
         };
 
-        let shadowed = selectors
+        let live: Vec<usize> = (0..policy.packages.len()).filter(|&i| live(i)).collect();
+        let overridden = live
             .iter()
-            .enumerate()
-            .filter(|&(i, wide)| wide.has_install_scripts.is_none() && live(i))
-            .filter_map(|(index, wide)| {
-                let half = |scripts| {
-                    let narrow = Canonical {
-                        has_install_scripts: Some(scripts),
-                        ..wide.clone()
-                    };
-                    (0..selectors.len()).find(|&j| live(j) && selectors[j] == narrow)
-                };
-                let by = [half(true)?, half(false)?];
-                let through = by
-                    .iter()
-                    .filter_map(|&j| policy.packages[j].expires)
-                    .map(|e| e.0)
-                    .min();
-                Some(Shadowed { index, by, through })
-            })
+            .filter_map(|&i| overridden(policy, &selectors, &live, i))
             .collect();
+        let mut resets = Vec::new();
+        for (n, &j) in live.iter().enumerate() {
+            for &i in live[..n]
+                .iter()
+                .filter(|&&i| selectors[i].overlaps(&selectors[j]))
+            {
+                let (later, earlier) = (&policy.packages[j], &policy.packages[i]);
+                resets.extend(
+                    Rule::ALL
+                        .into_iter()
+                        .filter(|&rule| {
+                            merge::compare(
+                                &later.selector.ecosystem,
+                                rule,
+                                RuleValues::from(&later.set),
+                                RuleValues::from(&earlier.set),
+                            ) == Strictness::Stricter
+                        })
+                        .map(|rule| Reset {
+                            index: j,
+                            over: i,
+                            rule,
+                        }),
+                );
+            }
+        }
 
         Self {
             as_of,
@@ -253,8 +276,10 @@ impl Report {
                 .collect(),
             unchanged: (0..policy.packages.len())
                 .filter(|&i| packages::changes_nothing(&findings, i))
+                .filter(|&i| resets.iter().all(|r: &Reset| r.index != i))
                 .collect(),
-            shadowed,
+            overridden,
+            resets,
             permanent: (0..policy.packages.len())
                 .filter(|&i| policy.packages[i].permanent)
                 .collect(),
@@ -275,19 +300,19 @@ impl Report {
         }
     }
 
-    /// Entries that never win, on any day.
-    pub fn never_wins(&self) -> impl Iterator<Item = &Shadowed> {
-        self.shadowed.iter().filter(|s| s.through.is_none())
+    /// Entries that never apply, on any day.
+    pub fn never_applies(&self) -> impl Iterator<Item = &Overridden> {
+        self.overridden.iter().filter(|s| s.through.is_none())
     }
 
     /// Why `--strict` fails, when it does: an entry that changes nothing, or one that never
-    /// wins.
+    /// applies.
     pub fn strict_failure(&self) -> Option<String> {
-        let never = self.never_wins().count();
+        let never = self.never_applies().count();
         let outlived = self.outlived.len();
         (!self.unchanged.is_empty() || never > 0 || outlived > 0).then(|| {
             format!(
-                "changes nothing: {}, never wins: {never}, cooldown outlived: {outlived}",
+                "changes nothing: {}, never applies: {never}, cooldown outlived: {outlived}",
                 self.unchanged.len()
             )
         })
@@ -305,18 +330,32 @@ impl Report {
                     .collect::<Vec<_>>(),
             ),
             (
-                "never wins",
-                self.never_wins()
+                "never applies",
+                self.never_applies()
                     .map(|s| format!("{}: {}", name(s.index), s.cover()))
                     .collect(),
             ),
             (
-                "shadowed until a narrower entry lapses",
-                self.shadowed
+                "overridden until a later entry lapses",
+                self.overridden
                     .iter()
                     .filter_map(|s| {
                         s.through
                             .map(|day| format!("{}: {}, through {day}", name(s.index), s.cover()))
+                    })
+                    .collect(),
+            ),
+            (
+                "sets a key back over an earlier entry",
+                self.resets
+                    .iter()
+                    .map(|r| {
+                        format!(
+                            "{}: sets `{}` back over {}, for the packages both match",
+                            name(r.index),
+                            r.rule.as_str(),
+                            packages::label(r.over)
+                        )
                     })
                     .collect(),
             ),
@@ -362,6 +401,71 @@ impl Report {
         }
         out
     }
+}
+
+/// Entry `i` of `live`, when every key it sets is set again by later live entries that
+/// match every package it does: one whose selector contains it, or its two halves,
+/// `has_install_scripts: true` and `false`. An id it ignores is set again only by an entry
+/// that ignores it too, as ids add up.
+fn overridden(
+    policy: &Policy,
+    selectors: &[Canonical],
+    live: &[usize],
+    i: usize,
+) -> Option<Overridden> {
+    let values = |j: usize| RuleValues::from(&policy.packages[j].set);
+    let again = |j: usize, rule: Rule| match rule {
+        Rule::IgnoredVulnAdvisoryIds => policy.packages[i]
+            .set
+            .ignored_vuln_advisory_ids
+            .iter()
+            .all(|id| {
+                policy.packages[j]
+                    .set
+                    .ignored_vuln_advisory_ids
+                    .contains(id)
+            }),
+        _ => values(j).sets(rule),
+    };
+    let later: Vec<usize> = live.iter().copied().filter(|&j| j > i).collect();
+    let half = |scripts| {
+        let narrow = Canonical {
+            has_install_scripts: Some(scripts),
+            ..selectors[i].clone()
+        };
+        later.iter().copied().find(|&j| selectors[j] == narrow)
+    };
+    let halves = selectors[i]
+        .has_install_scripts
+        .is_none()
+        .then(|| Some([half(true)?, half(false)?]))
+        .flatten();
+    let mut by = Vec::new();
+    let mut sets_any = false;
+    for rule in Rule::ALL.into_iter().filter(|&rule| values(i).sets(rule)) {
+        sets_any = true;
+        let containing = later
+            .iter()
+            .copied()
+            .find(|&j| selectors[i].contained_by(&selectors[j]) && again(j, rule));
+        match (containing, halves) {
+            (Some(j), _) => by.push(j),
+            (None, Some([t, f])) if again(t, rule) && again(f, rule) => by.extend([t, f]),
+            _ => return None,
+        }
+    }
+    by.sort_unstable();
+    by.dedup();
+    let through = by
+        .iter()
+        .filter_map(|&j| policy.packages[j].expires)
+        .map(|e| e.0)
+        .min();
+    sets_any.then_some(Overridden {
+        index: i,
+        by,
+        through,
+    })
 }
 
 #[cfg(test)]
@@ -535,36 +639,147 @@ mod tests {
         )
     }
 
+    /// Halves written after the wide entry set its key again for every package it matches.
     #[test]
-    fn an_entry_whose_packages_both_halves_take_never_wins() {
+    fn an_entry_whose_packages_both_later_halves_take_never_applies() {
         let found = report(&wide_and_halves(PERMANENT, PERMANENT));
         assert_eq!(
-            found.shadowed,
-            vec![Shadowed {
+            found.overridden,
+            vec![Overridden {
                 index: 0,
-                by: [1, 2],
+                by: vec![1, 2],
                 through: None
             }]
         );
         assert_eq!(
             found.strict_failure().as_deref(),
-            Some("changes nothing: 0, never wins: 1, cooldown outlived: 0")
+            Some("changes nothing: 0, never applies: 1, cooldown outlived: 0")
+        );
+        let halves_first = format!(
+            "{}{}{}",
+            entry(", has_install_scripts: true", PERMANENT),
+            entry(", has_install_scripts: false", PERMANENT),
+            entry("", PERMANENT)
+        );
+        assert_eq!(
+            report(&halves_first).overridden,
+            [
+                Overridden {
+                    index: 0,
+                    by: vec![2],
+                    through: None
+                },
+                Overridden {
+                    index: 1,
+                    by: vec![2],
+                    through: None
+                }
+            ],
+            "the wide entry, written last, contains each half"
         );
     }
 
-    /// The wide entry wins again the day after the dated half lapses, so it is not dead.
+    /// A later entry whose selector contains an earlier one sets its keys again; an earlier
+    /// one does not, and a later one setting another key leaves the key it sets.
     #[test]
-    fn a_dated_half_shadows_only_through_its_expiry() {
+    fn a_later_containing_entry_overrides_and_an_earlier_one_does_not() {
+        let wide = "  - match: { ecosystem: npm, name: \"left*\" }\n    \
+                    set: { install_scripts: allow }\n    reason: r\n    permanent: true\n";
+        let narrow = entry("", PERMANENT);
+        let found = report(&format!("{narrow}{wide}"));
+        assert_eq!(found.overridden.len(), 1);
+        assert_eq!(
+            (found.overridden[0].index, &found.overridden[0].by),
+            (0, &vec![1])
+        );
+        assert_eq!(
+            found.overridden[0].cover(),
+            "packages[1], after it, sets every key it sets again, for every package it matches"
+        );
+        assert!(found.resets.is_empty());
+        assert!(report(&format!("{wide}{narrow}")).overridden.is_empty());
+        let other_key = "  - match: { ecosystem: npm, name: \"left*\" }\n    \
+                         set: { kev: allow }\n    reason: r\n    permanent: true\n";
+        assert!(
+            report(&format!("{narrow}{other_key}"))
+                .overridden
+                .is_empty()
+        );
+    }
+
+    /// Ids add up, so a later entry sets an earlier one's ignored ids again only by
+    /// ignoring each of them.
+    #[test]
+    fn ignored_ids_are_set_again_only_by_an_entry_ignoring_all_of_them() {
+        let ids = |name: &str, ids: &str| {
+            format!(
+                "  - match: {{ ecosystem: npm, name: \"{name}\" }}\n    \
+                 set: {{ ignored_vuln_advisory_ids: [{ids}] }}\n    reason: r\n    permanent: true\n"
+            )
+        };
+        let first = ids("lodash", "GHSA-a, GHSA-b");
+        assert!(
+            report(&format!("{first}{}", ids("lo*", "GHSA-a")))
+                .overridden
+                .is_empty()
+        );
+        assert_eq!(
+            report(&format!("{first}{}", ids("lo*", "GHSA-b, GHSA-a, GHSA-c")))
+                .overridden
+                .len(),
+            1
+        );
+    }
+
+    /// A later entry setting a key back to the setting's own value, over an earlier entry
+    /// it overlaps, is reported as doing so, not as changing nothing.
+    #[test]
+    fn a_later_entry_setting_a_key_back_is_reported() {
+        let back = "  - match: { ecosystem: npm, name: \"left*\" }\n    \
+                    set: { install_scripts: block }\n    reason: r\n";
+        let found = report(&format!("{}{back}", entry("", PERMANENT)));
+        assert_eq!(
+            found.resets,
+            [Reset {
+                index: 1,
+                over: 0,
+                rule: Rule::InstallScripts
+            }]
+        );
+        assert!(found.unchanged.is_empty(), "{:?}", found.unchanged);
+        assert_eq!(found.never_applies().count(), 1, "packages[0] is undone");
+        let rendered = found.render();
+        assert!(
+            rendered.contains(
+                "packages[1] npm:left*: sets `install_scripts` back over packages[0], for the \
+                 packages both match"
+            ),
+            "{rendered}"
+        );
+        let apart = "  - match: { ecosystem: npm, name: \"right*\" }\n    \
+                     set: { install_scripts: block }\n    reason: r\n";
+        let found = report(&format!("{}{apart}", entry("", PERMANENT)));
+        assert!(found.resets.is_empty());
+        assert_eq!(found.unchanged, [1]);
+    }
+
+    /// The wide entry applies again the day after the dated half lapses, so it is not dead.
+    #[test]
+    fn a_dated_half_overrides_only_through_its_expiry() {
         let packages = wide_and_halves(
             "    expires: \"2026-12-01\"\n",
             "    expires: \"2026-11-30\"\n",
         );
         let found = report(&packages);
-        assert_eq!(found.shadowed[0].through, Some(date(2026, 11, 30)));
-        assert_eq!(found.never_wins().count(), 0);
+        assert_eq!(found.overridden[0].through, Some(date(2026, 11, 30)));
+        assert_eq!(found.never_applies().count(), 0);
         assert_eq!(found.strict_failure(), None);
 
-        assert!(report_on(date(2026, 12, 1), &packages).shadowed.is_empty());
+        assert!(
+            report_on(date(2026, 12, 1), &packages)
+                .overridden
+                .is_empty()
+        );
     }
 
     #[test]
@@ -574,7 +789,7 @@ mod tests {
             entry("", PERMANENT),
             entry(", has_install_scripts: true", PERMANENT)
         );
-        assert!(report(&packages).shadowed.is_empty());
+        assert!(report(&packages).overridden.is_empty());
     }
 
     /// A half for one version leaves every other version to the wide entry.
@@ -589,18 +804,18 @@ mod tests {
                 PERMANENT
             )
         );
-        assert!(report(&packages).shadowed.is_empty());
+        assert!(report(&packages).overridden.is_empty());
     }
 
     #[test]
-    fn a_lapsed_entry_is_not_reported_as_shadowed() {
+    fn a_lapsed_entry_is_not_reported_as_overridden() {
         let packages = format!(
             "{}{}{}",
             entry("", "    expires: \"2026-09-01\"\n"),
             entry(", has_install_scripts: true", PERMANENT),
             entry(", has_install_scripts: false", PERMANENT)
         );
-        assert!(report(&packages).shadowed.is_empty());
+        assert!(report(&packages).overridden.is_empty());
     }
 
     #[test]
@@ -611,7 +826,7 @@ mod tests {
         assert_eq!(found.unchanged, vec![0]);
         assert_eq!(
             found.strict_failure().as_deref(),
-            Some("changes nothing: 1, never wins: 0, cooldown outlived: 0")
+            Some("changes nothing: 1, never applies: 0, cooldown outlived: 0")
         );
     }
 
@@ -647,7 +862,7 @@ mod tests {
         )
         .expect("the shipped example should load");
         assert_eq!(found.permanent, vec![0, 4]);
-        assert!(found.unchanged.is_empty() && found.shadowed.is_empty());
+        assert!(found.unchanged.is_empty() && found.overridden.is_empty());
         assert_eq!(found.strict_failure(), None);
     }
 

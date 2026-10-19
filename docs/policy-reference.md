@@ -169,12 +169,15 @@ packages:
 - **Say when it stops being true.** An entry that loosens carries `expires` or
   `permanent: true`, not both.
 - **Expiry.** An entry past its `expires` date matches nothing.
-- **The narrowest entry applies, whole.** When two entries match a package, the one whose
-  selector matches a strict subset of the other's applies, and the wider one's `set` does
-  not merge in. Two entries that overlap with neither inside the other are refused, and
-  so are two identical selectors.
+- **Every matching entry applies, in file order.** Each `set` key takes the value of the
+  last live entry matching the package that sets it, and `ignored_vuln_advisory_ids` are
+  every matching entry's together
+  ([every-matching-entry-applies](engineering_decisions/0117-every-matching-entry-applies.md)).
+  A later entry may set a key back to the setting's own value, which undoes an earlier one
+  for the packages both match; `byrle policy check` lists it.
 - **Entries that do nothing load.** `byrle policy check` reports an entry that changes
-  nothing and one that never wins. `--strict` exits 1 on either.
+  nothing and one that never applies, every key it sets set again by later entries.
+  `--strict` exits 1 on either.
 
 ## `advisory_scores`
 

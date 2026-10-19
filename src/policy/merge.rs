@@ -63,6 +63,21 @@ pub struct RuleValues<'a> {
     pub provenance: Option<Action>,
 }
 
+impl RuleValues<'_> {
+    /// Whether these values set `rule`.
+    pub fn sets(&self, rule: Rule) -> bool {
+        match rule {
+            Rule::CooldownDays => self.cooldown_days.is_some(),
+            Rule::Kev => self.kev.is_some(),
+            Rule::InstallScripts => self.install_scripts.is_some(),
+            Rule::IgnoredVulnAdvisoryIds => self.ignored_vuln_advisory_ids.is_some(),
+            Rule::Yanked => self.yanked.is_some(),
+            Rule::Deprecated => self.deprecated.is_some(),
+            Rule::Provenance => self.provenance.is_some(),
+        }
+    }
+}
+
 impl<'a> From<&'a SetBlock> for RuleValues<'a> {
     fn from(s: &'a SetBlock) -> Self {
         Self {

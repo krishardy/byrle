@@ -563,7 +563,7 @@ fn warn_cooldown_costs(policy: &Policy) {
     }
 }
 
-/// Warn about each exception that changes nothing or never wins, as `byrle policy check`
+/// Warn about each exception that changes nothing or never applies, as `byrle policy check`
 /// and `doctor` report them.
 fn warn_idle_exceptions(policy: &Policy, report: &check::Report) {
     for &index in &report.unchanged {
@@ -573,11 +573,11 @@ fn warn_idle_exceptions(policy: &Policy, report: &check::Report) {
             "policy exception changes nothing, so nothing it matches is affected by it"
         );
     }
-    for shadowed in report.never_wins() {
+    for overridden in report.never_applies() {
         warn!(
-            byrle.policy.exception = packages::label(shadowed.index),
-            byrle.policy.exception_cover = %shadowed.cover(),
-            "policy exception never wins"
+            byrle.policy.exception = packages::label(overridden.index),
+            byrle.policy.exception_cover = %overridden.cover(),
+            "policy exception never applies"
         );
     }
 }
@@ -882,7 +882,7 @@ mod tests {
         );
     }
 
-    /// Each exception that changes nothing or never wins is warned about, and a policy with
+    /// Each exception that changes nothing or never applies is warned about, and a policy with
     /// no cooldown has no cost to warn about.
     #[tokio::test]
     async fn a_policy_names_its_idle_exceptions_and_a_cooldown_its_cost() {
@@ -898,7 +898,7 @@ mod tests {
             "{log}"
         );
         assert!(
-            log.contains("policy exception never wins")
+            log.contains("policy exception never applies")
                 && log.contains("byrle.policy.exception=\"packages[0]\""),
             "{log}"
         );

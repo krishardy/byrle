@@ -556,15 +556,14 @@ Keeping it closed is enforced at load: a name is `*`, `prefix*` or a literal, an
 is exact or absent. Admitting a range and reporting "incomparable" would be worse than
 refusing it, because the overlap check below could no longer fire either.
 
-- **Incomparable overlaps are a load-time error.** `{name: "a*", has_install_scripts:
-  true}` vs `{name: "ab*"}` overlap with neither containing the other. No principled
-  winner exists, so refuse to start and require an explicit disambiguating entry. This is
-  what makes most-specific-wins safe: it never silently guesses.
-- **Exact duplicates are a separate load-time error.** They are comparable and still
-  wrong: whichever wins, the other is dead, and which one depends on file order.
-- `explain` shows the winning selector **and** the ones it beat.
-- `policy check` flags selectors that can never win because a strictly more specific entry
-  always shadows them.
+- **Every matching entry applies, in file order** since 2026-10-18
+  ([every-matching-entry-applies](engineering_decisions/0117-every-matching-entry-applies.md)):
+  each `set` key takes the last matching entry's value, and overlapping or duplicate
+  selectors load. Until then incomparable overlaps and duplicates were load-time errors and
+  the narrowest entry won whole.
+- `explain` names each entry that excused a check.
+- `policy check` flags entries that never apply, every key they set set again by later
+  entries, and an entry that sets a key back over an earlier one.
 
 #### Defining "looser"
 
@@ -692,7 +691,7 @@ regression test surface.
 **A policy repository's CI can require sign-off on weakening changes.** Schema v1 refuses
 a loosening entry with neither `expires` nor `permanent: true`, so none is unacknowledged.
 `byrle policy diff old.yaml new.yaml` sets exit bit 1 on any loosening. `policy check
---strict` exits 1 on an entry that changes nothing or never wins
+--strict` exits 1 on an entry that changes nothing or never applies
 ([policy-check](engineering_decisions/0034-policy-check.md)).
 
 **Audit log** is JSON Lines: package, version, ecosystem, verdict, rule that fired,
@@ -817,7 +816,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [Policy schema v1 frozen](engineering_decisions/0030-policy-schema-v1-frozen.md) | `version: 1` is closed: no key added, removed, renamed or retyped, and no default changed. Anything new is `version: 2` |
 | n/a | [Readiness endpoint](engineering_decisions/0035-readiness-endpoint.md) | `GET /-/byrle/ready`: 503 when a policy and an intel store are set and the store holds no snapshot or cannot answer; reports each stream's loaded digest, no percentage |
 | n/a | [Snapshot identity](engineering_decisions/0036-snapshot-identity.md) | The snapshot id is a hash over every source's stored rows, not the bundles. Postgres keeps the latest load; `byrle refresh` also keeps each snapshot as files of the same encoding |
-| n/a | [`policy check`](engineering_decisions/0034-policy-check.md) | Loads as the proxy does; lists entries that change nothing, never win, or are `permanent: true`; `--strict` exits 1 on the first two |
+| n/a | [`policy check`](engineering_decisions/0034-policy-check.md) | Loads as the proxy does; lists entries that change nothing, never apply, or are `permanent: true`; `--strict` exits 1 on the first two |
 | n/a | [`policy diff`: a date per policy, and exit bits](engineering_decisions/0038-policy-diff-dates-and-exit-bits.md) | `--from-date` and `--to-date` replace `--as-of`; exit is the OR of 1 loosening and 2 tightening, or 4 alone for an error |
 | n/a | [`policy diff` reads lockfiles](engineering_decisions/0037-policy-diff-lockfiles.md) | `--lockfile <path>`, repeatable, adds the registry versions of `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` v1, `pnpm-lock.yaml` 9 or `bun.lock` to the audit log's |
 | n/a | [PURL identity rules](engineering_decisions/0012-purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |

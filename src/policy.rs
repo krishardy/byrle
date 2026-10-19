@@ -96,8 +96,6 @@ pub enum PolicyError {
         at: String,
         source: selector::SelectorError,
     },
-    /// Two entries cannot be ordered by most-specific-wins.
-    Overlapping(selector::OverlapError),
     /// A denial does not name one exact version.
     DenialNeedsAVersion { at: String, purl: String },
     /// A denial's purl or version could not be read.
@@ -148,7 +146,6 @@ impl fmt::Display for PolicyError {
                 found.as_str()
             ),
             Self::BadSelector { at, source } => write!(f, "{at}: {source}"),
-            Self::Overlapping(e) => write!(f, "{e}"),
             Self::DenialNeedsAVersion { at, purl } => write!(
                 f,
                 "{at} denies `{purl}`, which names no version. A denial is permanent and \
@@ -577,19 +574,16 @@ impl Policy {
         Ok(())
     }
 
-    /// Every selector is written in a shape containment can be decided on, and no two
-    /// entries leave most-specific-wins without an answer. Returns the first that does.
+    /// Every selector is written in a shape containment can be decided on. Returns the first
+    /// that is not.
     fn check_selectors(&self) -> Result<(), PolicyError> {
-        let mut canonical = Vec::with_capacity(self.packages.len());
         for (i, rule) in self.packages.iter().enumerate() {
-            canonical.push(selector::Canonical::of(&rule.selector).map_err(|source| {
-                PolicyError::BadSelector {
-                    at: format!("packages[{i}].match"),
-                    source,
-                }
-            })?);
+            selector::Canonical::of(&rule.selector).map_err(|source| PolicyError::BadSelector {
+                at: format!("packages[{i}].match"),
+                source,
+            })?;
         }
-        selector::check_overlaps(&canonical).map_err(PolicyError::Overlapping)
+        Ok(())
     }
 
     /// What each denial refuses, as a selector. Parsing has already refused a denial that
@@ -1501,49 +1495,21 @@ mod tests {
         assert!(expires.has_passed(jiff::civil::date(2026, 12, 1)));
     }
 
-    /// §5's most-specific-wins needs every pair to be orderable, and a pair that is not is
-    /// refused at load: the request that would expose it may be months away.
+    /// Entries that overlap load, whether one is inside the other, neither is, or they
+    /// select the same packages: every one that matches applies.
     #[test]
-    fn two_entries_that_cannot_be_ordered_are_refused_at_load() {
-        let error = parse(
-            "packages:\n  - match: { ecosystem: npm, name: \"a*\", has_install_scripts: true }\n    \
-             set: {}\n    reason: r\n  - match: { ecosystem: npm, name: \"ab*\" }\n    \
-             set: {}\n    reason: r\n",
-        )
-        .unwrap_err();
-        assert!(matches!(error, PolicyError::Overlapping(_)));
-        assert!(
-            error.to_string().contains("neither is more specific"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn the_same_entry_written_twice_is_refused_at_load() {
-        let error = parse(
-            "packages:\n  - match: { ecosystem: npm, name: x }\n    set: {}\n    reason: first\n  \
-             - match: { ecosystem: npm, name: x }\n    set: {}\n    reason: second\n",
-        )
-        .unwrap_err();
-        assert!(matches!(error, PolicyError::Overlapping(_)));
-        let text = error.to_string();
-        assert!(
-            text.contains("packages[0]") && text.contains("packages[1]"),
-            "{text}"
-        );
-    }
-
-    /// A chain of strictly narrowing selectors is what most-specific-wins is for.
-    #[test]
-    fn entries_that_narrow_each_other_are_accepted() {
-        assert!(
-            parse(
-                "packages:\n  - match: { ecosystem: npm, name: \"@mycompany/foo\" }\n    \
-                 set: {}\n    reason: r\n  - match: { ecosystem: npm, name: \"@mycompany/*\" }\n    \
-                 set: {}\n    reason: r\n"
-            )
-            .is_ok()
-        );
+    fn overlapping_entries_load() {
+        for second in [
+            "{ ecosystem: npm, name: \"ab*\" }",
+            "{ ecosystem: npm, name: \"a*\", has_install_scripts: true }",
+            "{ ecosystem: npm, name: \"abc\" }",
+        ] {
+            let body = format!(
+                "packages:\n  - match: {{ ecosystem: npm, name: \"a*\", has_install_scripts: true }}\n    \
+                 set: {{}}\n    reason: r\n  - match: {second}\n    set: {{}}\n    reason: r\n"
+            );
+            assert!(parse(&body).is_ok(), "{second}");
+        }
     }
 
     #[test]

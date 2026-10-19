@@ -3,11 +3,11 @@
 changes nothing
   packages[6] npm:ms: restates the global wait
 
-never wins
-  packages[0] npm:left-pad: packages[1] and packages[2] match every package it does
+never applies
+  packages[0] npm:left-pad: packages[1] and packages[2], after it, set every key it sets again, for every package it matches
 
-shadowed until a narrower entry lapses
-  packages[3] npm:is-odd: packages[4] and packages[5] match every package it does, through 2026-11-30
+overridden until a later entry lapses
+  packages[3] npm:is-odd: packages[4] and packages[5], after it, set every key it sets again, for every package it matches, through 2026-11-30
 
 permanent
   packages[0] npm:left-pad: reviewed build step

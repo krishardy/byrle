@@ -276,7 +276,7 @@ pub struct Check {
     /// Judge the policy as of this date [default: today, UTC]
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub as_of: Option<jiff::civil::Date>,
-    /// Also exit 1 when an entry changes nothing or never wins
+    /// Also exit 1 when an entry changes nothing or never applies
     #[arg(long)]
     pub strict: bool,
     #[arg(

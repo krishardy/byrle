@@ -3,8 +3,10 @@
 - **Number:** 0023
 - **Status:** Decided. Plan §5 rewritten to match; the old §5.5 is gone. Its verdict, the
   strongest action of the checks, is replaced by a score against one threshold in
-  [every-refusal-a-signal](0116-every-refusal-a-signal.md), decided 2026-10-18 and not yet
-  implemented; the checks and the exceptions stay as written here.
+  [every-refusal-a-signal](0116-every-refusal-a-signal.md), implemented 2026-10-18, and its
+  narrowest matching entry by every matching entry in file order in
+  [every-matching-entry-applies](0117-every-matching-entry-applies.md); the checks stay as
+  written here.
 - **Plan reference:** §5
 - **Related:** [package-override-tier](0009-package-override-tier.md),
   [policy-engine-hand-rolled](0010-policy-engine-hand-rolled.md)
@@ -340,7 +342,8 @@ built by its ecosystem's name rule, so one no package can have is refused rather
 to match nothing; an ecosystem this build does not serve keeps its name as written. Two
 entries selecting the same set are refused as a duplicate, because one of them can never
 win and which one depends on file order. Two that overlap with neither inside the other are
-refused as incomparable.
+refused as incomparable. Since 2026-10-18 neither is refused: every matching entry applies,
+in file order ([every-matching-entry-applies](0117-every-matching-entry-applies.md)).
 
 ## KEV is asked per advisory
 
