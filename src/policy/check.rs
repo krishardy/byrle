@@ -782,6 +782,18 @@ mod tests {
         );
     }
 
+    /// Halves cover a key only when both set it.
+    #[test]
+    fn halves_of_which_one_sets_another_key_are_not_a_cover() {
+        let packages = format!(
+            "{}{}  - match: {{ ecosystem: npm, name: left-pad, has_install_scripts: false }}\n    \
+             set: {{ cooldown_days: 0 }}\n    reason: r\n{PERMANENT}",
+            entry("", PERMANENT),
+            entry(", has_install_scripts: true", PERMANENT)
+        );
+        assert!(report(&packages).overridden.is_empty());
+    }
+
     #[test]
     fn one_half_is_not_a_cover() {
         let packages = format!(
