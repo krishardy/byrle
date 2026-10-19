@@ -418,6 +418,8 @@ Items that I've added that are not stage-bound.
 41. A byrle CLI a remote user runs against a deployed byrle, for analysis commands such as
     `byrle explain`, without the proxy's policy file, environment or intel store on their
     own machine. Raised 2026-10-17.
+    Planned 2026-10-19 in [remote-cli-plan](docs/remote-cli-plan.md), decided in
+    [remote-analysis-commands](docs/engineering_decisions/0118-remote-analysis-commands.md).
 42. Next phase, after the Maven adapter: no outright blocks. Every rule a version is refused
     by today (`denials`, `cooldown_days`, `max_cvss`, `kev`, `install_scripts`, `yanked`,
     `deprecated`, `provenance`, known malware) becomes a weighted signal in the risk score,

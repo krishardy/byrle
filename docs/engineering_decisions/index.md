@@ -129,3 +129,4 @@ Implemented means it is in the code, and the file names where.
 | 0115 | [Maven: the Gradle plugin portal is a second repository of the Maven row](0115-gradle-plugin-portal.md) | Decided by the user 2026-10-17 |  |
 | 0116 | [Every refusal is a weighted signal, refused at one threshold](0116-every-refusal-a-signal.md) | Implemented 2026-10-18 |  |
 | 0117 | [Every `packages` entry that matches a version applies, in file order](0117-every-matching-entry-applies.md) | Implemented 2026-10-19 |  |
+| 0118 | [The analysis commands are answered by a deployed byrle, through the console API](0118-remote-analysis-commands.md) | Decided by the user 2026-10-19 |  |

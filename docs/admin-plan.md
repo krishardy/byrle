@@ -111,17 +111,20 @@ Permissions are a closed enum in code. A role is a named set of them. An account
 or more roles. Every API handler declares the permission it needs, and a test checks that
 no handler is reachable without one.
 
-| Permission | `admin` |
-|---|---|
-| `requests.read`: R3, R5, R6, R9 | yes |
-| `alerts.read`: R4 | yes |
-| `config.read`: R7 | yes |
-| `status.read`: R10 | yes |
-| `events.read`: R8 | yes |
-| `accounts.read`, `accounts.write`: accounts, roles, tokens | yes |
+| Permission | `admin` | `reader` |
+|---|---|---|
+| `requests.read`: R3, R5, R6, R9 | yes | yes |
+| `alerts.read`: R4 | yes | yes |
+| `config.read`: R7 | yes | yes |
+| `status.read`: R10 | yes | yes |
+| `events.read`: R8 | yes | yes |
+| `accounts.read`: accounts, roles, tokens | yes | yes |
+| `accounts.write`: accounts, roles, tokens | yes | no |
+| `packages.read`: the analysis commands run remotely ([remote-cli-plan](remote-cli-plan.md)) | yes | yes |
 
-Only `admin` exists in Stage 4.9. Accounts hold role names, so adding `viewer` or
-`developer` later is a code change and no migration.
+Only `admin` exists in Stage 4.9. Accounts hold role names, so adding a role later is a code
+change and no migration. `reader` and `packages.read` are added for TODO.md ad-hoc #41,
+decided by the user 2026-10-19 ([remote-analysis-commands](engineering_decisions/0118-remote-analysis-commands.md)).
 
 Built 2026-10-13: `src/account/role.rs`, and `account_role` in
 `migrations/0020_account_role.sql`. The console answers only the routes in
