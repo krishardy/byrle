@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::origin::{ReachableOrigins, rewrite_artifact_origins};
+use crate::origin::{Disposition, OriginPolicy, rewrite_artifact_origins};
 use crate::route::IndexFormat;
 
 use super::wire::Project;
@@ -20,11 +20,14 @@ pub struct Rewrite<'a> {
     pub format: IndexFormat,
     /// The same index, parsed.
     pub project: &'a Project,
-    pub reachable: &'a ReachableOrigins,
+    /// Which origins the proxy serves, so which files can be pointed at it.
+    pub origins: &'a OriginPolicy,
     /// The proxy's own address, or `None` when files are left on their own host.
     pub base: Option<&'a str>,
     /// Versions the policy refuses, which are removed.
     pub refused_by_policy: &'a HashSet<String>,
+    /// Whether a version with a file on an origin the proxy refuses is removed too.
+    pub refuse_unservable: bool,
     pub path: &'a str,
 }
 
@@ -32,17 +35,19 @@ pub struct Rewrite<'a> {
 /// `r`: the index, its project, and what is refused.
 /// Returns `None` to forward the body as it came, which is logged: see 0046-pypi-simple-index.md.
 pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
+    let unservable = unservable_versions(&r);
+    let removed: HashSet<String> = r.refused_by_policy.union(&unservable).cloned().collect();
     let kept: Vec<&str> = r
         .project
         .files
         .iter()
-        .filter(|file| !r.refused_by_policy.contains(&file.version))
+        .filter(|file| !removed.contains(&file.version))
         .map(|file| file.url.as_str())
         .collect();
-    let filtered = if r.refused_by_policy.is_empty() {
+    let filtered = if removed.is_empty() {
         None
     } else {
-        Some(filtered(&r, kept.len())?)
+        Some(filtered(&r, &removed, unservable.len(), kept.len())?)
     };
     let Some(base) = r.base else {
         warn!(
@@ -56,16 +61,36 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
     repointed(&r, filtered, kept, base)
 }
 
-/// The index with the files of the versions the policy refuses removed, `kept` files left.
-/// Returns `None` when it cannot be filtered.
-fn filtered(r: &Rewrite<'_>, kept: usize) -> Option<Vec<u8>> {
-    match remove_versions(r.decoded, r.format, r.project, r.refused_by_policy) {
+/// The versions with a file on an origin the proxy neither serves nor allows, when
+/// `refuse_unservable` is on: pip would fetch that file around the proxy.
+fn unservable_versions(r: &Rewrite<'_>) -> HashSet<String> {
+    if !r.refuse_unservable {
+        return HashSet::new();
+    }
+    r.project
+        .files
+        .iter()
+        .filter(|file| matches!(r.origins.disposition(&file.url), Disposition::Refused(_)))
+        .map(|file| file.version.clone())
+        .collect()
+}
+
+/// The index with the files of the `removed` versions taken out, `kept` files left, of which
+/// `unservable` were removed for an origin. Returns `None` when it cannot be filtered.
+fn filtered(
+    r: &Rewrite<'_>,
+    removed: &HashSet<String>,
+    unservable: usize,
+    kept: usize,
+) -> Option<Vec<u8>> {
+    match remove_versions(r.decoded, r.format, r.project, removed) {
         Ok(body) => {
             warn!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
                 byrle.package.removed_files = r.project.files.len() - kept,
                 byrle.package.kept_files = kept,
                 byrle.package.removed_by_policy = r.refused_by_policy.len(),
+                byrle.package.removed_unservable = unservable,
                 "REFUSED versions removed from the document so the resolver picks \
                  another"
             );
@@ -88,7 +113,7 @@ fn repointed(
 ) -> Option<Vec<u8>> {
     let body = filtered.as_deref().unwrap_or(r.decoded);
     let files = kept.len();
-    match rewrite_artifact_origins(body, kept, r.reachable, base) {
+    match rewrite_artifact_origins(body, kept, r.origins.reachable(), base) {
         Ok(out) => {
             info!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
@@ -196,14 +221,19 @@ fn remove_from_json(
 mod tests {
     use super::*;
     use crate::identity::Ecosystem;
+    use crate::origin::ReachableOrigins;
     use crate::route::RequestTarget;
 
-    /// The origins every row reaches, which include PyPI's two hosts.
-    fn reachable() -> ReachableOrigins {
-        ReachableOrigins::new(std::iter::empty(), std::iter::empty())
-            .expect("the table's own origins are valid")
+    /// The origins every row reaches, which include PyPI's two hosts, and `allowed` as
+    /// origins a client may fetch from directly.
+    fn origins(allowed: &[&str]) -> OriginPolicy {
+        let reachable = ReachableOrigins::new(std::iter::empty(), std::iter::empty())
+            .expect("the table's own origins are valid");
+        OriginPolicy::new(reachable, allowed.iter().copied()).expect("valid origins")
     }
 
+    /// `decoded` rewritten with `refused` removed and the unservable refusal off, which
+    /// `a_version_with_a_file_on_an_unserved_origin_is_removed` turns on.
     fn rewrite(decoded: &[u8], base: Option<&str>, refused: &[&str]) -> Option<Vec<u8>> {
         let project = super::super::parse("", decoded).expect("the index parses");
         rewrite_parsed(decoded, &project, base, refused)
@@ -220,9 +250,10 @@ mod tests {
             decoded,
             format: IndexFormat::Json,
             project,
-            reachable: &reachable(),
+            origins: &origins(&[]),
             base,
             refused_by_policy: &refused,
+            refuse_unservable: false,
             path: "/pypi/simple/x/",
         })
     }
@@ -253,9 +284,10 @@ mod tests {
             decoded: PAGE.as_bytes(),
             format: IndexFormat::Html,
             project: &project,
-            reachable: &reachable(),
+            origins: &origins(&[]),
             base: Some("http://127.0.0.1:8080"),
             refused_by_policy: &refused,
+            refuse_unservable: true,
             path: "/pypi/simple/x/",
         })
         .expect("a version was refused, so the body changes");
@@ -269,6 +301,49 @@ mod tests {
             "the kept file points at the proxy, digest and all: {out}"
         );
         assert!(out.starts_with("<!DOCTYPE html>"), "{out}");
+    }
+
+    /// A version with a file on an origin the proxy neither serves nor allows is removed,
+    /// as npm's is; pip would fetch that file around the proxy.
+    #[test]
+    fn a_version_with_a_file_on_an_unserved_origin_is_removed() {
+        const OFFSITE: &[u8] = br#"{"name":"x","files":[
+            {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ab/x-1.0.tar.gz","hashes":{}},
+            {"filename":"x-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/cd/x-2.0.tar.gz","hashes":{}},
+            {"filename":"x-2.0-py3-none-any.whl","url":"https://cdn.example/x-2.0-py3-none-any.whl","hashes":{}}
+        ]}"#;
+        let project = super::super::parse("x", OFFSITE).expect("the index parses");
+        let run = |origins: &OriginPolicy, refuse_unservable: bool| {
+            rewrite_index(Rewrite {
+                decoded: OFFSITE,
+                format: IndexFormat::Json,
+                project: &project,
+                origins,
+                base: None,
+                refused_by_policy: &HashSet::new(),
+                refuse_unservable,
+                path: "/pypi/simple/x/",
+            })
+        };
+        let (guard, log) = crate::util::test_support::capture(tracing::Level::WARN);
+        let out = run(&origins(&[]), true).expect("a version was removed");
+        drop(guard);
+        assert_eq!(filenames(&json(&out)), ["x-1.0.tar.gz"]);
+        let log = crate::util::test_support::text(&log);
+        assert!(
+            log.contains("byrle.package.removed_by_policy=0 byrle.package.removed_unservable=1"),
+            "{log}"
+        );
+        assert_eq!(
+            run(&origins(&[]), false),
+            None,
+            "kept when the refusal is off"
+        );
+        assert_eq!(
+            run(&origins(&["https://cdn.example"]), true),
+            None,
+            "kept when the operator allows the origin"
+        );
     }
 
     fn json(body: &[u8]) -> Value {

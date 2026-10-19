@@ -169,9 +169,10 @@ impl crate::ecosystem::Document for Index {
             decoded: r.decoded,
             format: self.format,
             project: &self.project,
-            reachable: r.origins.reachable(),
+            origins: r.origins,
             base: r.base,
             refused_by_policy: r.refused_by_policy,
+            refuse_unservable: r.refuse_unservable,
             path: r.path,
         })
     }

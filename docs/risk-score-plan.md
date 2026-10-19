@@ -282,6 +282,7 @@ present and their score; the verdict is a refusal when the score reaches
 Raised beside this plan, and not part of it: the PyPI index keeps a version whose files are
 on an origin the proxy does not serve (`pypi/mod.rs:165` passes no `refuse_unservable`),
 and Go's `@latest` is 404 for a module with no versions at all (`go/inspect.rs:90`).
+The PyPI index removes such a version since 2026-10-19 (TODO #43).
 
 ## Answered 2026-10-18
 

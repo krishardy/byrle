@@ -451,6 +451,8 @@ Items that I've added that are not stage-bound.
 43. The PyPI index keeps a version whose files are on an origin the proxy does not serve:
     `pypi/mod.rs:165` passes no `refuse_unservable`, as npm's rewrite does, so only the
     pinned fetch is refused. Raised 2026-10-18.
+    Done 2026-10-19: `rewrite_index` removes a version with a file on an origin the
+    proxy neither serves nor allows, under the same rule as npm's packument.
 44. Go's `@latest` is 404 for a module with no versions: `Latest::names_none`
     (`go/inspect.rs:90`) is `all()` over the records, true for none. Raised 2026-10-18.
 45. A request path `classify_path` cannot read is `RequestTarget::Other` and forwarded
