@@ -45,10 +45,63 @@ impl std::error::Error for Refused {}
 
 /// Load a policy the way the proxy does at startup, and report on it.
 pub fn load(path: &Path, as_of: Date, ceiling_days: i64) -> Result<(Policy, Report), Refused> {
-    let policy = Policy::load(path).map_err(Refused::Policy)?;
+    checked(Policy::load(path), as_of, ceiling_days)
+}
+
+/// [`load`] on a policy already read.
+pub fn checked(
+    policy: Result<Policy, PolicyError>,
+    as_of: Date,
+    ceiling_days: i64,
+) -> Result<(Policy, Report), Refused> {
+    let policy = policy.map_err(Refused::Policy)?;
     packages::check(&policy, as_of, ceiling_days).map_err(Refused::Package)?;
     let report = Report::of(&policy, as_of);
     Ok((policy, report))
+}
+
+/// What `byrle policy check` prints and exits with.
+#[derive(Debug, Default, PartialEq)]
+pub struct Answer {
+    pub report: String,
+    pub notes: Vec<String>,
+    pub code: u8,
+}
+
+/// `byrle policy check` on `loaded`, the policy `label` names, as of `as_of`: its report,
+/// with outlived waivers when `fetch` gives the clients to ask, and `--strict`'s failure.
+pub async fn answer(
+    loaded: Result<(Policy, Report), Refused>,
+    label: &str,
+    as_of: Date,
+    (strict, fetch): (bool, Option<&crate::ecosystem::Clients>),
+) -> Answer {
+    let (policy, mut report) = match loaded {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            return Answer {
+                notes: vec![format!("{label}: {e}")],
+                code: e.exit_code(),
+                ..Answer::default()
+            };
+        }
+    };
+    let mut notes = Vec::new();
+    if let Some(clients) = fetch {
+        let (outlived, fetched) = outlived_waivers(&policy, clients, as_of).await;
+        notes.extend(fetched);
+        report.outlived = outlived;
+    }
+    let mut code = 0;
+    if strict && let Some(failure) = report.strict_failure() {
+        notes.push(format!("--strict: {failure}"));
+        code = 1;
+    }
+    Answer {
+        report: report.render(),
+        notes,
+        code,
+    }
 }
 
 /// An entry whose every key later entries set again, for every package it matches.

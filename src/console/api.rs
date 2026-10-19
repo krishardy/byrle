@@ -26,6 +26,9 @@ pub const CSRF_HEADER: HeaderName = HeaderName::from_static("x-byrle-csrf");
 /// The largest request body the console reads: a login, or a page's form.
 pub(super) const MAX_BODY: usize = 8 * 1024;
 
+/// The largest body a remote command sends: a policy, and the versions of its lockfiles.
+pub(super) const MAX_COMMAND_BODY: usize = 16 * 1024 * 1024;
+
 /// The CSRF token of the session `id`: a page from the console has it, another site
 /// does not, and it is never stored.
 pub fn csrf(id: &str) -> String {

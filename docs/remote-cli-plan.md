@@ -69,6 +69,10 @@ among the configuration; no route decides a package.
    api/v1/ecosystems`). Done 2026-10-19: `Intel::history`, which a store recording no
    ingestion answers empty, and the proxy's upstreams and snapshot.
 6. `policy check` (`POST api/v1/policy/check`) and `policy diff` (`POST api/v1/policy/diff`).
+   Done 2026-10-19: the bodies are `remote::CheckAsked` and `remote::DiffAsked`, at most
+   16 MiB; `--lockfile`'s versions are read on the asker's machine and sent as
+   `remote::Sent`. `policy check` is judged with the deployment's expiry ceiling, and
+   `policy diff` over its audit log; `--snapshot` is refused remotely.
 7. `make smoke-console` asks each route through the CLI with a `reader` token, and is
    refused with a token of an account with no role. Docs: `docs/console-api.md`,
    `docs/admin-plan.md`, the README, `docs/runbook.md`.

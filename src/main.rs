@@ -38,31 +38,92 @@ fn or_exit_with<T>(result: Result<T, env::EnvError>, code: u8) -> T {
 /// The same load as the proxy at startup, with the same expiry ceiling, so a policy this
 /// accepts is one the proxy starts with.
 async fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
+    match remote("policy check") {
+        Err(code) => return code,
+        Ok(Some(remote)) => {
+            let policy = match std::fs::read_to_string(&args.path) {
+                Ok(policy) => policy,
+                Err(e) => {
+                    eprintln!("byrle policy check: {}: {e}", args.path.display());
+                    return std::process::ExitCode::from(2);
+                }
+            };
+            let asked = byrle::remote::CheckAsked {
+                policy,
+                as_of: args.as_of.map(|day| day.to_string()),
+                strict: args.strict,
+                fetch: args.fetch,
+            };
+            let printed = remote
+                .post(
+                    "policy check",
+                    byrle::console::routes::POLICY_CHECK_PATH,
+                    &asked,
+                )
+                .await;
+            return std::process::ExitCode::from(printed.print());
+        }
+        Ok(None) => {}
+    }
     let as_of = args.as_of.unwrap_or_else(today);
     let ceiling = or_exit(env::process().expiry_ceiling_days());
-    let (policy, mut report) = match check::load(&args.path, as_of, ceiling) {
-        Ok(loaded) => loaded,
-        Err(e) => {
-            eprintln!("byrle policy check: {}: {e}", args.path.display());
-            return std::process::ExitCode::from(e.exit_code());
-        }
+    let loaded = check::load(&args.path, as_of, ceiling);
+    let clients = args
+        .fetch
+        .then(|| or_exit(byrle::ecosystem::Clients::from_env(&env::process())));
+    let label = args.path.display().to_string();
+    let answer = check::answer(loaded, &label, as_of, (args.strict, clients.as_ref())).await;
+    for note in &answer.notes {
+        eprintln!("byrle policy check: {note}");
+    }
+    print!("{}", answer.report);
+    std::process::ExitCode::from(answer.code)
+}
+
+/// `byrle policy diff <candidate>` asked of the deployment `remote`, whose policy in force
+/// is `<FROM>`.
+async fn remote_policy_diff(
+    remote: &byrle::remote::Remote,
+    args: &cli::Diff,
+) -> std::process::ExitCode {
+    let refused = |why: String| {
+        eprintln!("byrle policy diff: {why}");
+        std::process::ExitCode::from(byrle::policy::diff::ERROR)
     };
-    if args.fetch {
-        let clients = or_exit(byrle::ecosystem::Clients::from_env(&env::process()));
-        let (outlived, notes) = check::outlived_waivers(&policy, &clients, as_of).await;
-        for note in notes {
-            eprintln!("byrle policy check: {note}");
+    if args.to.is_some() {
+        return refused(format!(
+            "with {} set, the policy in force is the deployment's: pass the candidate alone",
+            env::REMOTE_URL
+        ));
+    }
+    if args.snapshot.is_some() {
+        return refused("--snapshot is not asked of a deployment".to_owned());
+    }
+    let policy = match std::fs::read_to_string(&args.from) {
+        Ok(policy) => policy,
+        Err(e) => return refused(format!("{}: {e}", args.from.display())),
+    };
+    let mut versions = Vec::new();
+    for path in &args.lockfile {
+        match byrle::lockfile::listed(path) {
+            Ok(listed) => versions.extend(listed.iter().map(byrle::remote::Sent::of)),
+            Err(e) => return refused(e.to_string()),
         }
-        report.outlived = outlived;
     }
-    print!("{}", report.render());
-    if args.strict
-        && let Some(failure) = report.strict_failure()
-    {
-        eprintln!("\nbyrle policy check: --strict: {failure}");
-        return std::process::ExitCode::from(1);
-    }
-    std::process::ExitCode::SUCCESS
+    let asked = byrle::remote::DiffAsked {
+        policy,
+        from_date: args.from_date.map(|when| when.to_string()),
+        to_date: args.to_date.map(|when| when.to_string()),
+        versions,
+    };
+    let printed = remote
+        .post(
+            "policy diff",
+            byrle::console::routes::POLICY_DIFF_PATH,
+            &asked,
+        )
+        .await;
+    std::process::ExitCode::from(printed.print())
 }
 
 /// `byrle audit verify`: decide each pinned line of an audit log again.
@@ -108,6 +169,11 @@ async fn run_warm(args: cli::Warm) -> std::process::ExitCode {
 }
 
 async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
+    match remote("policy diff") {
+        Err(code) => return code,
+        Ok(Some(remote)) => return remote_policy_diff(&remote, &args).await,
+        Ok(None) => {}
+    }
     let outcome = diff::run(&args, &env::process()).await;
     for note in &outcome.notes {
         eprintln!("byrle policy diff: {note}");

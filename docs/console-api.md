@@ -28,6 +28,8 @@ holds this table to the routes the console answers.
 | GET | `api/v1/artifacts` | `packages.read` | what `byrle artifact export` prints on the deployment, its JSON Lines in `stdout`; `since` and `until` days |
 | GET | `api/v1/intel/history` | `packages.read` | what `byrle intel history` prints on the deployment; `limit`, 20 unless given |
 | GET | `api/v1/ecosystems` | `packages.read` | what `byrle status` prints on the deployment |
+| POST | `api/v1/policy/check` | `packages.read` | what `byrle policy check` prints on the deployment of the policy sent, `{"policy", "as_of", "strict", "fetch"}`, judged with its expiry ceiling |
+| POST | `api/v1/policy/diff` | `packages.read` | what `byrle policy diff` prints on the deployment, its policy in force against the one sent, `{"policy", "from_date", "to_date", "versions"}`, over its audit log and the versions sent |
 | GET | `api/v1/events` | `events.read` | the account event log, R8 |
 | GET | `api/v1/logs/{day}` | `requests.read` | a UTC day of the audit log as written, NDJSON, R9 |
 | GET | `api/v1/status` | `status.read` | each component's status, R10 |

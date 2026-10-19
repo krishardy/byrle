@@ -220,7 +220,12 @@ fn beside<L: Fn(&str) -> Option<OsString>>(
 ) -> Option<Arc<crate::console::Site>> {
     site.map(|site| {
         let reached_at = crate::console::status::reached_at(listen, &site.console.proxy_mount);
-        let site = site.with_proxy(proxy.clone(), environment.settings(), reached_at);
+        let ceiling = environment
+            .expiry_ceiling_days()
+            .unwrap_or(crate::env::DEFAULT_EXPIRY_CEILING_DAYS);
+        let site = site
+            .with_proxy(proxy.clone(), environment.settings(), reached_at)
+            .with_expiry_ceiling(ceiling);
         Arc::new(site.with_oidc(oidc))
     })
 }

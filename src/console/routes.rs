@@ -27,6 +27,8 @@ pub struct Asked {
     pub parts: Parts,
     /// A page `POST`'s form fields, read by the guard to find its `csrf`. Else empty.
     pub form: Vec<(String, String)>,
+    /// An API `POST`'s body, at most 16 MiB. Else empty.
+    pub body: Vec<u8>,
 }
 
 /// What a route answers with, which decides how a refusal is shown.
@@ -100,8 +102,14 @@ pub const INTEL_HISTORY_PATH: &str = "/api/v1/intel/history";
 /// Under the console's path: `GET` what `byrle status` prints on the deployment.
 pub const ECOSYSTEMS_PATH: &str = "/api/v1/ecosystems";
 
+/// Under the console's path: `POST` a policy for what `byrle policy check` prints of it.
+pub const POLICY_CHECK_PATH: &str = "/api/v1/policy/check";
+
+/// Under the console's path: `POST` a policy for what `byrle policy diff` prints of it.
+pub const POLICY_DIFF_PATH: &str = "/api/v1/policy/diff";
+
 /// Every console route.
-pub const ROUTES: [Route; 33] = [
+pub const ROUTES: [Route; 35] = [
     Route {
         method: Method::GET,
         path: super::pages::HOME_PATH,
@@ -337,6 +345,22 @@ pub const ROUTES: [Route; 33] = [
         }),
     },
     Route {
+        method: Method::POST,
+        path: POLICY_CHECK_PATH,
+        kind: Kind::Api,
+        guard: Guard::Needs(Permission::PackagesRead, |site, asked| {
+            Box::pin(super::commands::policy_check(site, asked.body))
+        }),
+    },
+    Route {
+        method: Method::POST,
+        path: POLICY_DIFF_PATH,
+        kind: Kind::Api,
+        guard: Guard::Needs(Permission::PackagesRead, |site, asked| {
+            Box::pin(super::commands::policy_diff(site, asked.body))
+        }),
+    },
+    Route {
         method: Method::GET,
         path: FAILURES_PATH,
         kind: Kind::Api,
@@ -346,16 +370,29 @@ pub const ROUTES: [Route; 33] = [
     },
 ];
 
-/// A page `POST`'s form fields. A body too large or not a form has none.
-async fn form(kind: Kind, parts: &Parts, body: axum::body::Body) -> Vec<(String, String)> {
-    if kind == Kind::Api || parts.method != Method::POST {
-        return Vec::new();
+/// A page `POST`'s form fields, or an API `POST`'s body. A body too large, or a page's that
+/// is not a form, is none.
+async fn sent(
+    kind: Kind,
+    parts: &Parts,
+    body: axum::body::Body,
+) -> (Vec<(String, String)>, Vec<u8>) {
+    if parts.method != Method::POST {
+        return (Vec::new(), Vec::new());
     }
-    axum::body::to_bytes(body, api::MAX_BODY)
+    if kind == Kind::Api {
+        let body = axum::body::to_bytes(body, api::MAX_COMMAND_BODY).await;
+        return (
+            Vec::new(),
+            body.map(|bytes| bytes.to_vec()).unwrap_or_default(),
+        );
+    }
+    let form = axum::body::to_bytes(body, api::MAX_BODY)
         .await
         .ok()
         .and_then(|bytes| serde_urlencoded::from_bytes(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (form, Vec::new())
 }
 
 /// Answer `request` on a route of `kind` guarded by `guard`.
@@ -364,7 +401,7 @@ async fn guarded(kind: Kind, guard: Guard, site: Arc<Site>, request: Request) ->
         Guard::Public(handler) | Guard::Authenticated(handler) => handler(site, request).await,
         Guard::Needs(permission, handler) => {
             let (parts, body) = request.into_parts();
-            let form = form(kind, &parts, body).await;
+            let (form, body) = sent(kind, &parts, body).await;
             let sent = form
                 .iter()
                 .find(|(field, _)| field == "csrf")
@@ -377,6 +414,7 @@ async fn guarded(kind: Kind, guard: Guard, site: Arc<Site>, request: Request) ->
                         csrf,
                         parts,
                         form,
+                        body,
                     };
                     handler(site, asked).await
                 }
@@ -455,6 +493,11 @@ mod tests {
             .create_token(&bob, &laptop, &TokenDigest::of("byrle_bob"))
             .await
             .unwrap();
+        let alice = Name::parse("alice").unwrap();
+        store
+            .create_token(&alice, &laptop, &TokenDigest::of("byrle_alice"))
+            .await
+            .unwrap();
         let (_, base) = served(store).await;
         let client = reqwest::Client::new();
         let log_in = |account: &str| {
@@ -468,10 +511,7 @@ mod tests {
             let set = response.headers()["set-cookie"].to_str().unwrap();
             set.split(';').next().unwrap().to_owned()
         };
-        let (admin, user) = (
-            cookie(log_in("alice").await.unwrap()),
-            cookie(log_in("bob").await.unwrap()),
-        );
+        let user = cookie(log_in("bob").await.unwrap());
 
         for route in ROUTES.iter() {
             let url = format!("{base}/admin{}", route.path.replace("{day}", "2026-10-13"));
@@ -487,7 +527,7 @@ mod tests {
                     assert_eq!(status(by_session).await, 403, "{url}, {name}");
                     let by_token = request().bearer_auth("byrle_bob");
                     assert_eq!(status(by_token).await, 403, "{url}, {name}");
-                    let admin = status(request().header("cookie", &admin)).await;
+                    let admin = status(request().bearer_auth("byrle_alice")).await;
                     assert!(
                         admin != 401 && admin != 403,
                         "{url}, {name}: admitted, though it may need what is not asked: {admin}"

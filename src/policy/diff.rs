@@ -325,6 +325,20 @@ pub struct Run {
 }
 
 impl Run {
+    /// The date each policy is decided as of, today unless `when` says, noted when they
+    /// differ.
+    fn dates(&mut self, when: [Option<crate::cli::When>; 2]) -> [jiff::civil::Date; 2] {
+        let now = today();
+        let dates = when.map(|when| when.map_or(now, |when| when.date(now)));
+        if dates[0] != dates[1] {
+            self.notes.push(format!(
+                "<FROM> as of {}, <TO> as of {}",
+                dates[0], dates[1]
+            ));
+        }
+        dates
+    }
+
     /// Nothing was compared: what stopped it is the last note.
     fn stop(mut self) -> Self {
         self.code = ERROR;
@@ -338,17 +352,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
 ) -> Run {
     let mut out = Run::default();
-    let now = today();
-    let dates = [
-        args.from_date.map_or(now, |when| when.date(now)),
-        args.to_date.map_or(now, |when| when.date(now)),
-    ];
-    if dates[0] != dates[1] {
-        out.notes.push(format!(
-            "<FROM> as of {}, <TO> as of {}",
-            dates[0], dates[1]
-        ));
-    }
+    let dates = out.dates([args.from_date, args.to_date]);
     match Comparison::read(args, environment, dates, &mut out.notes).await {
         Ok(comparison) => comparison.report(out).await,
         Err(note) => {
@@ -358,6 +362,36 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
     }
 }
 
+/// [`run`] on what a running proxy holds: `policies`, the one in force then the candidate,
+/// each as of its `when`; the versions its audit log at `log` names and `sent` beside them;
+/// its intel store; and its clients.
+pub async fn run_on(
+    policies: [Policy; 2],
+    when: [Option<crate::cli::When>; 2],
+    (log, sent): (Option<&std::path::Path>, Vec<crate::lockfile::Listed>),
+    store: Option<std::sync::Arc<dyn Intel>>,
+    clients: Clients,
+) -> Run {
+    let mut out = Run::default();
+    let dates = out.dates(when);
+    let listed = match logged(log, sent) {
+        Ok(listed) => listed,
+        Err(note) => {
+            out.notes.push(note);
+            return out.stop();
+        }
+    };
+    let comparison = Comparison::new(
+        Vec::from(policies),
+        dates,
+        listed,
+        (store, clients, true),
+        &mut out.notes,
+    )
+    .await;
+    comparison.report(out).await
+}
+
 /// What [`run`] compares the two policies with, read before any package is.
 struct Comparison {
     /// `<FROM>` then `<TO>`.
@@ -365,7 +399,7 @@ struct Comparison {
     /// The date each policy is decided as of, in the order of `policies`.
     dates: [jiff::civil::Date; 2],
     versions: Vec<crate::lockfile::Reference>,
-    store: Option<Box<dyn Intel>>,
+    store: Option<std::sync::Arc<dyn Intel>>,
     clients: Clients,
     needs_times: bool,
     /// False with `--snapshot`, whose kept snapshot records no streams.
@@ -391,28 +425,50 @@ impl Comparison {
         dates: [jiff::civil::Date; 2],
         notes: &mut Vec<String>,
     ) -> Result<Self, String> {
-        let policies = [&args.from, &args.to]
+        let to = args.to.as_ref().ok_or_else(|| {
+            format!(
+                "pass <TO>, the policy to compare with <FROM>, unless {} is set",
+                crate::env::REMOTE_URL
+            )
+        })?;
+        let policies = [&args.from, to]
             .into_iter()
             .map(|path| Policy::load(path).map_err(|e| format!("{}: {e}", path.display())))
             .collect::<Result<Vec<_>, _>>()?;
-        let versions = crate::lockfile::references(listed(args, environment)?);
-        let store = open_store(args, environment, &versions).await?;
+        let listed = listed(args, environment)?;
+        let versions = crate::lockfile::references(listed.clone());
+        let store = open_store(args, environment, &versions)
+            .await?
+            .map(std::sync::Arc::from);
+        let clients = Clients::from_env(environment).map_err(|e| e.to_string())?;
+        let recorded = args.snapshot.is_none();
+        Ok(Self::new(policies, dates, listed, (store, clients, recorded), notes).await)
+    }
+
+    /// `policies` as of `dates` over `listed`, with `store`, `clients`, and whether the
+    /// store records its streams. The intel snapshot is noted in `notes`.
+    async fn new(
+        policies: Vec<Policy>,
+        dates: [jiff::civil::Date; 2],
+        listed: Vec<crate::lockfile::Listed>,
+        (store, clients, streams_recorded): (Option<std::sync::Arc<dyn Intel>>, Clients, bool),
+        notes: &mut Vec<String>,
+    ) -> Self {
         if let Some(store) = &store
             && let Ok(Some(snapshot)) = store.snapshot().await
         {
             notes.push(format!("intel snapshot {}", snapshot.digest));
         }
-        let clients = Clients::from_env(environment).map_err(|e| e.to_string())?;
         let needs_times = policies.iter().any(Policy::needs_publish_times);
-        Ok(Self {
+        Self {
             policies,
             dates,
-            versions,
+            versions: crate::lockfile::references(listed),
             store,
             clients,
             needs_times,
-            streams_recorded: args.snapshot.is_none(),
-        })
+            streams_recorded,
+        }
     }
 
     /// Compare every listed version, adding to `out`'s notes, and set its report, summary
@@ -529,21 +585,32 @@ fn listed<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
 ) -> Result<Vec<crate::lockfile::Listed>, String> {
     let log_path = environment.audit_log().map_err(|e| e.to_string())?;
-    if log_path.is_none() && args.lockfile.is_empty() {
+    let mut sent = Vec::new();
+    for path in &args.lockfile {
+        sent.extend(crate::lockfile::listed(path).map_err(|e| e.to_string())?);
+    }
+    logged(log_path.as_deref(), sent)
+}
+
+/// The versions the audit log at `log` and its rotated files name, then `sent`. Errors when
+/// there is neither.
+fn logged(
+    log: Option<&std::path::Path>,
+    sent: Vec<crate::lockfile::Listed>,
+) -> Result<Vec<crate::lockfile::Listed>, String> {
+    if log.is_none() && sent.is_empty() {
         return Err(format!(
             "set {} or pass --lockfile, for the packages to compare over",
             crate::env::AUDIT_LOG
         ));
     }
     let mut listed = Vec::new();
-    if let Some(log_path) = log_path {
-        crate::rotation::each(&log_path, &mut |_, log| {
+    if let Some(log) = log {
+        crate::rotation::each(log, &mut |_, log| {
             listed.extend(crate::audit::packages(log));
         })?;
     }
-    for path in &args.lockfile {
-        listed.extend(crate::lockfile::listed(path).map_err(|e| e.to_string())?);
-    }
+    listed.extend(sent);
     Ok(listed)
 }
 
@@ -612,7 +679,7 @@ mod run_tests {
             dir,
             crate::cli::Diff {
                 from: from_path,
-                to: to_path,
+                to: Some(to_path),
                 from_date: None,
                 to_date: None,
                 snapshot: None,
@@ -630,6 +697,14 @@ mod run_tests {
         assert!(run.report.is_empty());
         assert_eq!(run.notes.len(), 1, "{:?}", run.notes);
         assert!(run.notes[0].contains("from.yaml"), "{:?}", run.notes);
+        let alone = crate::cli::Diff { to: None, ..args };
+        let stopped = super::run(&alone, &with(&[])).await;
+        assert_eq!(stopped.code, ERROR);
+        assert!(
+            stopped.notes[0].starts_with("pass <TO>"),
+            "{:?}",
+            stopped.notes
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -975,7 +1050,7 @@ mod run_tests {
                 None,
                 ("npm".to_owned(), "lodash".to_owned(), "4.17.21".to_owned()),
             )]),
-            store: Some(Box::new(FixedIntel(Err(())))),
+            store: Some(std::sync::Arc::new(FixedIntel(Err(())))),
             clients: Clients::from_env(&registry).expect("clients"),
             needs_times: false,
             streams_recorded: true,
@@ -1005,7 +1080,9 @@ mod run_tests {
                 None,
                 ("pypi".to_owned(), "requests".to_owned(), "0.2.0".to_owned()),
             )]),
-            store: Some(Box::new(crate::intel::store::testing::knowing_nothing())),
+            store: Some(std::sync::Arc::new(
+                crate::intel::store::testing::knowing_nothing(),
+            )),
             clients: Clients::from_env(&registry).expect("clients"),
             needs_times: false,
             streams_recorded: true,

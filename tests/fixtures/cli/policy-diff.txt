@@ -1,10 +1,10 @@
 Compare two policies over the audit log's and lockfiles' packages. The exit code is the OR of 1 for a loosening, 2 for a tightening, and 4 on its own for an error
 
-Usage: byrle policy diff [OPTIONS] <FROM> <TO>
+Usage: byrle policy diff [OPTIONS] <FROM> [TO]
 
 Arguments:
-  <FROM>  The policy in force
-  <TO>    The policy that would replace it
+  <FROM>  The policy in force; with BYRLE_REMOTE_URL set, the policy that would replace the deployment's
+  [TO]    The policy that would replace it; not given with BYRLE_REMOTE_URL set
 
 Options:
       --from-date <DATE>  Judge <FROM> as of this date, YYYY-MM-DD or +<days>d [default: today, UTC]

@@ -89,6 +89,34 @@
         ],
         "type": "string"
       },
+      "CheckAsked": {
+        "description": "What a remote `policy check` sends: the policy, and the command's flags.",
+        "properties": {
+          "as_of": {
+            "description": "`YYYY-MM-DD`; today, UTC, unless given.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fetch": {
+            "type": "boolean"
+          },
+          "policy": {
+            "description": "The policy file's text.",
+            "type": "string"
+          },
+          "strict": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "policy",
+          "strict",
+          "fetch"
+        ],
+        "type": "object"
+      },
       "Component": {
         "description": "One component checked.",
         "properties": {
@@ -163,6 +191,40 @@
         "required": [
           "account",
           "password"
+        ],
+        "type": "object"
+      },
+      "DiffAsked": {
+        "description": "What a remote `policy diff` sends: the candidate, the dates, and the versions locked.",
+        "properties": {
+          "from_date": {
+            "description": "`YYYY-MM-DD` or `+<days>d`, for the policy in force.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policy": {
+            "description": "The candidate policy file's text.",
+            "type": "string"
+          },
+          "to_date": {
+            "description": "`YYYY-MM-DD` or `+<days>d`, for the candidate.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/Sent"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "policy",
+          "versions"
         ],
         "type": "object"
       },
@@ -490,6 +552,32 @@
         },
         "required": [
           "error"
+        ],
+        "type": "object"
+      },
+      "Sent": {
+        "description": "One version a lockfile locks, and the repository it names when it names one.",
+        "properties": {
+          "ecosystem": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ecosystem",
+          "name",
+          "version"
         ],
         "type": "object"
       },
@@ -1952,6 +2040,166 @@
         "tags": [
           "status"
         ]
+      }
+    },
+    "/api/v1/policy/check": {
+      "post": {
+        "operationId": "policy_check",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckAsked"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Printed"
+                }
+              }
+            },
+            "description": "What the command printed, and its exit code"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A body or date that does not parse"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant packages.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No proxy to answer from"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`POST policy/check`: what `byrle policy check` prints on the deployment of the policy sent.",
+        "tags": [
+          "commands"
+        ],
+        "x-byrle-permission": "packages.read"
+      }
+    },
+    "/api/v1/policy/diff": {
+      "post": {
+        "operationId": "policy_diff",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiffAsked"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Printed"
+                }
+              }
+            },
+            "description": "What the command printed, and its exit code"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A body, date or repository that does not parse"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant packages.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No proxy to answer from"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`POST policy/diff`: what `byrle policy diff` prints on the deployment of the policy sent.",
+        "tags": [
+          "commands"
+        ],
+        "x-byrle-permission": "packages.read"
       }
     },
     "/api/v1/requests": {

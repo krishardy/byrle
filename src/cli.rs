@@ -292,10 +292,16 @@ pub struct Check {
 
 #[derive(Debug, Clone, PartialEq, Args)]
 pub struct Diff {
-    /// The policy in force
+    #[arg(help = format!(
+        "The policy in force; with {} set, the policy that would replace the deployment's",
+        crate::env::REMOTE_URL
+    ))]
     pub from: PathBuf,
-    /// The policy that would replace it
-    pub to: PathBuf,
+    #[arg(help = format!(
+        "The policy that would replace it; not given with {} set",
+        crate::env::REMOTE_URL
+    ))]
+    pub to: Option<PathBuf>,
     #[arg(
         long,
         value_name = "DATE",
@@ -326,6 +332,16 @@ pub enum When {
     DaysFromToday(u32),
 }
 
+/// As [`when`] reads it.
+impl std::fmt::Display for When {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::On(date) => write!(f, "{date}"),
+            Self::DaysFromToday(days) => write!(f, "+{days}d"),
+        }
+    }
+}
+
 impl When {
     /// The date this is, when today is `today`. Past the last date jiff has, that date.
     pub fn date(self, today: jiff::civil::Date) -> jiff::civil::Date {
@@ -338,7 +354,7 @@ impl When {
     }
 }
 
-fn when(value: &str) -> Result<When, String> {
+pub fn when(value: &str) -> Result<When, String> {
     let parsed = match value.strip_prefix('+').and_then(|v| v.strip_suffix('d')) {
         Some(days) => days.parse().ok().map(When::DaysFromToday),
         None => value.parse().ok().map(When::On),
@@ -381,6 +397,14 @@ mod tests {
         match parse(args)?.command {
             Command::Policy(PolicyCommand::Diff(diff)) => Ok(diff),
             other => panic!("{args:?} parsed as {other:?}"),
+        }
+    }
+
+    /// A date is written as `when` reads it.
+    #[test]
+    fn a_policy_diff_date_is_written_as_it_is_read() {
+        for given in ["2026-10-19", "+3d"] {
+            assert_eq!(when(given).unwrap().to_string(), given);
         }
     }
 
@@ -561,7 +585,7 @@ mod tests {
             diff(&["policy", "diff", "a.yaml", "b.yaml"]).expect("parses"),
             Diff {
                 from: "a.yaml".into(),
-                to: "b.yaml".into(),
+                to: Some("b.yaml".into()),
                 from_date: None,
                 to_date: None,
                 snapshot: None,
@@ -666,7 +690,7 @@ mod tests {
             exit_code(&e, &argv)
         };
         let error = crate::policy::diff::ERROR;
-        assert_eq!(code(&["policy", "diff", "a"]), error);
+        assert_eq!(code(&["policy", "diff"]), error);
         assert_eq!(
             code(&["policy", "diff", "--lockfile", "x", "a", "b", "c"]),
             error
@@ -726,7 +750,7 @@ mod tests {
                 &["policy", "diff", "a", "b", "--bogus"],
                 ErrorKind::UnknownArgument,
             ),
-            (&["policy", "diff", "a"], ErrorKind::MissingRequiredArgument),
+            (&["policy", "diff"], ErrorKind::MissingRequiredArgument),
             (
                 &["policy", "diff", "a", "b", "c"],
                 ErrorKind::UnknownArgument,

@@ -11,6 +11,7 @@ use utoipa::IntoParams;
 use super::Site;
 use super::api::{Problem, Refused, answered};
 use super::usage::query;
+use crate::policy::diff;
 use crate::remote::Printed;
 
 /// `GET explain`'s query string.
@@ -239,6 +240,112 @@ async fn statused(site: &Site) -> Result<Printed, Refused> {
     Ok(Printed::of("status", &notes, report, 0))
 }
 
+/// `POST policy/check`: what `byrle policy check` prints on the deployment of the policy sent.
+#[utoipa::path(
+    post,
+    path = super::routes::POLICY_CHECK_PATH,
+    tag = "commands",
+    security(("session" = []), ("token" = [])),
+    extensions(("x-byrle-permission" = json!("packages.read"))),
+    request_body = crate::remote::CheckAsked,
+    responses(
+        (status = 200, description = "What the command printed, and its exit code", body = Printed),
+        (status = 400, description = "A body or date that does not parse", body = Problem),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 403, description = "The caller's roles do not grant packages.read", body = Problem),
+        (status = 503, description = "No proxy to answer from", body = Problem),
+    ),
+)]
+pub async fn policy_check(site: Arc<Site>, body: Vec<u8>) -> Response {
+    answered(policy_checked(&site, &body).await)
+}
+
+/// What `byrle policy check` prints of the policy `body` sends.
+async fn policy_checked(site: &Site, body: &[u8]) -> Result<Printed, Refused> {
+    let asked: crate::remote::CheckAsked = serde_json::from_slice(body)
+        .map_err(|e| Refused::bad(format!("the body is not a policy check: {e}")))?;
+    let as_of = match asked.as_of {
+        Some(day) => day
+            .parse::<jiff::civil::Date>()
+            .map_err(|_| Refused::bad(format!("as_of is not a YYYY-MM-DD date: `{day}`")))?,
+        None => crate::policy::today(),
+    };
+    let proxy = super::config::beside(site)?;
+    let loaded = crate::policy::check::checked(
+        crate::policy::Policy::parse(&asked.policy),
+        as_of,
+        site.expiry_ceiling_days(),
+    );
+    let fetch = asked.fetch.then(|| proxy.clients());
+    let answer = crate::policy::check::answer(loaded, SENT, as_of, (asked.strict, fetch)).await;
+    Ok(Printed::of(
+        "policy check",
+        &answer.notes,
+        answer.report,
+        answer.code,
+    ))
+}
+
+/// How a remote command's notes name the policy it sent.
+const SENT: &str = "the policy sent";
+
+/// `POST policy/diff`: what `byrle policy diff` prints on the deployment of the policy sent.
+#[utoipa::path(
+    post,
+    path = super::routes::POLICY_DIFF_PATH,
+    tag = "commands",
+    security(("session" = []), ("token" = [])),
+    extensions(("x-byrle-permission" = json!("packages.read"))),
+    request_body = crate::remote::DiffAsked,
+    responses(
+        (status = 200, description = "What the command printed, and its exit code", body = Printed),
+        (status = 400, description = "A body, date or repository that does not parse", body = Problem),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 403, description = "The caller's roles do not grant packages.read", body = Problem),
+        (status = 503, description = "No proxy to answer from", body = Problem),
+    ),
+)]
+pub async fn policy_diff(site: Arc<Site>, body: Vec<u8>) -> Response {
+    answered(policy_diffed(&site, &body).await)
+}
+
+/// What `byrle policy diff` prints of the deployment's policy and the one `body` sends.
+async fn policy_diffed(site: &Site, body: &[u8]) -> Result<Printed, Refused> {
+    let asked: crate::remote::DiffAsked = serde_json::from_slice(body)
+        .map_err(|e| Refused::bad(format!("the body is not a policy diff: {e}")))?;
+    let when = |day: Option<String>| {
+        day.map(|day| crate::cli::when(&day))
+            .transpose()
+            .map_err(Refused::bad)
+    };
+    let dates = [when(asked.from_date)?, when(asked.to_date)?];
+    let sent = asked
+        .versions
+        .into_iter()
+        .map(crate::remote::Sent::listed)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Refused::bad)?;
+    let proxy = super::config::beside(site)?;
+    let stopped = |note: String| Printed::of("policy diff", &[note], String::new(), diff::ERROR);
+    let Some(in_force) = proxy.policy() else {
+        return Ok(stopped("the deployment has no policy in force".to_owned()));
+    };
+    let candidate = match crate::policy::Policy::parse(&asked.policy) {
+        Ok(candidate) => candidate,
+        Err(e) => return Ok(stopped(format!("{SENT}: {e}"))),
+    };
+    let run = diff::run_on(
+        [(*in_force).clone(), candidate],
+        dates,
+        (site.audit_log(), sent),
+        proxy.intel_store(),
+        proxy.clients().clone(),
+    )
+    .await;
+    let notes: Vec<String> = run.notes.into_iter().chain(run.summary).collect();
+    Ok(Printed::of("policy diff", &notes, run.report, run.code))
+}
+
 /// The analysis store of the proxy beside `site`. 503 when it keeps none.
 fn analyses(site: &Site) -> Result<Arc<dyn crate::analysis::store::Analyses>, Refused> {
     super::config::beside(site)?
@@ -258,6 +365,34 @@ pub(crate) mod tests {
     /// A console beside `proxy`, served, holding alice the admin, carol the reader and bob
     /// with no role, each with a token `byrle_<name>`. Its URL.
     pub(crate) async fn console_beside(proxy: Proxy) -> String {
+        let at = (proxy, "http://127.0.0.1:9".to_owned());
+        let (_, base) = crate::console::tests::served_asking(accounts().await, at).await;
+        format!("{base}/admin/")
+    }
+
+    /// [`console_beside`], reading the audit log at `audit_log`.
+    async fn console_logging(proxy: Proxy, audit_log: std::path::PathBuf) -> String {
+        let console = crate::console::Console {
+            url: "https://h/admin/".into(),
+            mount: crate::mount::Mount::from_url("https://h/admin/").unwrap(),
+            listen: Some("127.0.0.1:9090".into()),
+            rp_key: None,
+            proxy_mount: crate::mount::Mount::ROOT,
+        };
+        let site = Arc::new(
+            crate::console::tests::unread(console, accounts().await)
+                .with_proxy(proxy, Vec::new(), "http://127.0.0.1:9".into())
+                .with_logs(Some(audit_log), None),
+        );
+        let (_, router) =
+            crate::console::listeners(axum::Router::new(), "127.0.0.1:8080", Some(&site))
+                .pop()
+                .unwrap();
+        format!("{}/admin/", crate::proxy::testing::serve(router).await)
+    }
+
+    /// alice the admin, carol the reader and bob with no role, each with `byrle_<name>`.
+    async fn accounts() -> Arc<crate::account::InMemory> {
         let store = crate::console::login::tests::store().await;
         let carol = Name::parse("carol").unwrap();
         store.create_account(&carol, &[Role::Reader]).await.unwrap();
@@ -272,9 +407,7 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
         }
-        let (_, base) =
-            crate::console::tests::served_asking(store, (proxy, "http://127.0.0.1:9".into())).await;
-        format!("{base}/admin/")
+        store
     }
 
     /// The deployment at `url`, asked with `name`'s token.
@@ -288,9 +421,15 @@ pub(crate) mod tests {
         .expect("a deployment is named")
     }
 
+    /// A proxy with a policy, asking an npm registry that does not answer.
     fn policed() -> Proxy {
         let policy = crate::policy::Policy::parse("version: 1\ncooldown_days: 7\n").unwrap();
-        Proxy::new(reqwest::Client::new()).with_policy(Some(Arc::new(policy)))
+        Proxy::new(reqwest::Client::new())
+            .with_upstream(
+                crate::identity::Ecosystem::Npm,
+                crate::util::test_support::NO_UPSTREAM,
+            )
+            .with_policy(Some(Arc::new(policy)))
     }
 
     /// A reader and an admin are answered what `explain` prints on the deployment; an
@@ -464,6 +603,193 @@ pub(crate) mod tests {
         assert_eq!((plain.code, plain.stderr.as_str()), (0, ""));
     }
 
+    /// `policy check` judges the policy sent, `--strict` failing on an entry doing nothing;
+    /// a policy that does not load exits as it does locally.
+    #[tokio::test]
+    async fn policy_check_is_answered_for_the_policy_sent() {
+        use crate::console::routes::POLICY_CHECK_PATH;
+        use crate::remote::CheckAsked;
+        let url = console_beside(policed()).await;
+        let carol = asking(&url, "carol");
+        let idle = "version: 1\ncooldown_days: 7\npackages:\n  - match: { ecosystem: npm, name: ms }\n    \
+                    set: { cooldown_days: 7 }\n    reason: r\n";
+        let asked = |policy: &str, strict: bool| CheckAsked {
+            policy: policy.to_owned(),
+            as_of: Some("2026-09-13".to_owned()),
+            strict,
+            fetch: true,
+        };
+        let checked = carol
+            .post("policy check", POLICY_CHECK_PATH, &asked(idle, false))
+            .await;
+        assert_eq!(checked.code, 0, "{checked:?}");
+        assert!(checked.stdout.contains("changes nothing"), "{checked:?}");
+        let strict = carol
+            .post("policy check", POLICY_CHECK_PATH, &asked(idle, true))
+            .await;
+        assert_eq!(strict.code, 1, "{strict:?}");
+        assert!(
+            strict.stderr.contains("--strict: changes nothing: 1"),
+            "{strict:?}"
+        );
+        let refused = carol
+            .post(
+                "policy check",
+                POLICY_CHECK_PATH,
+                &asked("version: 2\n", false),
+            )
+            .await;
+        assert_eq!(refused.code, 1, "{refused:?}");
+        assert!(
+            refused
+                .stderr
+                .starts_with("byrle policy check: the policy sent: "),
+            "{refused:?}"
+        );
+        let undated = CheckAsked {
+            as_of: Some("today".to_owned()),
+            ..asked(idle, false)
+        };
+        let undated = carol
+            .post("policy check", POLICY_CHECK_PATH, &undated)
+            .await;
+        assert!(
+            undated.stderr.contains("as_of is not a YYYY-MM-DD date"),
+            "{undated:?}"
+        );
+        let today = CheckAsked {
+            as_of: None,
+            fetch: false,
+            ..asked(idle, false)
+        };
+        let today = carol.post("policy check", POLICY_CHECK_PATH, &today).await;
+        assert_eq!(today.code, 0, "{today:?}");
+        let garbled = carol
+            .post("policy check", POLICY_CHECK_PATH, &"not a check")
+            .await;
+        assert!(
+            garbled.stderr.contains("the body is not a policy check"),
+            "{garbled:?}"
+        );
+    }
+
+    /// `policy diff` compares the policy in force with the one sent, over the versions sent;
+    /// no policy in force, a candidate that does not load, or an unread log stops it.
+    #[tokio::test]
+    async fn policy_diff_compares_the_policy_in_force_with_the_one_sent() {
+        use crate::console::routes::POLICY_DIFF_PATH;
+        use crate::remote::{DiffAsked, Sent};
+        let missing = console_beside(policed()).await;
+        let unlogged = asking(&missing, "carol")
+            .post(
+                "policy diff",
+                POLICY_DIFF_PATH,
+                &DiffAsked {
+                    policy: "version: 1\n".to_owned(),
+                    ..DiffAsked::default()
+                },
+            )
+            .await;
+        assert!(unlogged.stderr.contains("audit.log"), "{unlogged:?}");
+        let dir = crate::util::test_support::tempdir("remote-diff");
+        let log = dir.join("audit.jsonl");
+        std::fs::write(&log, "").unwrap();
+        let url = console_logging(policed(), log).await;
+        let carol = asking(&url, "carol");
+        let lodash = Sent {
+            repository: None,
+            ecosystem: "npm".to_owned(),
+            name: "lodash".to_owned(),
+            version: "4.17.21".to_owned(),
+        };
+        let asked = |policy: &str, versions: Vec<Sent>| DiffAsked {
+            policy: policy.to_owned(),
+            from_date: None,
+            to_date: Some("+1d".to_owned()),
+            versions,
+        };
+        let diffed = carol
+            .post(
+                "policy diff",
+                POLICY_DIFF_PATH,
+                &asked("version: 1\ncooldown_days: 0\n", vec![lodash.clone()]),
+            )
+            .await;
+        assert!(diffed.stderr.contains("<FROM> as of"), "{diffed:?}");
+        assert!(
+            diffed.stderr.contains("pkg:npm/lodash@4.17.21: "),
+            "the registry: {diffed:?}"
+        );
+        let bare = carol
+            .post(
+                "policy diff",
+                POLICY_DIFF_PATH,
+                &asked("version: 1\n", vec![]),
+            )
+            .await;
+        assert!(bare.stdout.starts_with("0 packages evaluated"), "{bare:?}");
+        let broken = carol
+            .post(
+                "policy diff",
+                POLICY_DIFF_PATH,
+                &asked("version: 2\n", vec![lodash.clone()]),
+            )
+            .await;
+        assert!(
+            broken
+                .stderr
+                .starts_with("byrle policy diff: the policy sent: "),
+            "{broken:?}"
+        );
+        let elsewhere = Sent {
+            repository: Some("nowhere".to_owned()),
+            ..lodash.clone()
+        };
+        let unknown = carol
+            .post(
+                "policy diff",
+                POLICY_DIFF_PATH,
+                &asked("version: 1\n", vec![elsewhere]),
+            )
+            .await;
+        assert!(
+            unknown.stderr.contains("`nowhere` is not a repository"),
+            "{unknown:?}"
+        );
+        for (from_date, to_date) in [(Some("soon"), None), (None, Some("later"))] {
+            let undated = DiffAsked {
+                from_date: from_date.map(str::to_owned),
+                to_date: to_date.map(str::to_owned),
+                ..asked("version: 1\n", vec![])
+            };
+            let undated = carol.post("policy diff", POLICY_DIFF_PATH, &undated).await;
+            assert!(undated.stderr.contains("400 Bad Request"), "{undated:?}");
+        }
+        let garbled = carol
+            .post("policy diff", POLICY_DIFF_PATH, &"not a diff")
+            .await;
+        assert!(
+            garbled.stderr.contains("the body is not a policy diff"),
+            "{garbled:?}"
+        );
+
+        let unpoliced = console_beside(Proxy::new(reqwest::Client::new())).await;
+        let none = asking(&unpoliced, "carol")
+            .post(
+                "policy diff",
+                POLICY_DIFF_PATH,
+                &asked("version: 1\n", vec![lodash]),
+            )
+            .await;
+        assert_eq!(
+            (none.code, none.stderr.as_str()),
+            (
+                diff::ERROR,
+                "byrle policy diff: the deployment has no policy in force\n"
+            )
+        );
+    }
+
     /// A deployment with no policy says so; a console beside no proxy is 503, and a query
     /// that does not parse 400.
     #[tokio::test]
@@ -502,6 +828,14 @@ pub(crate) mod tests {
         assert!(matches!(statused(&alone).await, Err(Refused(status, _)) if status == 503));
         let alone_history = histories(&alone, &parts("/x")).await;
         assert!(matches!(alone_history, Err(Refused(status, _)) if status == 503));
+        let check = br#"{"policy":"version: 1\n","as_of":null,"strict":false,"fetch":false}"#;
+        assert!(
+            matches!(policy_checked(&alone, check).await, Err(Refused(status, _)) if status == 503)
+        );
+        let diffing = br#"{"policy":"version: 1\n","from_date":null,"to_date":null,"versions":[]}"#;
+        assert!(
+            matches!(policy_diffed(&alone, diffing).await, Err(Refused(status, _)) if status == 503)
+        );
         let twice = exported(&alone, &parts("/x?since=2026-01-01&since=2026-01-02")).await;
         assert!(matches!(twice, Err(Refused(status, _)) if status == 400));
         let url = console_beside(Proxy::new(reqwest::Client::new())).await;

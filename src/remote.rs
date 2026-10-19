@@ -51,6 +51,63 @@ impl Printed {
     }
 }
 
+/// What a remote `policy check` sends: the policy, and the command's flags.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct CheckAsked {
+    /// The policy file's text.
+    pub policy: String,
+    /// `YYYY-MM-DD`; today, UTC, unless given.
+    pub as_of: Option<String>,
+    pub strict: bool,
+    pub fetch: bool,
+}
+
+/// What a remote `policy diff` sends: the candidate, the dates, and the versions locked.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DiffAsked {
+    /// The candidate policy file's text.
+    pub policy: String,
+    /// `YYYY-MM-DD` or `+<days>d`, for the policy in force.
+    pub from_date: Option<String>,
+    /// `YYYY-MM-DD` or `+<days>d`, for the candidate.
+    pub to_date: Option<String>,
+    pub versions: Vec<Sent>,
+}
+
+/// One version a lockfile locks, and the repository it names when it names one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct Sent {
+    pub repository: Option<String>,
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
+}
+
+impl Sent {
+    /// `listed` as it is sent.
+    pub fn of(listed: &crate::lockfile::Listed) -> Self {
+        let (repository, (ecosystem, name, version)) = listed;
+        Self {
+            repository: repository.map(|at| at.name().to_owned()),
+            ecosystem: ecosystem.clone(),
+            name: name.clone(),
+            version: version.clone(),
+        }
+    }
+
+    /// As it was listed. Errors naming a repository this build does not have.
+    pub fn listed(self) -> Result<crate::lockfile::Listed, String> {
+        let repository = match self.repository {
+            Some(name) => Some(
+                crate::ecosystem::Repository::named(&name)
+                    .ok_or_else(|| format!("`{name}` is not a repository this byrle serves"))?,
+            ),
+            None => None,
+        };
+        Ok((repository, (self.ecosystem, self.name, self.version)))
+    }
+}
+
 /// A deployment the commands ask, and the client that sends its token.
 pub struct Remote {
     base: String,
@@ -105,6 +162,18 @@ impl Remote {
         self.printed(command, &shown, self.http.get(url)).await
     }
 
+    /// What `command` printed on the deployment, asked as `POST path` with `body` as JSON.
+    pub async fn post(&self, command: &str, path: &str, body: &impl Serialize) -> Printed {
+        let url = format!("{}{path}", self.base);
+        let sent = serde_json::to_vec(body).expect("a request serialises");
+        let request = self
+            .http
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(sent);
+        self.printed(command, &url, request).await
+    }
+
     /// The answer to `request`, sent to `url`, with a note for each local input not read.
     async fn printed(&self, command: &str, url: &str, request: reqwest::RequestBuilder) -> Printed {
         let mut printed = match request.send().await {
@@ -145,6 +214,32 @@ impl Remote {
 mod tests {
     use super::*;
     use crate::env::testing::with;
+
+    /// A listed version is sent as it was listed, and one naming a repository this build
+    /// does not have is refused.
+    #[test]
+    fn a_listed_version_reads_back_as_it_was_sent() {
+        let maven = crate::ecosystem::Repository::all()
+            .find(|at| at.name() != at.ecosystem().as_str())
+            .expect("a repository beside an ecosystem's own");
+        for listed in [
+            (
+                None,
+                ("npm".to_owned(), "ms".to_owned(), "2.1.3".to_owned()),
+            ),
+            (
+                Some(maven),
+                ("maven".to_owned(), "a:b".to_owned(), "1".to_owned()),
+            ),
+        ] {
+            assert_eq!(Sent::of(&listed).listed(), Ok(listed));
+        }
+        let elsewhere = Sent {
+            repository: Some("nowhere".to_owned()),
+            ..Sent::default()
+        };
+        assert!(elsewhere.listed().is_err());
+    }
 
     /// Unset, the commands run here; set, the URL is https or loopback and a token is set.
     #[test]

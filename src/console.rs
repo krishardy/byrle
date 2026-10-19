@@ -132,6 +132,8 @@ pub struct Site {
     checked: status::Cache,
     /// The OIDC provider logins may use, when one is set.
     oidc: Option<oidc::Provider>,
+    /// [`env::EXPIRY_CEILING_DAYS`], which a remote `policy check` is judged with.
+    expiry_ceiling_days: i64,
 }
 
 impl Site {
@@ -158,8 +160,25 @@ impl Site {
             dropped: std::sync::Mutex::default(),
             checked: std::sync::Mutex::default(),
             oidc: None,
+            expiry_ceiling_days: env::DEFAULT_EXPIRY_CEILING_DAYS,
             console,
         }
+    }
+
+    /// Judge a remote `policy check` with `days`, the proxy's own expiry ceiling.
+    pub fn with_expiry_ceiling(mut self, days: i64) -> Self {
+        self.expiry_ceiling_days = days;
+        self
+    }
+
+    /// The expiry ceiling a remote `policy check` is judged with.
+    pub fn expiry_ceiling_days(&self) -> i64 {
+        self.expiry_ceiling_days
+    }
+
+    /// The audit log the proxy writes, which a remote `policy diff` compares over.
+    pub fn audit_log(&self) -> Option<&std::path::Path> {
+        self.audit_log.as_deref()
     }
 
     /// Let logins use `provider`.
