@@ -15,7 +15,7 @@ request, `signed-off` on pull requests only:
 | `lint` | `make lint` | rustfmt, clippy with warnings as errors, shellcheck, python syntax |
 | `test` | `make test` | the unit tests |
 | `sqlx` | `make sqlx-prepare ARGS=--check` | `.sqlx/` against the migrations |
-| `signed-off` | `make signed-off BASE=origin/<base branch>` | each commit the pull request adds, but a merge, has a `Signed-off-by:` with its author's email, as [CONTRIBUTING](../../CONTRIBUTING.md) asks. Added 2026-10-19, TODO.md ad-hoc #46 |
+| `signed-off` | `make commit-fixup BASE=origin/<base branch> CHECKS=sign-off` | each commit the pull request adds, but a merge, has a `Signed-off-by:` with its author's email, as [CONTRIBUTING](../../CONTRIBUTING.md) asks. Added 2026-10-19, TODO.md ad-hoc #46. `make signed-off` until 2026-10-20, ad-hoc #51 |
 
 A job runs a `make` target and nothing else, so what CI checks is what a contributor runs.
 The logic stays in `scripts/make/`, per CLAUDE.md.

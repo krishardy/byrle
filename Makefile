@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned signed-off strip-claude install-shellcheck install-java install-gradle ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup install-shellcheck install-java install-gradle ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
@@ -40,9 +40,8 @@ help:
 	@echo "  inspect        show one request per client, for looking at by eye"
 	@echo "  spike-config   re-run the config-format spike (plan §5, decision #11)"
 	@echo "  duplicates     repeated code blocks and string literals (docs/duplication-catalogue.md)"
-	@echo "  unsigned       list unsigned commits; SIGN=1 [KEY=<id>] signs them by rebasing"
-	@echo "  signed-off     refuse a commit after BASE (default origin/main) with no author sign-off"
-	@echo "  strip-claude   list unpushed commits crediting Claude; STRIP=1 rewrites them, ALL=1 pushed too"
+	@echo "  commit-fixup   list unpushed commits that credit Claude, are unsigned or not signed off;"
+	@echo "                 FIX=1 [KEY=<id>] rewrites them; BASE=<commit>, ALL=1, CHECKS=<names>"
 	@echo "  install-shellcheck  the pinned shellcheck into ~/.local/bin, or SHELLCHECK_DEST"
 	@echo "  install-java   the pinned JDK and Maven into ~/.local, linked in ~/.local/bin"
 	@echo "  install-gradle the pinned Gradle into ~/.local, linked in ~/.local/bin"
@@ -177,14 +176,8 @@ spike-config:
 duplicates:
 	@scripts/make/duplicates.py
 
-unsigned:
-	@SIGN="$(SIGN)" KEY="$(KEY)" scripts/make/unsigned.sh
-
-signed-off:
-	@BASE="$(BASE)" scripts/make/signed-off.sh
-
-strip-claude:
-	@STRIP="$(STRIP)" ALL="$(ALL)" scripts/make/strip-claude.sh
+commit-fixup:
+	@FIX="$(FIX)" KEY="$(KEY)" BASE="$(BASE)" ALL="$(ALL)" CHECKS="$(CHECKS)" scripts/make/commit-fixup.sh
 
 install-shellcheck:
 	@scripts/make/install-shellcheck.sh

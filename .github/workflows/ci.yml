@@ -63,6 +63,6 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - run: make signed-off BASE="origin/$BASE_REF"
+      - run: make commit-fixup BASE="origin/$BASE_REF" CHECKS=sign-off
         env:
           BASE_REF: ${{ github.base_ref }}
