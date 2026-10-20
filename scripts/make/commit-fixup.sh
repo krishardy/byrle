@@ -8,7 +8,8 @@
 #              Certificate of Origin sign-off CONTRIBUTING.md asks for. A merge is not
 #              checked: it is made by whoever merges, not by a contributor.
 #
-#   make commit-fixup                     the commits on HEAD on no remote-tracking branch
+#   make commit-fixup                     the commits on HEAD on no remote-tracking branch,
+#                                         and a count of the pushed ones that fail
 #   make commit-fixup BASE=<commit>       the commits on HEAD that are not on <commit>
 #   make commit-fixup ALL=1               every commit on HEAD
 #   make commit-fixup CHECKS=sign-off     only the checks named, space-separated
@@ -102,24 +103,35 @@ else
     described="on $branch and on no remote"
 fi
 
-# The commits in scope that fail a check, newest first: "<hash> <date> <failures> <subject>".
+# Of the commits on stdin, those that fail a check: "<hash> <date> <failures> <subject>".
 failing() {
     local commit failed
     while IFS= read -r commit; do
         failed="$(failures "$commit")"
         [[ -z "$failed" ]] || git log -1 --format="%H %ad $failed %s" --date=short "$commit"
-    done < <(git rev-list "${scope[@]}")
+    done
+}
+
+# Without BASE or ALL=1, say how many pushed commits fail too, since they are not listed.
+pushed_failing() {
+    [[ -z "${BASE:-}" && "${ALL:-}" != 1 ]] || return 0
+    local count
+    count="$(comm -23 <(git rev-list HEAD | sort) <(git rev-list HEAD --not --remotes | sort) \
+        | failing | wc -l)"
+    [[ "$count" -eq 0 ]] || echo "$count pushed commit(s) on $branch fail a check too; ALL=1 includes them."
 }
 
 show() { cut -c1-12,41- <<<"$1" | sed 's/^/  /'; }
 
-list="$(failing)"
+list="$(git rev-list "${scope[@]}" | failing)"
 if [[ -z "$list" ]]; then
     echo "Every commit $described passes: $checks."
+    pushed_failing
     exit 0
 fi
 echo "FAIL: $(wc -l <<<"$list") commit(s) $described fail a check ($checks):"
 show "$list"
+pushed_failing
 
 if [[ "${FIX:-}" != 1 ]]; then
     echo
@@ -181,7 +193,7 @@ if ! git rebase --quiet --force-rebase --rebase-merges --exec "bash $amend --ame
     exit 1
 fi
 
-left="$(failing)"
+left="$(git rev-list "${scope[@]}" | failing)"
 if [[ -n "$left" ]]; then
     echo "FAIL: still failing:"
     show "$left"
