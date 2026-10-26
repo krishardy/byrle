@@ -475,7 +475,8 @@ Items that I've added that are not stage-bound.
     structures could change to make queries faster or rows smaller, such as `TEXT` where
     a bounded type would do. Raised 2026-10-19.
     Reviewed 2026-10-19 in [postgres-review](docs/postgres-review.md). Sections 1 to 4 done
-    2026-10-19, decision 0121.
+    2026-10-19, decision 0121. Closed 2026-10-26: section 5's smaller types are not worth
+    a migration at today's sizes.
     A disposition by version reads every decision; a package's intel is one row per
     affected version; a refresh rewrites every row; three indexes are never read.
 49. Full logic flow diagrams: every entry point, each request to a backend, how the risk
