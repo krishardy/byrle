@@ -487,6 +487,8 @@ Items that I've added that are not stage-bound.
     vulnerable, what does abnormal data do there, can a malicious package be coaxed
     through, and can malicious input make a score ignored or overridden. After #49.
     Raised 2026-10-19.
+    Reviewed 2026-10-26. The review is kept out of the repository until its findings are
+    fixed.
 51. `make strip-claude`, `make unsigned` and `make signed-off` become one `make
     commit-fixup`. It rewinds to the oldest failing commit and fixes each commit from there
     forward. Raised 2026-10-20. Done 2026-10-20: per commit it removes the Claude credit

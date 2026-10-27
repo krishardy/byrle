@@ -151,11 +151,11 @@ timeout. No production client sets a redirect policy, so each follows up to 10 r
 | B1c | the artifact, for analysis | `analysis/run.rs` `Analyser::fetch` | the upstream URL the client's request maps to | spooled, `BYRLE_MAX_ARTIFACT_BYTES`, default 1 GiB |
 | B2 | `https://sum.golang.org` lookup and tiles | `ecosystem/go/sumdb.rs` `Client::get` | module and version | whole, no limit; note signature and tree proofs checked (`note.rs`, `tlog.rs`) |
 | B3 | npm and PyPI attestation documents | `Analyser::attestation_document` | `provenance.attestation_url` from the metadata, kept only on a served origin (`attestation_url`) | whole, no limit; verified against `sigstore-verify`'s built-in trust root |
-| B4 | source archive | `analysis/run/sourcing.rs` `Analyser::archive` | the metadata's repository, `source.rs` `Repo::archive_url`; only with `BYRLE_SOURCE_ARCHIVES` | spooled; tree read up to 512 MiB |
+| B4 | source archive | `analysis/run/sourcing.rs` `Analyser::archive` | the metadata's repository, `source.rs` `Repo::archive_url`, under `BYRLE_SOURCE_ARCHIVES`, default `https://codeload.github.com`; `off` fetches nothing | spooled; tree read up to 512 MiB |
 | B5 | VirusTotal API v3: file lookup, upload URL, upload, analysis | `analysis/virustotal.rs` | the artifact's sha256; the large-file upload URL is VirusTotal's answer | whole, no limit; `x-apikey` on each request |
 | B6 | `crates.io/api/v1/crates/<name>/versions` | `ecosystem/cargo/trustpub.rs` `TrustPub::page` | crate name; `meta.next_page`, up to 20 pages | whole, no limit |
 | B7 | keys.openpgp.org, keyserver.ubuntu.com | `ecosystem/maven/keys.rs` `KeyServers::copy` | the `.asc`'s issuer | whole, no limit |
-| B8 | `BYRLE_DETECTORS` programs, as subprocesses | `analysis/detector.rs` `Command::run` | the spooled artifact | stdout and stderr up to 16 MiB; cleared environment, 0700 working directory, killed on timeout |
+| B8 | `BYRLE_DETECTORS` programs, as subprocesses | `analysis/detector.rs` `Command::run` | the ecosystem, name and version, as arguments; the program fetches its own copy | stdout and stderr up to 16 MiB; cleared environment, 0700 working directory, killed on timeout |
 | B9 | OSV bundles, CISA KEV, Datadog manifests, GitHub GraphQL | `intel/fetch.rs` `bundle`, `graphql` | `intel/stream.rs`; `BYRLE_STREAM_URLS` replaces any | OSV 512 MiB, each zip entry 16 MiB; KEV and Datadog 16 MiB; GitHub 64 MiB over all pages, each page read whole first |
 | B10 | OIDC discovery, JWKS, token endpoint | `console/oidc.rs` `Provider::fetched`, `exchange` | `BYRLE_OIDC_*`; endpoints must pass `http::trusted` | 256 KiB |
 | B11 | Postgres, one pool | `intel/postgres.rs`, `analysis/postgres.rs`, `account/postgres.rs`, `usage/postgres.rs` | `DATABASE_URL` | tables below |
@@ -229,7 +229,7 @@ flowchart TD
 
 | ID | Step | Code | Rule |
 |---|---|---|---|
-| S1 | Checks: `denied`, `known_malware`, `cooldown`, `kev`, `max_cvss`, `install_scripts`, `yanked`, `deprecated`, `provenance` | `policy/decide.rs` `decide`, `Applied::of`, `matching`, `on_off` | a failed check adds its weight unless its action is `allow`; `merge::applies` makes a check meaningless for an ecosystem `NotApplicable`; an unknown publish date fails a non-zero cooldown; an unscored advisory fails `max_cvss` |
+| S1 | Checks: `denied`, `known_malware`, `cooldown`, `kev`, `max_cvss`, `install_scripts`, `yanked`, `deprecated`, `provenance` | `policy/decide.rs` `decide`, `Applied::of`, `matching`, `on_off` | a failed check adds its weight unless its action is `allow`; `merge::applies` makes a check meaningless for an ecosystem `NotApplicable`; an unknown publish date fails a non-zero cooldown, and S3 then drops the check; an unscored advisory fails `max_cvss` |
 | S2 | Signals | `Decision::with_signals`, `Policy::weight_of` | default weights in `decide::default_weight` and [policy-reference](policy-reference.md#signal_weights): each check and the proxy's own weigh `risk_threshold`, but `no_strong_digest` 0, `provenance_dropped` half and `provenance_surprise` a quarter per bit; detector signals 1; advisories 8, 4, 3, 2, 1 |
 | S3 | Unanswerable checks | `policy/enforce.rs` `enforced`, `unenforceable` | removed: install scripts not analysed, provenance unknown, no date with a cooldown, intel not consulted (malware, KEV, CVSS), KEV with no exploitation stream |
 | S4 | Action | `Decision::score`, `Decision::action` | the sum of check and signal weights; a tie refuses; quarantine when the score without `cooldown`'s weight is under the threshold |
@@ -282,7 +282,7 @@ Started by A6 and by the watcher (E6), each a `tokio::spawn`, one per digest.
 |---|---|---|---|---|
 | J1 | Analysis: fetch, spool, digest, install scripts, attestation | `analysis/run.rs` `Analyser::start` | B1c, B3, B12, B11 | `BYRLE_MAX_CONCURRENT_ANALYSES`, default 8; 600 s deadline |
 | J2 | Claim: Go `h1:`, Maven signature | `analysis/run/claiming.rs` | B1, B2, B7 | shares J1's |
-| J3 | Source comparison | `analysis/run/sourcing.rs` | B4 | 2, only with `BYRLE_SOURCE_ARCHIVES` |
+| J3 | Source comparison | `analysis/run/sourcing.rs` | B4 | 2, unless `BYRLE_SOURCE_ARCHIVES=off` |
 | J4 | Detectors and publisher lookups | `analysis/run/detecting.rs` | B6, B7, B8 | 2 |
 | J5 | VirusTotal | `analysis/run/virustotal.rs` | B5 | 1, only with `BYRLE_VIRUSTOTAL_API_KEY`; 4 a minute, 500 a day |
 | J6 | Recording | `analysis/run/recording.rs` `Analyser::record`, `util/batched.rs` | B11 | queue of 4096, batches of 256 |

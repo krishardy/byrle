@@ -8,3 +8,6 @@ mutants.out.old/
 .env
 .env.*
 /dist/
+
+# Documents kept out of the public repository, such as an unfixed security review.
+/.*
