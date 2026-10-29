@@ -188,7 +188,7 @@ flowchart LR
     V7 --> F
     BYTES([artifact bytes, B1c]):::ext --> V8[V8 install scripts read<br/>from the bytes]
     V8 --> F
-    BYTES --> V9[V9 detectors: metadata, source,<br/>VirusTotal, trustpub, signing,<br/>BYRLE_DETECTORS]
+    BYTES --> V9[V9 detectors: metadata, source,<br/>VirusTotal, trustpub, signing,<br/>archive, BYRLE_DETECTORS]
     V9 --> V10[V10 signal::of_detections]
     V6 --> SIG[signal keys]
     V10 --> SIG
@@ -204,8 +204,8 @@ flowchart LR
 | V5 | `known_malware`, `advisories` (merged by id, highest CVSS, `kev` OR'd), `intel` | `policy/facts.rs` `with_intel` | informational rows are dropped here |
 | V6 | `advisory_malware`, `_vulnerability`, `_unsound`, `_unmaintained`, `_notice` | `signal.rs` `of_advisories` | all rows, informational ones included |
 | V7 | `provenance` | metadata: `analysis/attestation.rs` `from_metadata`; pinned fetch: `Deciding::attested` | |
-| V8 | `has_install_scripts` OR the analysis's; `install_scripts_analyzed` | `Deciding::analysed`; `analysis.rs` `npm_install_scripts`, `jar_annotation_processors` | an artifact over the spool's ceiling is `Unreadable`, which counts as install scripts |
-| V9 | detections | `Deciding::detections`; `analysis/detector/*.rs` | pinned fetch only |
+| V8 | `has_install_scripts` OR the analysis's; `install_scripts_analyzed`; the analysis's anomalies | `Deciding::analysed`; `analysis.rs` `npm_install_scripts`, `sdist_install_scripts`, `crate_build_scripts`, `jar_annotation_processors` | a tarball is read through every gzip member and past a single zero block, and every copy of a manifest counts (0122). An artifact over the spool's ceiling, or decompressing past 4 GiB, is `Unreadable`, which counts as install scripts |
+| V9 | detections | `Deciding::detections`; `analysis/detector/*.rs` | pinned fetch only. `archive` reads V8's anomalies |
 | V10 | detector signal keys, `<detector>.<rule>` | `signal.rs` `of_detections`, `detector.rs` `key` | |
 | V11 | the proxy's own | `Deciding::own_signals`; `signature_failed` for manifests in `signed_manifest` | |
 

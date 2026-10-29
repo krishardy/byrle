@@ -1555,12 +1555,21 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     let sourced = deciding.sourced(&fetch).await;
     let scanned = deciding.scanned(&fetch).await;
     let detected = deciding.detected(&record).await;
+    let described = dated.describing(&record).clone();
+    let times = dated.times;
+    let Analysed {
+        record: analysed,
+        provenance,
+        state,
+        anomalies,
+    } = deciding.analysed(&record, &fetch, times.as_ref()).await;
     let detections = deciding.detections(
         &record,
         dated.full.as_ref(),
         &Beside {
             sourced: sourced.as_ref(),
             scanned: scanned.as_ref(),
+            anomalies: anomalies.as_deref(),
             detected: &detected,
         },
     );
@@ -1570,13 +1579,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         &detections,
         scanned.as_ref(),
     );
-    let described = dated.describing(&record).clone();
-    let times = dated.times;
-    let Analysed {
-        record,
-        provenance,
-        state,
-    } = deciding.analysed(&record, &fetch, times.as_ref()).await;
+    let record = analysed;
     let today = crate::policy::today();
     let own = deciding.own_signals(unservable.as_ref(), &fetch, (claiming.as_ref(), &state));
     let weighing = match deciding
@@ -1739,9 +1742,16 @@ impl<'a> Deciding<'a> {
                 scanned,
             )
         });
+        let archive = beside.anomalies.map(|anomalies| {
+            (
+                crate::analysis::detector::archive::NAME.to_owned(),
+                crate::analysis::detector::archive::detection(anomalies),
+            )
+        });
         std::iter::once(metadata)
             .chain(source)
             .chain(virustotal)
+            .chain(archive)
             .chain(beside.detected.iter().cloned())
             .collect()
     }
@@ -2670,6 +2680,8 @@ struct Analysed {
     /// What its attestations say against the version published before it.
     provenance: Provenance,
     state: AnalysisState,
+    /// What the stored analysis found in the tarball's shape, `None` when none was read.
+    anomalies: Option<Vec<crate::analysis::Anomaly>>,
 }
 
 enum AnalysisState {
@@ -2699,17 +2711,19 @@ async fn analysed(
     let analyser = proxy.config.analyser.as_deref();
     let (provenance, attestations) = attested(proxy, at, analyser, &record, digest, times).await;
     let reader = crate::analysis::reader(key.ecosystem(), filename);
-    let decided = |record, provenance| Analysed {
+    let decided = |record, provenance, anomalies| Analysed {
         record,
         provenance,
         state: AnalysisState::Decided,
+        anomalies,
     };
     let Some(analyser) = analyser else {
-        return decided(record, provenance);
+        return decided(record, provenance, None);
     };
     let Some(digest) = digest else {
-        return decided(record, provenance);
+        return decided(record, provenance, None);
     };
+    let mut anomalies = None;
     let reads = match reader {
         None => None,
         Some(reader) => match analyser.known(digest).await {
@@ -2728,6 +2742,7 @@ async fn analysed(
                         .map(|name| (name.clone(), String::new()))
                         .collect()
                 });
+                anomalies = analysis.scripts.anomalies().map(<[_]>::to_vec);
                 None
             }
             Known::Mismatched(mismatch) => {
@@ -2735,13 +2750,14 @@ async fn analysed(
                     record,
                     provenance,
                     state: AnalysisState::Mismatched(mismatch),
+                    anomalies,
                 };
             }
             Known::Unknown => Some(reader),
         },
     };
     if reads.is_none() && attestations.is_empty() {
-        return decided(record, provenance);
+        return decided(record, provenance, anomalies);
     }
     let job = Job {
         digest: digest.clone(),
@@ -2756,6 +2772,7 @@ async fn analysed(
         record,
         provenance,
         state: AnalysisState::Pending(job),
+        anomalies,
     }
 }
 
@@ -4296,6 +4313,8 @@ enum Claiming {
 struct Beside<'a> {
     sourced: Option<&'a Sourced>,
     scanned: Option<&'a Scanned>,
+    /// What the stored analysis found in the tarball's shape, when one was read.
+    anomalies: Option<&'a [crate::analysis::Anomaly]>,
     detected: &'a [(String, crate::analysis::detector::Detection)],
 }
 
@@ -10739,6 +10758,41 @@ mod tests {
         assert_eq!(tarball_request(&base).await.status(), 200);
     }
 
+    /// A second gzip member is the `archive_suspicious` signal: weighed 1 by default, so
+    /// served, and refused where the policy weighs it the threshold.
+    #[tokio::test]
+    async fn a_suspicious_archive_is_a_signal_the_policy_weighs() {
+        use crate::util::test_support::tar;
+        let tarball = [
+            crate::http::gzip(&tar(&[("package/index.js", b"")], false)),
+            crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]),
+        ]
+        .concat();
+        for (label, yaml, status) in [
+            (
+                "analyse-archive-default",
+                "version: 1\ncooldown_days: 0\n",
+                200,
+            ),
+            (
+                "analyse-archive-weighed",
+                "version: 1\ncooldown_days: 0\nsignal_weights: { archive_suspicious: 100 }\n",
+                403,
+            ),
+        ] {
+            let (base, analyser) =
+                analysing(label, "", &integrity(&tarball), tarball.clone(), Some(yaml)).await;
+            assert_eq!(tarball_request(&base).await.status(), 503, "{label}");
+            analyser.ended(1).await;
+            let answer = tarball_request(&base).await;
+            assert_eq!(answer.status(), status, "{label}");
+            if status == 403 {
+                let body = answer.text().await.unwrap();
+                assert!(body.contains("archive_suspicious"), "{body}");
+            }
+        }
+    }
+
     /// Not knowing is not knowing there is no script.
     #[tokio::test]
     async fn an_archive_that_cannot_be_read_is_refused_under_block() {
@@ -10821,6 +10875,7 @@ mod tests {
             Scripts::Declared(crate::analysis::InstallScripts {
                 names: names.iter().map(|n| (*n).to_owned()).collect(),
                 bodies: Vec::new(),
+                anomalies: Vec::new(),
             })
         };
         let said = |scripts: Scripts| {

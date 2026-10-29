@@ -1170,6 +1170,7 @@ mod tests {
                     "trustpub_repository_changed",
                     "signing_key_new",
                     "signing_key_expired",
+                    "archive_suspicious",
                     "advisory_malware",
                     "advisory_vulnerability",
                     "advisory_unsound",

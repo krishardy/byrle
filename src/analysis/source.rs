@@ -9,7 +9,7 @@ use std::io::Read;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{MAX_MEMBER_BYTES, NPM_INSTALL_SCRIPTS, ReadError, walk};
+use super::{MAX_MEMBER_BYTES, NPM_INSTALL_SCRIPTS, ReadError, installed, walk};
 use crate::identity::Ecosystem;
 use crate::record::PackageRecord;
 
@@ -223,15 +223,10 @@ pub fn tree(archive: &mut dyn Read, limit: usize) -> Result<Tree, ReadError> {
                 limit,
             });
         }
-        let path = path.strip_prefix("./").unwrap_or(path);
-        let Some((_, path)) = path.split_once('/') else {
-            return Ok(false);
+        let Some(path) = installed(path).filter(|_| member.file) else {
+            return Ok(());
         };
-        if !member.file || path.is_empty() {
-            return Ok(false);
-        }
-        tree.add(path, member.bytes, path == "PKG-INFO")?;
-        Ok(false)
+        tree.add(&path, member.bytes, path == "PKG-INFO")
     })?;
     Ok(tree)
 }

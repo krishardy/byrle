@@ -1,8 +1,9 @@
 //! Detectors that report findings about a package version, which become signals in its risk
 //! score and refuse nothing. Built in: the metadata heuristics, the source comparison,
-//! VirusTotal and `trustpub`. Others are commands run on the version by name, GuardDog first.
+//! VirusTotal, `trustpub`, `signing` and `archive`. Others are commands run on the version by name, GuardDog first.
 //! See docs/engineering_decisions/0092-detectors.md.
 
+pub mod archive;
 pub mod guarddog;
 pub mod metadata;
 pub mod signing;
@@ -24,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// The detectors whose rules a policy may weight, and those rules.
-pub const KNOWN: [(&str, &[&str]); 9] = [
+pub const KNOWN: [(&str, &[&str]); 10] = [
     (crate::policy::decide::NAME, &crate::policy::decide::RULES),
     (
         crate::policy::decide::PROXY,
@@ -36,11 +37,12 @@ pub const KNOWN: [(&str, &[&str]); 9] = [
     (virustotal::NAME, &virustotal::RULES),
     (trustpub::NAME, &trustpub::RULES),
     (signing::NAME, &signing::RULES),
+    (archive::NAME, &archive::RULES),
     ("guarddog", &guarddog::RULES),
 ];
 
 /// The detectors built in, whose rules a policy names without the detector's name.
-pub const BUILT_IN: [&str; 8] = [
+pub const BUILT_IN: [&str; 9] = [
     crate::policy::decide::NAME,
     crate::policy::decide::PROXY,
     metadata::NAME,
@@ -48,25 +50,29 @@ pub const BUILT_IN: [&str; 8] = [
     virustotal::NAME,
     trustpub::NAME,
     signing::NAME,
+    archive::NAME,
     crate::signal::ADVISORY,
 ];
 
 /// The rules of the detectors built in, as a policy names them.
-pub const BUILT_IN_RULES: [&str; 34] = joined(
+pub const BUILT_IN_RULES: [&str; 35] = joined(
     &joined::<16>(
         &crate::policy::decide::RULES,
         &crate::policy::decide::PROXY_RULES,
     ),
-    &joined::<18>(
-        &joined::<13>(
-            &joined::<11>(
-                &joined::<9>(
-                    &joined::<8>(&metadata::RULES, &source::RULES),
-                    &virustotal::RULES,
+    &joined::<19>(
+        &joined::<14>(
+            &joined::<13>(
+                &joined::<11>(
+                    &joined::<9>(
+                        &joined::<8>(&metadata::RULES, &source::RULES),
+                        &virustotal::RULES,
+                    ),
+                    &trustpub::RULES,
                 ),
-                &trustpub::RULES,
+                &signing::RULES,
             ),
-            &signing::RULES,
+            &archive::RULES,
         ),
         &crate::signal::ADVISORY_RULES,
     ),
@@ -526,7 +532,8 @@ esac
         assert_eq!(BUILT_IN_RULES[24..25], virustotal::RULES);
         assert_eq!(BUILT_IN_RULES[25..27], trustpub::RULES);
         assert_eq!(BUILT_IN_RULES[27..29], signing::RULES);
-        assert_eq!(BUILT_IN_RULES[29..], crate::signal::ADVISORY_RULES);
+        assert_eq!(BUILT_IN_RULES[29..30], archive::RULES);
+        assert_eq!(BUILT_IN_RULES[30..], crate::signal::ADVISORY_RULES);
         assert!(knows("provenance_dropped"), "a check's rule is built in");
         assert!(knows("signing_key_new"));
         assert!(knows("virustotal_detected"));

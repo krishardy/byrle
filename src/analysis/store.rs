@@ -41,6 +41,14 @@ impl Scripts {
             Self::Unreadable(_) => None,
         }
     }
+
+    /// What it found in the tarball's shape. `None` when it could not be read.
+    pub fn anomalies(&self) -> Option<&[crate::analysis::Anomaly]> {
+        match self {
+            Self::Declared(found) => Some(&found.anomalies),
+            Self::Unreadable(_) => None,
+        }
+    }
 }
 
 /// What the detectors found in one artifact.
@@ -557,6 +565,7 @@ pub(crate) mod tests {
         Scripts::Declared(InstallScripts {
             names: vec![name.to_owned()],
             bodies: vec![(name.to_owned(), body.to_owned())],
+            anomalies: Vec::new(),
         })
     }
 
@@ -671,6 +680,7 @@ pub(crate) mod tests {
         let scripts = Scripts::of(Ok(InstallScripts {
             names: vec!["postinstall".to_owned()],
             bodies: vec![("postinstall".to_owned(), "node install.js".to_owned())],
+            anomalies: Vec::new(),
         }));
         assert_eq!(scripts.names(), Some(&["postinstall".to_owned()][..]));
     }

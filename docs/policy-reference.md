@@ -246,6 +246,7 @@ after a later build moves a default.
 | `trustpub_repository_changed` | trusted publishing published a cargo version from another provider or repository than the latest earlier version it published | 1 |
 | `signing_key_new` | a Maven version's `.pom` was signed by a primary key that signed no version published 7 or more days before it | 1 |
 | `signing_key_expired` | the key, or the subkey, that signed a Maven version's `.pom` had expired when it signed | 1 |
+| `archive_suspicious` | its npm, sdist or `.crate` tarball has a shape no packer writes: more than one gzip member, bytes after the last, entries after a zero block, or two entries extracting to one path. Its detail names each | 1 |
 | `advisory_malware` | an advisory reports the version as malware | 8 |
 | `advisory_vulnerability` | an advisory reports a vulnerability in it | 4 |
 | `advisory_unsound` | RustSec reports unsound code in it | 3 |
@@ -262,8 +263,8 @@ Maven `.pom` or `.module`, is decided by no check, so it is refused only when th
 weighs the threshold alone: with no claim (`no_strong_digest`), a claim its bytes do not
 match (`digest_mismatch`), or a signature that fails (`signature_failed`).
 
-The keys above are the rules of the policy's checks, of the proxy's refusals, of the five detectors built in,
-`metadata`, `source`, `virustotal`, `trustpub` and `signing`, and of the advisories the
+The keys above are the rules of the policy's checks, of the proxy's refusals, of the six detectors built in,
+`metadata`, `source`, `virustotal`, `trustpub`, `signing` and `archive`, and of the advisories the
 intel store holds, which are named without the detector. An unsound, unmaintained or notice advisory refuses
 nothing: it is a signal only. A vulnerability or malware advisory is also refused by
 `max_cvss` or `known_malware`. Another detector's rule is weighed as `detector.rule`, such

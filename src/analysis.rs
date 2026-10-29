@@ -24,11 +24,60 @@ pub struct InstallScripts {
     pub names: Vec<String>,
     /// Each name's command, or a jar's processor classes. Empty for an sdist.
     pub bodies: Vec<(String, String)>,
+    /// What in a tarball's shape no packer writes, in the order it was found.
+    pub anomalies: Vec<Anomaly>,
 }
 
 impl InstallScripts {
     pub fn runs_on_install(&self) -> bool {
         !self.names.is_empty()
+    }
+}
+
+/// A tarball shape no packer writes and extractors read differently: see decision 0122.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Anomaly {
+    /// This many gzip members. npm and pip decode every one; cargo, the first.
+    GzipMembers(u32),
+    /// Bytes after the last gzip member that do not start another.
+    AfterGzip,
+    /// Entries or bytes after a zero block, which node-tar reads past and `tarfile` does not.
+    AfterEnd,
+    /// A second entry at this path as npm extracts it, which keeps the last.
+    Duplicate(String),
+}
+
+impl std::fmt::Display for Anomaly {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GzipMembers(count) => write!(f, "{count} gzip members"),
+            Self::AfterGzip => f.write_str("bytes after the last gzip member"),
+            Self::AfterEnd => f.write_str("entries or bytes after the end-of-archive block"),
+            Self::Duplicate(path) => write!(f, "two entries extract to `{path}`"),
+        }
+    }
+}
+
+impl Anomaly {
+    /// The form a store keeps it in, which [`Anomaly::parse`] reads back.
+    pub fn code(&self) -> String {
+        match self {
+            Self::GzipMembers(count) => format!("gzip_members:{count}"),
+            Self::AfterGzip => "after_gzip".to_owned(),
+            Self::AfterEnd => "after_end".to_owned(),
+            Self::Duplicate(path) => format!("duplicate:{path}"),
+        }
+    }
+
+    /// The anomaly [`Anomaly::code`] wrote, `None` for text it does not write.
+    pub fn parse(code: &str) -> Option<Self> {
+        match code.split_once(':') {
+            None if code == "after_gzip" => Some(Self::AfterGzip),
+            None if code == "after_end" => Some(Self::AfterEnd),
+            Some(("gzip_members", count)) => count.parse().ok().map(Self::GzipMembers),
+            Some(("duplicate", path)) => Some(Self::Duplicate(path.to_owned())),
+            _ => None,
+        }
     }
 }
 
@@ -58,8 +107,11 @@ impl std::fmt::Display for ReadError {
 /// The largest member this reads into memory, far past any `package.json`.
 pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 
+/// The most a tarball may decompress to before it is refused as a bomb.
+pub const MAX_UNPACKED_BYTES: usize = 4 << 30;
+
 /// The readers' version, stored with each analysis; bumped whenever a reader's answer changes.
-pub const READER: &str = "install-scripts 4";
+pub const READER: &str = "install-scripts 5";
 
 /// What reads an artifact for the code it runs on install, such as [`npm_install_scripts`].
 pub type Reader = fn(&mut dyn crate::ecosystem::Source) -> Result<InstallScripts, ReadError>;
@@ -121,26 +173,37 @@ pub fn reader(ecosystem: Ecosystem, filename: &str) -> Option<Reader> {
 /// npm's install lifecycle, in the order npm runs them.
 pub const NPM_INSTALL_SCRIPTS: [&str; 3] = ["preinstall", "install", "postinstall"];
 
-/// The scripts an npm tarball's own `package.json` declares.
+/// The scripts an npm tarball's `package.json` declares. A tarball with two, which an
+/// extractor would keep the last of, declares the scripts of both.
 ///
 /// One gzip stream and one JSON object: 0.4ms for `bufferutil` 4.1.0, 163,631 bytes.
 pub fn npm_install_scripts(tarball: &mut dyn Read) -> Result<InstallScripts, ReadError> {
-    let manifest = member(tarball, &|path| {
-        let path = path.strip_prefix("./").unwrap_or(path);
-        matches!(path.split_once('/'), Some((top, "package.json")) if !top.is_empty())
-    })?;
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&manifest).map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
-    let Some(scripts) = manifest.get("scripts").and_then(|s| s.as_object()) else {
-        return Ok(InstallScripts::default());
-    };
-    let mut found = InstallScripts::default();
-    for name in NPM_INSTALL_SCRIPTS {
-        if let Some(body) = scripts.get(name).and_then(|b| b.as_str()) {
-            found.names.push(name.to_owned());
-            found.bodies.push((name.to_owned(), body.to_owned()));
+    let mut found: Option<InstallScripts> = None;
+    let anomalies = walk(tarball, &mut |path, member| {
+        if installed(path).as_deref() != Some("package.json") {
+            return Ok(());
         }
-    }
+        let manifest: serde_json::Value = serde_json::from_slice(&read_member(path, member)?)
+            .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+        let found = found.get_or_insert_default();
+        let Some(scripts) = manifest.get("scripts").and_then(|s| s.as_object()) else {
+            return Ok(());
+        };
+        for name in NPM_INSTALL_SCRIPTS {
+            if let Some(body) = scripts.get(name).and_then(|b| b.as_str())
+                && !found.names.iter().any(|known| known == name)
+            {
+                found.names.push(name.to_owned());
+                found.bodies.push((name.to_owned(), body.to_owned()));
+            }
+        }
+        Ok(())
+    })?;
+    let mut found = found.ok_or(ReadError::NothingToRead)?;
+    let lifecycle = |name: &String| NPM_INSTALL_SCRIPTS.iter().position(|step| step == name);
+    found.names.sort_by_key(lifecycle);
+    found.bodies.sort_by_key(|(name, _)| lifecycle(name));
+    found.anomalies = anomalies;
     Ok(found)
 }
 
@@ -149,92 +212,118 @@ pub fn npm_install_scripts(tarball: &mut dyn Read) -> Result<InstallScripts, Rea
 /// A wheel runs nothing, so this is asked of an sdist only. `pyproject.toml` alone is not
 /// this: a PEP 517 build runs the backend it names, which is its own question.
 pub fn sdist_install_scripts(sdist: &mut dyn Read) -> Result<InstallScripts, ReadError> {
-    match member(sdist, &|path| {
-        path.rsplit('/').next() == Some("setup.py") && path.matches('/').count() <= 1
-    }) {
-        Ok(_) => Ok(InstallScripts {
-            names: vec!["setup.py".to_owned()],
-            bodies: Vec::new(),
-        }),
-        Err(ReadError::NothingToRead) => Ok(InstallScripts::default()),
-        Err(e) => Err(e),
-    }
+    let mut setup_py = false;
+    let anomalies = walk(sdist, &mut |path, _| {
+        let parts = components(path);
+        setup_py |= parts.len() <= 2 && parts.last() == Some(&"setup.py");
+        Ok(())
+    })?;
+    Ok(InstallScripts {
+        names: setup_py
+            .then(|| "setup.py".to_owned())
+            .into_iter()
+            .collect(),
+        bodies: Vec::new(),
+        anomalies,
+    })
+}
+
+/// What one `Cargo.toml` says of a build script.
+enum Build {
+    /// `build = "path"`.
+    Named(String),
+    /// `build = false`.
+    Off,
+    /// `build = true`, or no `build`: `build.rs`, if it exists.
+    Default,
 }
 
 /// The code a `.crate` runs when it is built: its build script and its proc-macro, read
 /// from `<top>/Cargo.toml`. One naming no `build`, as libc 0.2.0's, has one if
-/// `<top>/build.rs` exists.
+/// `<top>/build.rs` exists. A crate with two `Cargo.toml` runs what either names.
 pub fn crate_build_scripts(archive: &mut dyn Read) -> Result<InstallScripts, ReadError> {
-    let (mut manifest, mut build_rs) = (None, false);
-    walk(archive, &mut |path, member| {
-        let Some((_, rest)) = path.split_once('/') else {
-            return Ok(false);
-        };
-        match rest {
-            "build.rs" => build_rs = true,
-            "Cargo.toml" if manifest.is_none() => {
-                if member.size as usize > MAX_MEMBER_BYTES {
-                    return Err(ReadError::TooLarge {
-                        member: path.to_owned(),
-                        limit: MAX_MEMBER_BYTES,
-                    });
-                }
-                let mut text = String::new();
-                member
-                    .bytes
-                    .read_to_string(&mut text)
-                    .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
-                manifest = Some(text);
+    let (mut manifests, mut build_rs) = (Vec::new(), false);
+    let anomalies = walk(archive, &mut |path, member| {
+        match installed(path).as_deref() {
+            Some("build.rs") => build_rs = true,
+            Some("Cargo.toml") => {
+                let manifest: toml::Table = std::str::from_utf8(&read_member(path, member)?)
+                    .map_err(|e| ReadError::NotAnArchive(e.to_string()))?
+                    .parse()
+                    .map_err(|e: toml::de::Error| ReadError::NotAnArchive(e.to_string()))?;
+                let build = match manifest.get("package").and_then(|p| p.get("build")) {
+                    Some(toml::Value::String(script)) => Build::Named(script.clone()),
+                    Some(toml::Value::Boolean(true)) | None => Build::Default,
+                    _ => Build::Off,
+                };
+                let lib = manifest.get("lib");
+                let proc_macro = ["proc-macro", "proc_macro"].iter().any(|key| {
+                    lib.and_then(|l| l.get(key)).and_then(toml::Value::as_bool) == Some(true)
+                });
+                manifests.push((build, proc_macro));
             }
             _ => {}
         }
-        Ok(false)
+        Ok(())
     })?;
-    let manifest: toml::Table = manifest
-        .ok_or(ReadError::NothingToRead)?
-        .parse()
-        .map_err(|e: toml::de::Error| ReadError::NotAnArchive(e.to_string()))?;
-    let mut found = InstallScripts::default();
-    let build = match manifest.get("package").and_then(|p| p.get("build")) {
-        Some(toml::Value::String(script)) => Some(script.clone()),
-        Some(toml::Value::Boolean(true)) | None if build_rs => Some("build.rs".to_owned()),
-        _ => None,
+    if manifests.is_empty() {
+        return Err(ReadError::NothingToRead);
+    }
+    let mut found = InstallScripts {
+        anomalies,
+        ..InstallScripts::default()
     };
-    found.names.extend(build);
-    let lib = manifest.get("lib");
-    if ["proc-macro", "proc_macro"]
-        .iter()
-        .any(|key| lib.and_then(|l| l.get(key)).and_then(toml::Value::as_bool) == Some(true))
-    {
-        found.names.push("proc-macro".to_owned());
+    let mut add = |name: &str| {
+        if !found.names.iter().any(|known| known == name) {
+            found.names.push(name.to_owned());
+        }
+    };
+    for (build, _) in &manifests {
+        match build {
+            Build::Named(script) => add(script),
+            Build::Default if build_rs => add("build.rs"),
+            _ => {}
+        }
+    }
+    if manifests.iter().any(|(_, proc_macro)| *proc_macro) {
+        add("proc-macro");
     }
     Ok(found)
 }
 
-/// The first member of a gzipped tar whose path `wanted` accepts.
-fn member(bytes: &mut dyn Read, wanted: &dyn Fn(&str) -> bool) -> Result<Vec<u8>, ReadError> {
-    let mut found = None;
-    walk(bytes, &mut |path, member| {
-        if !wanted(path) {
-            return Ok(false);
-        }
-        let size = member.size as usize;
-        if size > MAX_MEMBER_BYTES {
-            return Err(ReadError::TooLarge {
-                member: path.to_owned(),
-                limit: MAX_MEMBER_BYTES,
-            });
-        }
-        let mut out = Vec::with_capacity(size);
-        member
-            .bytes
-            .take(MAX_MEMBER_BYTES as u64)
-            .read_to_end(&mut out)
-            .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
-        found = Some(out);
-        Ok(true)
-    })?;
-    found.ok_or(ReadError::NothingToRead)
+/// `member`'s bytes, refused past [`MAX_MEMBER_BYTES`]. `path` names it in the error.
+fn read_member(path: &str, member: Member<'_>) -> Result<Vec<u8>, ReadError> {
+    let size = member.size as usize;
+    if size > MAX_MEMBER_BYTES {
+        return Err(ReadError::TooLarge {
+            member: path.to_owned(),
+            limit: MAX_MEMBER_BYTES,
+        });
+    }
+    let mut out = Vec::with_capacity(size);
+    member
+        .bytes
+        .take(MAX_MEMBER_BYTES as u64)
+        .read_to_end(&mut out)
+        .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+    Ok(out)
+}
+
+/// `path`'s components, with the empty and `.` ones an extractor skips dropped.
+fn components(path: &str) -> Vec<&str> {
+    path.split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect()
+}
+
+/// Where npm extracts `path`: its components after the first, as `strip: 1` drops it.
+/// `package/./package.json`, `package//package.json` and `other/package.json` are each
+/// `package.json`. `None` for a path with no component after the first.
+pub fn installed(path: &str) -> Option<String> {
+    match components(path).split_first() {
+        Some((_, rest)) if !rest.is_empty() => Some(rest.join("/")),
+        _ => None,
+    }
 }
 
 /// One member of a tar, as [`walk`] hands it over.
@@ -246,28 +335,187 @@ struct Member<'a> {
     bytes: &'a mut dyn Read,
 }
 
-/// Each member of a gzipped tar in order, with its path, until `visit` returns `true`.
-/// Errors when the bytes are not a gzipped tar, or with what `visit` errors with.
+/// Each member of a gzipped tar in order, with its path, as the extractor that reads the
+/// most would read them: every gzip member, and entries past a single zero block.
+/// Returns what in its shape no packer writes.
+/// Errors when the bytes are not a gzipped tar, decompress past [`MAX_UNPACKED_BYTES`], or
+/// with what `visit` errors with.
 fn walk(
     bytes: &mut dyn Read,
-    visit: &mut dyn FnMut(&str, Member<'_>) -> Result<bool, ReadError>,
-) -> Result<(), ReadError> {
-    let decoder = flate2::read::GzDecoder::new(bytes);
-    let mut archive = tar::Archive::new(decoder);
+    visit: &mut dyn FnMut(&str, Member<'_>) -> Result<(), ReadError>,
+) -> Result<Vec<Anomaly>, ReadError> {
+    walk_within(bytes, MAX_UNPACKED_BYTES, visit)
+}
+
+/// [`walk`], refusing a tarball that decompresses past `limit` bytes.
+fn walk_within(
+    bytes: &mut dyn Read,
+    limit: usize,
+    visit: &mut dyn FnMut(&str, Member<'_>) -> Result<(), ReadError>,
+) -> Result<Vec<Anomaly>, ReadError> {
+    let mut unpacked = Unpacked::new(bytes, limit);
+    let mut paths = Paths::default();
+    let mut archive = tar::Archive::new(&mut unpacked);
+    let read = each_entry(&mut archive, visit, &mut paths);
+    let unpacked = archive.into_inner();
+    let failed = |unpacked: &mut Unpacked<'_>, e| unpacked.failed.take().unwrap_or(e);
+    match read {
+        Err(e) => return Err(failed(unpacked, e)),
+        Ok((_, Some(e))) => return Err(failed(unpacked, ReadError::NotAnArchive(e.to_string()))),
+        Ok((_, None)) => {}
+    }
+    let mut rest = tar::Archive::new(&mut *unpacked);
+    rest.set_ignore_zeros(true);
+    let read = each_entry(&mut rest, visit, &mut paths);
+    if let Some(e) = unpacked.failed.take() {
+        return Err(e);
+    }
+    let (after, stopped) = read?;
+    let mut anomalies = Vec::new();
+    if unpacked.members > 1 {
+        anomalies.push(Anomaly::GzipMembers(unpacked.members));
+    }
+    if unpacked.after {
+        anomalies.push(Anomaly::AfterGzip);
+    }
+    if after > 0 || stopped.is_some() {
+        anomalies.push(Anomaly::AfterEnd);
+    }
+    anomalies.extend(paths.duplicates);
+    Ok(anomalies)
+}
+
+/// The paths a walk has seen, as [`installed`] writes them, kept as hashes to bound memory.
+#[derive(Default)]
+struct Paths {
+    hasher: std::hash::RandomState,
+    seen: std::collections::HashSet<u64>,
+    /// Each path seen twice, once, up to [`MAX_DUPLICATES_NAMED`].
+    duplicates: Vec<Anomaly>,
+}
+
+/// The most [`Anomaly::Duplicate`] one walk reports.
+const MAX_DUPLICATES_NAMED: usize = 8;
+
+impl Paths {
+    /// Note an entry at `path`, a [`Anomaly::Duplicate`] the second time it extracts there.
+    fn note(&mut self, path: &str) {
+        use std::hash::BuildHasher;
+        let Some(installed) = installed(path) else {
+            return;
+        };
+        if self.seen.insert(self.hasher.hash_one(&installed))
+            || self.duplicates.len() >= MAX_DUPLICATES_NAMED
+        {
+            return;
+        }
+        let duplicate = Anomaly::Duplicate(installed);
+        if !self.duplicates.contains(&duplicate) {
+            self.duplicates.push(duplicate);
+        }
+    }
+}
+
+/// Hand each entry `archive` holds to `visit`, noting its path in `paths`, until the archive
+/// ends or a header does not parse. Returns how many entries there were, and the error that
+/// stopped it, if one did.
+/// Errors with what `visit` errors with.
+fn each_entry<R: Read>(
+    archive: &mut tar::Archive<R>,
+    visit: &mut dyn FnMut(&str, Member<'_>) -> Result<(), ReadError>,
+    paths: &mut Paths,
+) -> Result<(usize, Option<std::io::Error>), ReadError> {
+    let mut count = 0;
     let entries = archive.entries().expect("a new archive is at its start");
     for entry in entries {
-        let mut entry = entry.map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+        let mut entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => return Ok((count, Some(e))),
+        };
+        count += 1;
         let path = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
+        let kind = entry.header().entry_type();
+        if !kind.is_dir() {
+            paths.note(&path);
+        }
         let member = Member {
-            file: entry.header().entry_type().is_file(),
+            file: kind.is_file(),
             size: entry.size(),
             bytes: &mut entry,
         };
-        if visit(&path, member)? {
-            break;
+        visit(&path, member)?;
+    }
+    Ok((count, None))
+}
+
+/// Every gzip member's bytes in turn, as npm and pip decode them, up to `limit` bytes.
+struct Unpacked<'a> {
+    /// The member being read, `None` once the last has ended.
+    member: Option<flate2::bufread::GzDecoder<std::io::BufReader<&'a mut dyn Read>>>,
+    members: u32,
+    /// Whether bytes that do not start a member followed the last.
+    after: bool,
+    read: usize,
+    limit: usize,
+    /// Why a read failed, which the tar reading it reports only as text.
+    failed: Option<ReadError>,
+}
+
+impl<'a> Unpacked<'a> {
+    fn new(bytes: &'a mut dyn Read, limit: usize) -> Self {
+        Self {
+            member: Some(flate2::bufread::GzDecoder::new(std::io::BufReader::new(
+                bytes,
+            ))),
+            members: 1,
+            after: false,
+            read: 0,
+            limit,
+            failed: None,
         }
     }
-    Ok(())
+
+    /// The next bytes, or `Ok(0)` after the last member.
+    fn next(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            let Some(member) = self.member.as_mut() else {
+                return Ok(0);
+            };
+            let read = member.read(buf)?;
+            if read > 0 || buf.is_empty() {
+                return Ok(read);
+            }
+            let mut rest = self.member.take().expect("a member is open").into_inner();
+            match std::io::BufRead::fill_buf(&mut rest)?.first() {
+                None => return Ok(0),
+                Some(0x1f) => {
+                    self.members += 1;
+                    self.member = Some(flate2::bufread::GzDecoder::new(rest));
+                }
+                Some(_) => {
+                    self.after = true;
+                    return Ok(0);
+                }
+            }
+        }
+    }
+}
+
+impl Read for Unpacked<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.next(buf).inspect_err(|e| {
+            self.failed = Some(ReadError::NotAnArchive(e.to_string()));
+        })?;
+        self.read += read;
+        if self.read > self.limit {
+            self.failed = Some(ReadError::TooLarge {
+                member: "the archive".to_owned(),
+                limit: self.limit,
+            });
+            return Err(std::io::Error::other("decompressed past the ceiling"));
+        }
+        Ok(read)
+    }
 }
 
 /// What the artifact says against what the metadata claimed.
@@ -393,28 +641,76 @@ mod tests {
             ("crate, Cargo.toml not UTF-8", krate(&[("x-1/Cargo.toml", b"\xff")])),
             ("crate, Cargo.toml not TOML", krate(&[("x-1/Cargo.toml", b"[package")])),
             ("crate, not gzip", crate_build_scripts(&mut &b"plain"[..])),
+            (
+                "sdist, setup.py in a second gzip member",
+                sdist_install_scripts(
+                    &mut &*[
+                        crate::http::gzip(&crate::util::test_support::tar(&[("x-1.0/PKG-INFO", b"")], false)),
+                        tarball(&[("x-1.0/setup.py", b"")]),
+                    ]
+                    .concat(),
+                ),
+            ),
+            (
+                "npm, two package.json",
+                npm(&[
+                    ("package/package.json", b"{}"),
+                    ("package/./package.json", br#"{"scripts":{"install":"b"}}"#),
+                ]),
+            ),
         ];
         cases
             .into_iter()
             .map(|(case, answer)| match answer {
-                Ok(found) => format!(
+                Ok(found) if found.anomalies.is_empty() => format!(
                     "{case}: runs {:?}, bodies {:?}\n",
                     found.names, found.bodies
+                ),
+                Ok(found) => format!(
+                    "{case}: runs {:?}, bodies {:?}, anomalies {:?}\n",
+                    found.names, found.bodies, found.anomalies
                 ),
                 Err(e) => format!("{case}: error: {e}\n"),
             })
             .collect()
     }
 
-    /// The first manifest is the one read, and the walk stops there.
+    /// npm extracts every `<top>/package.json` to one path and keeps the last, so the
+    /// scripts of every copy count, in lifecycle order, and the copy is an anomaly.
     #[test]
-    fn the_first_matching_member_is_read() {
-        let archive = tarball(&[
-            ("package/package.json", br#"{"scripts":{"install":"x"}}"#),
-            ("other/package.json", b"{}"),
-        ]);
-        let found = npm_install_scripts(&mut &*archive).expect("reads");
-        assert_eq!(found.names, ["install"]);
+    fn every_package_json_npm_extracts_to_one_path_is_read() {
+        for second in [
+            "other/package.json",
+            "package/./package.json",
+            "package//package.json",
+        ] {
+            let archive = tarball(&[
+                (
+                    "package/package.json",
+                    br#"{"scripts":{"postinstall":"x"}}"#,
+                ),
+                (
+                    second,
+                    br#"{"scripts":{"preinstall":"y","postinstall":"z"}}"#,
+                ),
+                ("package/package.json", b"{}"),
+            ]);
+            let found = npm_install_scripts(&mut &*archive).expect("reads");
+            assert_eq!(found.names, ["preinstall", "postinstall"], "{second}");
+            assert_eq!(
+                found.bodies,
+                [
+                    ("preinstall".to_owned(), "y".to_owned()),
+                    ("postinstall".to_owned(), "x".to_owned())
+                ],
+                "{second}"
+            );
+            assert_eq!(
+                found.anomalies,
+                [Anomaly::Duplicate("package.json".to_owned())],
+                "{second}"
+            );
+        }
     }
 
     /// A changed answer with an unchanged [`READER`] fails, even with [`crate::env::BLESS`]
@@ -697,16 +993,25 @@ mod tests {
         ));
     }
 
-    /// cargo packages one directory, so a second `Cargo.toml` at the same depth is not the
-    /// crate's and cannot hide its build script.
+    /// A crate with two `Cargo.toml` runs what either names, and neither hides the other.
     #[test]
-    fn the_first_cargo_toml_is_the_crate_s() {
+    fn every_cargo_toml_is_read() {
         let archive = tarball(&[
             ("x-1/Cargo.toml", b"[package]\nbuild = \"gen.rs\"\n"),
-            ("y/Cargo.toml", b"[package]\nbuild = false\n"),
+            (
+                "x-1/./Cargo.toml",
+                b"[package]\nbuild = false\n[lib]\nproc-macro = true\n",
+            ),
+            ("x-1/build.rs", b""),
+            ("y/Cargo.toml", b"[package]\n"),
+            ("y/Cargo.toml", b"[package]\nbuild = \"gen.rs\"\n"),
         ]);
         let found = crate_build_scripts(&mut &*archive).expect("reads");
-        assert_eq!(found.names, ["gen.rs"]);
+        assert_eq!(found.names, ["gen.rs", "build.rs", "proc-macro"]);
+        assert_eq!(
+            found.anomalies,
+            [Anomaly::Duplicate("Cargo.toml".to_owned())]
+        );
     }
 
     /// A member past the ceiling is refused rather than read into memory.
@@ -857,6 +1162,7 @@ mod tests {
         let runs = InstallScripts {
             names: vec!["postinstall".to_owned()],
             bodies: Vec::new(),
+            anomalies: Vec::new(),
         };
         let none = InstallScripts::default();
         for (found, claimed, detail, expected) in [
@@ -879,8 +1185,258 @@ mod tests {
         let whole = crate::util::test_support::tarball(&[("package/package.json", &body)]);
         let cut = &whole[..whole.len() * 3 / 4];
         assert!(matches!(
-            member(&mut &cut[..], &|path| path == "package/package.json"),
+            npm_install_scripts(&mut &cut[..]),
             Err(ReadError::NotAnArchive(_))
         ));
+        assert!(matches!(
+            sdist_install_scripts(&mut &cut[..]),
+            Err(ReadError::NotAnArchive(_))
+        ));
+    }
+
+    use crate::http::gzip;
+    use crate::util::test_support::tar;
+
+    /// What each reader finds in `archive`, and the anomalies, which every reader finds alike.
+    fn shape(archive: &[u8]) -> ([Vec<String>; 3], Vec<Anomaly>) {
+        let found = [
+            npm_install_scripts(&mut &*archive),
+            sdist_install_scripts(&mut &*archive),
+            crate_build_scripts(&mut &*archive),
+        ]
+        .map(|found| found.expect("reads"));
+        assert!(found.iter().all(|f| f.anomalies == found[0].anomalies));
+        let anomalies = found[0].anomalies.clone();
+        (found.map(|f| f.names), anomalies)
+    }
+
+    /// Something every reader reads past.
+    const QUIET: [(&str, &[u8]); 1] = [("x-1/README", b"")];
+
+    /// What runs, for every reader.
+    const LOUD: [(&str, &[u8]); 4] = [
+        ("x-1/package.json", br#"{"scripts":{"install":"x"}}"#),
+        ("x-1/setup.py", b""),
+        ("x-1/Cargo.toml", b"[package]\n"),
+        ("x-1/build.rs", b""),
+    ];
+
+    /// The names each reader finds in [`LOUD`].
+    fn loud() -> [Vec<String>; 3] {
+        [
+            vec!["install".to_owned()],
+            vec!["setup.py".to_owned()],
+            vec!["build.rs".to_owned()],
+        ]
+    }
+
+    /// A tar that runs on into a second gzip member is one tar to npm and pip, so pip runs
+    /// a `setup.py` only the second member holds. Each reader sees it.
+    #[test]
+    fn a_tar_continued_in_a_second_gzip_member_is_read_whole() {
+        let archive = [gzip(&tar(&QUIET, false)), gzip(&tar(&LOUD, true))].concat();
+        assert_eq!(shape(&archive), (loud(), vec![Anomaly::GzipMembers(2)]));
+        let tree = crate::analysis::source::tree(&mut &*archive, 1 << 20).expect("reads");
+        assert!(
+            tree.files.contains_key("setup.py"),
+            "{:?}",
+            tree.files.keys()
+        );
+    }
+
+    /// node-tar reads on past a single zero block, to the next entry.
+    #[test]
+    fn entries_past_a_single_zero_block_are_read() {
+        let one_block = [tar(&QUIET, false), vec![0; 512], tar(&LOUD, true)].concat();
+        assert_eq!(shape(&gzip(&one_block)), (loud(), vec![Anomaly::AfterEnd]));
+    }
+
+    /// A whole second tar, in the same member or another, is read and flagged.
+    #[test]
+    fn a_second_whole_tar_is_read() {
+        let members = [gzip(&tar(&QUIET, true)), gzip(&tar(&LOUD, true))].concat();
+        assert_eq!(
+            shape(&members),
+            (loud(), vec![Anomaly::GzipMembers(2), Anomaly::AfterEnd])
+        );
+        let one = gzip(&[tar(&QUIET, true), tar(&LOUD, true)].concat());
+        assert_eq!(shape(&one), (loud(), vec![Anomaly::AfterEnd]));
+    }
+
+    /// Bytes after the archive that are not a tar, or after the gzip stream that are not a
+    /// member, are flagged; what came before is read as usual.
+    #[test]
+    fn bytes_after_the_end_are_flagged_and_the_rest_is_read() {
+        let mut junk = tar(&LOUD, true);
+        junk.extend([b'j'; 512]);
+        assert_eq!(shape(&gzip(&junk)), (loud(), vec![Anomaly::AfterEnd]));
+
+        let mut after = gzip(&tar(&LOUD, true));
+        after.extend(b"garbage");
+        assert_eq!(shape(&after), (loud(), vec![Anomaly::AfterGzip]));
+
+        assert_eq!(shape(&gzip(&tar(&LOUD, true))), (loud(), Vec::new()));
+    }
+
+    /// What decodes as neither gzip nor tar, wherever it is, is not an archive.
+    #[test]
+    fn an_archive_that_does_not_decode_is_an_error() {
+        let mut corrupt = gzip(&tar(&LOUD, true));
+        corrupt.extend([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, b'x', b'y']);
+        assert!(matches!(
+            sdist_install_scripts(&mut &*corrupt),
+            Err(ReadError::NotAnArchive(_))
+        ));
+        assert!(matches!(
+            sdist_install_scripts(&mut &*gzip(&[b'j'; 512])),
+            Err(ReadError::NotAnArchive(_))
+        ));
+        let hidden_unparsable = [
+            tar(&QUIET, false),
+            vec![0; 512],
+            tar(&[("x-1/package.json", b"{")], true),
+        ]
+        .concat();
+        assert!(matches!(
+            npm_install_scripts(&mut &*gzip(&hidden_unparsable)),
+            Err(ReadError::NotAnArchive(_))
+        ));
+    }
+
+    /// A tarball decompressing past the ceiling is refused, whether a reader reads the
+    /// member that passes it or skips it.
+    #[test]
+    fn a_tarball_decompressing_past_the_ceiling_is_refused() {
+        let archive = tarball(&[("x-1/package.json", &[b' '; 4096])]);
+        let too_large = Err(ReadError::TooLarge {
+            member: "the archive".to_owned(),
+            limit: 1024,
+        });
+        let read = walk_within(&mut &*archive, 1024, &mut |path, member| {
+            read_member(path, member).map(drop)
+        });
+        assert_eq!(read, too_large);
+        let skipped = walk_within(&mut &*archive, 1024, &mut |_, _| Ok(()));
+        assert_eq!(skipped, too_large);
+        let hidden = [tar(&QUIET, true), tar(&[("x-1/a", &[b' '; 4096])], true)].concat();
+        let skipped = walk_within(&mut &*gzip(&hidden), 4096, &mut |_, _| Ok(()));
+        assert_eq!(
+            skipped,
+            Err(ReadError::TooLarge {
+                member: "the archive".to_owned(),
+                limit: 4096,
+            })
+        );
+        assert_eq!(MAX_UNPACKED_BYTES, 4 << 30, "4 GiB");
+    }
+
+    /// An empty read returns 0. A read after the last member returns 0. A source that
+    /// fails between members fails the read.
+    #[test]
+    fn an_empty_read_ends_no_member() {
+        let archive = [gzip(b"a"), gzip(b"b")].concat();
+        let mut source = &archive[..];
+        let mut unpacked = Unpacked::new(&mut source, 16);
+        assert_eq!(unpacked.read(&mut []).expect("reads"), 0);
+        let mut all = String::new();
+        unpacked.read_to_string(&mut all).expect("reads");
+        assert_eq!((all.as_str(), unpacked.members), ("ab", 2));
+        assert_eq!(
+            unpacked.read(&mut [0; 8]).expect("reads"),
+            0,
+            "after the last"
+        );
+
+        struct Failing;
+        impl Read for Failing {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("the source failed"))
+            }
+        }
+        let first = gzip(b"a");
+        let mut source = (&first[..]).chain(Failing);
+        let mut failing = Unpacked::new(&mut source, 16);
+        assert!(failing.read_to_end(&mut Vec::new()).is_err());
+        assert_eq!(
+            failing.failed,
+            Some(ReadError::NotAnArchive("the source failed".to_owned()))
+        );
+    }
+
+    /// A directory is no duplicate; a path seen three times is named once; at most
+    /// [`MAX_DUPLICATES_NAMED`] are named.
+    #[test]
+    fn duplicates_are_named_once_and_only_so_many() {
+        let mut builder = tar::Builder::new(Vec::new());
+        for _ in 0..2 {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_size(0);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "x-1/lib/", &[][..])
+                .expect("appends");
+        }
+        let dirs = gzip(&builder.into_inner().expect("builds"));
+        assert_eq!(walk(&mut &*dirs, &mut |_, _| Ok(())), Ok(Vec::new()));
+
+        let thrice = tarball(&[("x-1/a", b""), ("x-1/a", b""), ("y/a", b"")]);
+        assert_eq!(
+            walk(&mut &*thrice, &mut |_, _| Ok(())),
+            Ok(vec![Anomaly::Duplicate("a".to_owned())])
+        );
+
+        let paths: Vec<String> = (0..10).map(|i| format!("x-1/{i}")).collect();
+        let files: Vec<(&str, &[u8])> = paths
+            .iter()
+            .chain(&paths)
+            .map(|path| (path.as_str(), &b""[..]))
+            .collect();
+        let found = walk(&mut &*tarball(&files), &mut |_, _| Ok(())).expect("reads");
+        assert_eq!(found.len(), MAX_DUPLICATES_NAMED);
+    }
+
+    /// Each anomaly reads as what it is, and back from the form a store keeps it in.
+    #[test]
+    fn every_anomaly_says_what_it_is_and_reads_back() {
+        for (anomaly, said, code) in [
+            (Anomaly::GzipMembers(3), "3 gzip members", "gzip_members:3"),
+            (
+                Anomaly::AfterGzip,
+                "bytes after the last gzip member",
+                "after_gzip",
+            ),
+            (
+                Anomaly::AfterEnd,
+                "entries or bytes after the end-of-archive block",
+                "after_end",
+            ),
+            (
+                Anomaly::Duplicate("a:b".to_owned()),
+                "two entries extract to `a:b`",
+                "duplicate:a:b",
+            ),
+        ] {
+            assert_eq!(anomaly.to_string(), said);
+            assert_eq!(anomaly.code(), code);
+            assert_eq!(Anomaly::parse(code), Some(anomaly));
+        }
+        for unknown in ["", "gzip_members:x", "after", "other:1"] {
+            assert_eq!(Anomaly::parse(unknown), None, "{unknown}");
+        }
+    }
+
+    /// Where npm extracts each path.
+    #[test]
+    fn a_path_is_installed_without_its_first_directory() {
+        for (path, expected) in [
+            ("package/package.json", Some("package.json")),
+            ("./package/./a//b", Some("a/b")),
+            ("/package/a", Some("a")),
+            ("package/", None),
+            ("package.json", None),
+        ] {
+            assert_eq!(installed(path).as_deref(), expected, "{path}");
+        }
     }
 }

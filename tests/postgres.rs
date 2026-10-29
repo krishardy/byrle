@@ -5,9 +5,9 @@
 
 #![cfg(not(coverage))]
 
-use byrle::analysis::InstallScripts;
 use byrle::analysis::postgres::PgAnalyses;
 use byrle::analysis::store::{Analyses, Analysis, Scripts};
+use byrle::analysis::{Anomaly, InstallScripts};
 use byrle::integrity::Sri;
 use byrle::intel::history::{Ingestion, NotLoaded};
 use byrle::intel::load::{self, Fetch};
@@ -1819,6 +1819,10 @@ async fn the_scripts_come_back_in_the_order_they_were_written() {
             ("install".to_owned(), "node-gyp-build".to_owned()),
             ("postinstall".to_owned(), "node install.js".to_owned()),
         ],
+        anomalies: vec![
+            Anomaly::GzipMembers(2),
+            Anomaly::Duplicate("package.json".to_owned()),
+        ],
     }));
 
     store.put(&sri(1), &written).await.expect("it writes");
@@ -1840,10 +1844,12 @@ async fn re_analysing_an_artifact_replaces_its_scripts() {
             ("preinstall".to_owned(), "echo one".to_owned()),
             ("postinstall".to_owned(), "echo two".to_owned()),
         ],
+        anomalies: vec![Anomaly::AfterEnd],
     }));
     let second = analysis(Scripts::Declared(InstallScripts {
         names: vec!["postinstall".to_owned()],
         bodies: vec![("postinstall".to_owned(), "echo two".to_owned())],
+        anomalies: Vec::new(),
     }));
 
     store.put(&sri(1), &first).await.expect("it writes");
@@ -2291,6 +2297,7 @@ async fn an_analysis_from_another_reader_is_not_read() {
     let found = analysis(Scripts::Declared(InstallScripts {
         names: vec!["install".to_owned()],
         bodies: vec![("install".to_owned(), "node-gyp rebuild".to_owned())],
+        anomalies: Vec::new(),
     }));
     store.put(&sri(1), &found).await.expect("writes");
     assert_eq!(
@@ -2384,6 +2391,7 @@ async fn a_script_with_no_command_keeps_its_name() {
         scripts: Scripts::Declared(InstallScripts {
             names: vec!["setup.py".to_owned()],
             bodies: Vec::new(),
+            anomalies: Vec::new(),
         }),
     };
 
@@ -2403,6 +2411,7 @@ async fn two_digests_of_one_package_are_two_analyses() {
     let runs = analysis(Scripts::Declared(InstallScripts {
         names: vec!["postinstall".to_owned()],
         bodies: vec![("postinstall".to_owned(), "node install.js".to_owned())],
+        anomalies: Vec::new(),
     }));
     let nothing = analysis(Scripts::Declared(InstallScripts::default()));
 

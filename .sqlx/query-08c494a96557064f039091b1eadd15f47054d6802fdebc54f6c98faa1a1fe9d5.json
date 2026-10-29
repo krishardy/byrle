@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                a.ecosystem AS \"ecosystem!\",\n                a.name      AS \"name!\",\n                a.version   AS \"version!\",\n                a.unreadable,\n                s.name      AS \"script?\",\n                s.body      AS \"body?\"\n            FROM artifact_analysis a\n            LEFT JOIN artifact_install_script s ON s.analysis_id = a.id\n            WHERE a.digest = $1 AND a.reader = $2\n            ORDER BY s.ordinal\n            ",
+  "query": "\n            SELECT\n                a.ecosystem AS \"ecosystem!\",\n                a.name      AS \"name!\",\n                a.version   AS \"version!\",\n                a.unreadable,\n                a.anomalies,\n                s.name      AS \"script?\",\n                s.body      AS \"body?\"\n            FROM artifact_analysis a\n            LEFT JOIN artifact_install_script s ON s.analysis_id = a.id\n            WHERE a.digest = $1 AND a.reader = $2\n            ORDER BY s.ordinal\n            ",
   "describe": {
     "columns": [
       {
@@ -25,11 +25,16 @@
       },
       {
         "ordinal": 4,
+        "name": "anomalies",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
         "name": "script?",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "body?",
         "type_info": "Text"
       }
@@ -46,8 +51,9 @@
       false,
       true,
       false,
+      false,
       true
     ]
   },
-  "hash": "0027be1bfa0db479eaf5f7db3746875db7a96099a0f4c057b6e5343d5d9fd02e"
+  "hash": "08c494a96557064f039091b1eadd15f47054d6802fdebc54f6c98faa1a1fe9d5"
 }

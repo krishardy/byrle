@@ -133,3 +133,4 @@ Implemented means it is in the code, and the file names where.
 | 0119 | [A request path the proxy does not recognise is refused](0119-unrecognised-paths-refused.md) | Implemented 2026-10-19 |  |
 | 0120 | [The allocator returns freed memory at once](0120-allocator-purge-delay.md) | Implemented 2026-10-19 |  |
 | 0121 | [Advisory rows are named by their unique index, and a refresh writes only what changed](0121-advisory-rows-unkeyed.md) | Implemented 2026-10-19 |  |
+| 0122 | [A tarball is read as the extractor that reads the most would read it, and its odd shapes are a signal](0122-tarballs-read-as-the-widest-extractor.md) | Implemented 2026-10-29 |  |

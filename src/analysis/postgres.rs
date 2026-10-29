@@ -2,7 +2,6 @@
 //!
 //! Tested by `tests/postgres.rs`. See docs/engineering_decisions/0063-artifact-analysis-store.md.
 
-use crate::analysis::InstallScripts;
 use crate::analysis::attestation::{Attested, verifier_id};
 use crate::analysis::decision::{Artifact, Decided, Page};
 use crate::analysis::detector::Detection;
@@ -10,6 +9,7 @@ use crate::analysis::source::{COMPARER, Sourced};
 use crate::analysis::store::DetectionKey;
 use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored};
 use crate::analysis::virustotal::{Counts, Scanned, Verdict};
+use crate::analysis::{Anomaly, InstallScripts};
 use crate::ecosystem::Signature;
 use crate::integrity::Sri;
 use sqlx::PgPool;
@@ -51,22 +51,23 @@ impl PgAnalyses {
     /// row whose scripts are half written.
     async fn write(&self, digest: &Sri, analysis: &Analysis) -> Result<(), AnalysisError> {
         let (names, bodies) = columns(&analysis.scripts);
-        let unreadable = match &analysis.scripts {
-            Scripts::Unreadable(why) => Some(why.as_str()),
-            Scripts::Declared(_) => None,
+        let (unreadable, anomalies) = match &analysis.scripts {
+            Scripts::Unreadable(why) => (Some(why.as_str()), Vec::new()),
+            Scripts::Declared(found) => (None, found.anomalies.iter().map(Anomaly::code).collect()),
         };
         let mut tx = self.pool.begin().await.map_err(AnalysisError::Backend)?;
 
         let id = sqlx::query_scalar!(
             r#"
-            INSERT INTO artifact_analysis (digest, ecosystem, name, version, unreadable, reader)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO artifact_analysis (digest, ecosystem, name, version, unreadable, reader, anomalies)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (digest) DO UPDATE SET
                 ecosystem   = EXCLUDED.ecosystem,
                 name        = EXCLUDED.name,
                 version     = EXCLUDED.version,
                 unreadable  = EXCLUDED.unreadable,
                 reader      = EXCLUDED.reader,
+                anomalies   = EXCLUDED.anomalies,
                 analysed_at = now()
             RETURNING id
             "#,
@@ -76,6 +77,7 @@ impl PgAnalyses {
             analysis.version,
             unreadable,
             crate::analysis::READER,
+            &anomalies,
         )
         .fetch_one(&mut *tx)
         .await
@@ -114,6 +116,7 @@ impl PgAnalyses {
                 a.name      AS "name!",
                 a.version   AS "version!",
                 a.unreadable,
+                a.anomalies,
                 s.name      AS "script?",
                 s.body      AS "body?"
             FROM artifact_analysis a
@@ -134,7 +137,14 @@ impl PgAnalyses {
         let scripts = match &first.unreadable {
             Some(why) => Scripts::Unreadable(why.clone()),
             None => {
-                let mut found = InstallScripts::default();
+                let mut found = InstallScripts {
+                    anomalies: first
+                        .anomalies
+                        .iter()
+                        .filter_map(|code| Anomaly::parse(code))
+                        .collect(),
+                    ..InstallScripts::default()
+                };
                 for row in &rows {
                     let Some(name) = row.script.clone() else {
                         continue;

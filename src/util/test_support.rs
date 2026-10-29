@@ -280,6 +280,12 @@ pub fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
 /// A gzipped tar holding `files`, as an npm tarball or an sdist is.
 pub fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
+    crate::http::gzip(&tar(files, true))
+}
+
+/// A tar holding `files`, ended by its two zero blocks when `ended`, so that a tar after it
+/// reads as more entries of this one.
+pub fn tar(files: &[(&str, &[u8])], ended: bool) -> Vec<u8> {
     let mut builder = tar::Builder::new(Vec::new());
     for (path, bytes) in files {
         let mut header = tar::Header::new_gnu();
@@ -290,10 +296,11 @@ pub fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
             .append_data(&mut header, path, *bytes)
             .expect("appends");
     }
-    let tar = builder.into_inner().expect("builds");
-    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    std::io::Write::write_all(&mut gz, &tar).expect("compresses");
-    gz.finish().expect("finishes")
+    let mut tar = builder.into_inner().expect("builds");
+    if !ended {
+        tar.truncate(tar.len() - 1024);
+    }
+    tar
 }
 
 /// Each thread capturing logs: the most verbose level it keeps, and its buffer.
