@@ -148,6 +148,7 @@ mod tests {
             base: Some("http://h/go"),
             origins,
             refused_by_policy: refused,
+            refused_files: &[],
             refuse_unservable: true,
             path: "/go/golang.org/x/text/@v/list",
         }

@@ -61,7 +61,7 @@ Implemented means it is in the code, and the file names where.
 | 0047 | [The adapter interface is a descriptor table and four shared modules](0047-adapter-interface.md) | Implemented |  |
 | 0048 | [An ecosystem no stream covers fails closed](0048-uncovered-ecosystem-fails-closed.md) | Implemented |  |
 | 0049 | [`main.rs` holds `main` and the runners, and nothing else](0049-main-is-a-thin-wrapper.md) | Implemented 2026-09-18 |  |
-| 0050 | [A PyPI index is filtered by policy, with or without intel](0050-pypi-index-filtering.md) | Implemented 2026-09-18 |  |
+| 0050 | [A PyPI index is filtered by policy, with or without intel](0050-pypi-index-filtering.md) | Implemented 2026-09-18 | removing only whole versions, by [0124](0124-pypi-file-publish-times.md) |
 | 0051 | [Each ecosystem's versions order by its own rules; PEP 440 is hand-written](0051-pep440-version-order.md) | Implemented 2026-09-18 |  |
 | 0052 | [Policy version ranges are VERS strings, in every ecosystem](0052-policy-version-ranges.md) | Implemented 2026-09-19 |  |
 | 0053 | [`doctor` checks pip and uv, and reads uv's TOML configuration](0053-doctor-python-clients.md) | Implemented 2026-09-19 |  |
@@ -135,4 +135,4 @@ Implemented means it is in the code, and the file names where.
 | 0121 | [Advisory rows are named by their unique index, and a refresh writes only what changed](0121-advisory-rows-unkeyed.md) | Implemented 2026-10-19 |  |
 | 0122 | [A tarball is read as the extractor that reads the most would read it, and its odd shapes are a signal](0122-tarballs-read-as-the-widest-extractor.md) | Implemented 2026-10-29 |  |
 | 0123 | [An npm tarball with a `binding.gyp` runs `node-gyp rebuild` on install, as npm runs it](0123-node-gyp-install-from-binding-gyp.md) | Implemented 2026-10-29 |  |
-| 0124 | [A PyPI file is dated by its own upload, and a version by its newest file](0124-pypi-file-publish-times.md) | Implemented 2026-10-29 |  |
+| 0124 | [A PyPI file is dated by its own upload, and refused alone for it](0124-pypi-file-publish-times.md) | Implemented 2026-10-29 |  |

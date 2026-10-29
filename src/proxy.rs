@@ -1125,6 +1125,8 @@ async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphore
 #[derive(Default)]
 struct Refused {
     versions: HashSet<String>,
+    /// PyPI files refused alone, by filename, in a version that is not.
+    files: Vec<String>,
     /// Each check that removed at least one version, in name order.
     checks: Vec<String>,
 }
@@ -1246,6 +1248,7 @@ async fn filtered_document(
         base,
         origins: &proxy.config.origins,
         refused_by_policy: &refused_by_policy.versions,
+        refused_files: &refused_by_policy.files,
         refuse_unservable: refuses_unservable(proxy),
         path,
     });
@@ -4492,6 +4495,46 @@ struct Auditing<'a> {
     at: Repository,
 }
 
+/// The signal keys of the advisories `intel` holds against `record`'s version.
+fn advisory_keys(intel: &PackageIntel, record: &PackageRecord) -> Vec<String> {
+    let ecosystem = record.package.key().ecosystem();
+    crate::signal::of_advisories(&intel.for_version(ecosystem.as_str(), record.package.version()))
+        .iter()
+        .map(Signal::key)
+        .collect()
+}
+
+/// The checks `refusal` names, each reason's text before its `:`.
+fn check_names(refusal: &enforce::Refusal) -> impl Iterator<Item = String> + '_ {
+    refusal
+        .reasons
+        .iter()
+        .filter_map(|r| r.split(':').next().map(str::to_owned))
+}
+
+/// Each file of `record` that `decided` refuses as the record with the file's own publish
+/// time, and why: a PyPI file uploaded to a release after it. See
+/// docs/engineering_decisions/0124-pypi-file-publish-times.md.
+fn refused_alone(
+    record: &PackageRecord,
+    decided: &dyn Fn(&PackageRecord) -> Option<enforce::Refusal>,
+) -> Vec<(String, enforce::Refusal)> {
+    record
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.published_at.is_some() && artifact.published_at != record.published_at
+        })
+        .filter_map(|artifact| {
+            let dated = PackageRecord {
+                published_at: artifact.published_at,
+                ..record.clone()
+            };
+            decided(&dated).map(|refusal| (artifact.filename.clone(), refusal))
+        })
+        .collect()
+}
+
 /// The versions in this metadata document the policy refuses, every one asked, with
 /// checks the record cannot answer dropped and the advisories' signals weighed. Publish
 /// times come from the records alone.
@@ -4508,6 +4551,7 @@ fn policy_refused_versions(
     };
     let today = crate::policy::today();
     let mut refused = HashSet::new();
+    let mut files = Vec::new();
     let mut order = Vec::new();
     let mut checks: BTreeSet<String> = BTreeSet::new();
     let mut strongest = crate::policy::Action::Allow;
@@ -4518,32 +4562,27 @@ fn policy_refused_versions(
     );
     for (record, previous) in metadata.records.iter().zip(&predecessors) {
         let provenance = attestation::from_metadata(record, previous);
-        let keys: Vec<String> = intel.map_or_else(Vec::new, |intel| {
-            let ecosystem = record.package.key().ecosystem();
-            crate::signal::of_advisories(
-                &intel.for_version(ecosystem.as_str(), record.package.version()),
-            )
-            .iter()
-            .map(Signal::key)
-            .collect()
-        });
-        let enforce::Verdict::Refuse(refusal) = enforce::artifact(
+        let keys = intel.map_or_else(Vec::new, |intel| advisory_keys(intel, record));
+        let decided = |record: &PackageRecord| match enforce::artifact(
             Some(policy),
             record,
             None,
             intel,
             (&provenance, &keys),
             today,
-        ) else {
+        ) {
+            enforce::Verdict::Refuse(refusal) => Some(refusal),
+            enforce::Verdict::Serve => None,
+        };
+        let Some(refusal) = decided(record) else {
+            for (file, refusal) in refused_alone(record, &decided) {
+                checks.extend(check_names(&refusal));
+                files.push(file);
+            }
             continue;
         };
         strongest = std::cmp::max_by_key(strongest, refusal.action, |a| a.strength());
-        checks.extend(
-            refusal
-                .reasons
-                .iter()
-                .filter_map(|r| r.split(':').next().map(str::to_owned)),
-        );
+        checks.extend(check_names(&refusal));
         order.push(record.package.version().to_owned());
         refused.insert(record.package.version().to_owned());
     }
@@ -4602,6 +4641,7 @@ fn policy_refused_versions(
     Refused {
         checks: checks.into_iter().collect(),
         versions: refused,
+        files,
     }
 }
 
@@ -5698,6 +5738,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             checks: vec!["cooldown_days".to_owned(), "denials".to_owned()],
+            files: Vec::new(),
         };
         mark_filtered(&mut headers, &refused);
         assert_eq!(headers[FILTERED_VERSIONS], "2");
@@ -6432,6 +6473,30 @@ mod tests {
         assert_eq!(weighed.checks, ["signals"]);
     }
 
+    /// A PyPI file uploaded yesterday to a 2024 release is refused alone, under the check
+    /// that refused it; observe mode removes nothing.
+    #[test]
+    fn a_pypi_file_newer_than_its_release_is_refused_alone() {
+        let yesterday = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
+        let index = format!(
+            r#"{{"name":"x","files":[
+            {{"filename":"x-1.0.tar.gz","url":"https://f/x-1.0.tar.gz","hashes":{{}},
+              "upload-time":"2024-01-01T00:00:00Z"}},
+            {{"filename":"x-1.0-py3-none-any.whl","url":"https://f/x-1.0-py3-none-any.whl",
+              "hashes":{{}},"upload-time":"{yesterday}"}}]}}"#
+        );
+        let project = crate::ecosystem::pypi::parse("x", index.as_bytes()).expect("parses");
+        let metadata = crate::ecosystem::pypi::normalize(&project).expect("records");
+        let policy = policy("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n");
+        let decide =
+            |mode| policy_refused_versions(&metadata, Some(&policy), None, "/p", None, mode);
+        let refused = decide(Mode::Enforce);
+        assert!(refused.versions.is_empty());
+        assert_eq!(refused.files, ["x-1.0-py3-none-any.whl"]);
+        assert_eq!(refused.checks, ["cooldown_days"]);
+        assert!(decide(Mode::Observe).files.is_empty());
+    }
+
     /// The resolution event carries the strongest action of the versions removed: 1.0.0 is
     /// blocked by a denial and 2.0.0 quarantined by the cooldown. It names the account.
     #[test]
@@ -7091,8 +7156,8 @@ mod tests {
         assert_eq!(unfiltered.len(), 3, "nothing refused, nothing removed");
     }
 
-    /// A wheel uploaded yesterday to a 2024 release is a day old: the version leaves the
-    /// index, the wheel's fetch is refused, and the old sdist's is served.
+    /// A wheel uploaded yesterday to a 2024 release is a day old: it alone leaves the index
+    /// and its fetch is refused, while a release whose every file is new leaves whole.
     #[tokio::test]
     async fn a_file_added_to_an_old_pypi_release_is_dated_by_its_own_upload() {
         let yesterday = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
@@ -7100,6 +7165,12 @@ mod tests {
             ("x-1.0.tar.gz", "2024-01-01T00:00:00Z".to_owned()),
             ("x-1.0-py3-none-any.whl", yesterday.to_string()),
             ("x-0.9.tar.gz", "2023-01-01T00:00:00Z".to_owned()),
+            (
+                "x-0.9-py3-none-any.whl",
+                (yesterday - jiff::SignedDuration::from_hours(24 * 29)).to_string(),
+            ),
+            ("x-2.0.tar.gz", yesterday.to_string()),
+            ("x-2.0-py3-none-any.whl", yesterday.to_string()),
         ]
         .into_iter()
         .map(|(file, uploaded)| {
@@ -7118,7 +7189,11 @@ mod tests {
             Some("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n"),
         );
         let names = served_filenames(&proxy, index.to_string().as_bytes()).await;
-        assert_eq!(names, ["x-0.9.tar.gz"]);
+        assert_eq!(
+            names,
+            ["x-1.0.tar.gz", "x-0.9.tar.gz", "x-0.9-py3-none-any.whl"],
+            "a file 30 days old stays"
+        );
 
         let (status, body) =
             refused(pinned(&proxy, "/pypi/packages/aa/bb/x-1.0-py3-none-any.whl").await).await;

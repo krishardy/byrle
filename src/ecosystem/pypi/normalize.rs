@@ -60,7 +60,7 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
         out.push(PackageRecord {
             package,
             detail: DocumentDetail::Full,
-            published_at: newest(&artifacts),
+            published_at: oldest(&artifacts),
             maintainers: None,
             repository: None,
             deprecated: None,
@@ -93,15 +93,15 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
     })
 }
 
-/// When the newest of `artifacts` was uploaded, which is when the version last changed.
+/// When the oldest of `artifacts` was uploaded, which is when the version was published.
 /// `None` when any is undated, as a file the index does not date may be the newest.
-fn newest(artifacts: &[crate::record::Artifact]) -> Option<jiff::Timestamp> {
+fn oldest(artifacts: &[crate::record::Artifact]) -> Option<jiff::Timestamp> {
     artifacts
         .iter()
         .map(|a| a.published_at)
         .collect::<Option<Vec<_>>>()?
         .into_iter()
-        .max()
+        .min()
 }
 
 #[cfg(test)]
@@ -178,10 +178,10 @@ mod tests {
         );
     }
 
-    /// A version is as old as its newest file, and each file as old as its own upload. A
+    /// A version is as old as its oldest file, and each file as old as its own upload. A
     /// file the index does not date leaves the version undated.
     #[test]
-    fn a_version_is_dated_by_its_newest_file_and_a_file_by_its_own() {
+    fn a_version_is_dated_by_its_oldest_file_and_a_file_by_its_own() {
         let document = br#"{"name":"x","files":[
             {"filename":"x-1.0.tar.gz","url":"https://files/x-1.0.tar.gz","hashes":{},
              "upload-time":"2024-01-01T00:00:00Z"},
@@ -200,8 +200,8 @@ mod tests {
         let at = |text: &str| Some(text.parse::<jiff::Timestamp>().expect("a time"));
         assert_eq!(
             records[0].published_at,
-            at("2026-10-28T00:00:00Z"),
-            "the newest file"
+            at("2024-01-01T00:00:00Z"),
+            "the oldest file"
         );
         let file = |name: &str| records[0].narrowed_to(name).expect("a file").published_at;
         assert_eq!(file("x-1.0-py3-none-any.whl"), at("2024-01-01T00:00:01Z"));

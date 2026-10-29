@@ -138,6 +138,7 @@ mod tests {
             base: None,
             origins: &origins,
             refused_by_policy: &HashSet::new(),
+            refused_files: &[],
             refuse_unservable: true,
             path: "/cargo/it/oa/itoa",
         };

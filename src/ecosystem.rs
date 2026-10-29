@@ -217,6 +217,8 @@ pub struct Rewriting<'a> {
     pub origins: &'a crate::origin::OriginPolicy,
     /// Versions the policy refuses, which are removed.
     pub refused_by_policy: &'a std::collections::HashSet<String>,
+    /// Files the policy refuses one by one, by filename, which are removed: PyPI only.
+    pub refused_files: &'a [String],
     /// Whether a version on an origin the proxy does not serve is removed too.
     pub refuse_unservable: bool,
     pub path: &'a str,

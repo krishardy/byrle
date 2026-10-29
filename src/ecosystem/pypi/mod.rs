@@ -172,6 +172,7 @@ impl crate::ecosystem::Document for Index {
             origins: r.origins,
             base: r.base,
             refused_by_policy: r.refused_by_policy,
+            refused_files: r.refused_files,
             refuse_unservable: r.refuse_unservable,
             path: r.path,
         })
