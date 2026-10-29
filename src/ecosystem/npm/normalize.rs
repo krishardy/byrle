@@ -122,6 +122,7 @@ fn version_record(
             integrity: dist.integrity.clone(),
             legacy_sha1: dist.shasum.clone(),
             attestation_url: dist.attestations.as_ref().and_then(|a| a.url.clone()),
+            published_at: None,
             file_count: dist.file_count,
             unpacked_size: dist.unpacked_size,
         }],

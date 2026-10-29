@@ -2,6 +2,7 @@
 
 - **Number:** 0046
 - **Status:** Implemented and served. `src/ecosystem/pypi/`.
+- **Superseded by:** a version's publish time, by [0124-pypi-file-publish-times](0124-pypi-file-publish-times.md)
 - **Related:** [stage-structure](0014-stage-structure.md),
   [purl-identity-rules](0012-purl-identity-rules.md),
   [enforcement-tiers](0019-enforcement-tiers.md),

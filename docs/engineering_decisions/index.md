@@ -57,7 +57,7 @@ Implemented means it is in the code, and the file names where.
 | 0043 | [Every advisory stream is declared in one table](0043-stream-descriptor-table.md) | Implemented |  |
 | 0044 | [What CI gates, and what it does not](0044-ci-gates.md) | Implemented |  |
 | 0045 | [GitHub Advisory is a signal stream beside OSV, not a replacement for it](0045-github-advisory-signal-stream.md) | Decided 2026-09-16 |  |
-| 0046 | [PyPI's simple index is file-keyed, and a packument is not](0046-pypi-simple-index.md) | Implemented and served |  |
+| 0046 | [PyPI's simple index is file-keyed, and a packument is not](0046-pypi-simple-index.md) | Implemented and served | a version's publish time, by [0124](0124-pypi-file-publish-times.md) |
 | 0047 | [The adapter interface is a descriptor table and four shared modules](0047-adapter-interface.md) | Implemented |  |
 | 0048 | [An ecosystem no stream covers fails closed](0048-uncovered-ecosystem-fails-closed.md) | Implemented |  |
 | 0049 | [`main.rs` holds `main` and the runners, and nothing else](0049-main-is-a-thin-wrapper.md) | Implemented 2026-09-18 |  |
@@ -135,3 +135,4 @@ Implemented means it is in the code, and the file names where.
 | 0121 | [Advisory rows are named by their unique index, and a refresh writes only what changed](0121-advisory-rows-unkeyed.md) | Implemented 2026-10-19 |  |
 | 0122 | [A tarball is read as the extractor that reads the most would read it, and its odd shapes are a signal](0122-tarballs-read-as-the-widest-extractor.md) | Implemented 2026-10-29 |  |
 | 0123 | [An npm tarball with a `binding.gyp` runs `node-gyp rebuild` on install, as npm runs it](0123-node-gyp-install-from-binding-gyp.md) | Implemented 2026-10-29 |  |
+| 0124 | [A PyPI file is dated by its own upload, and a version by its newest file](0124-pypi-file-publish-times.md) | Implemented 2026-10-29 |  |

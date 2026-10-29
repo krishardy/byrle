@@ -159,6 +159,9 @@ pub struct Artifact {
     /// Where the registry serves this file's attestations, when it claims any.
     pub attestation_url: Option<String>,
 
+    /// When this file was published, where the registry dates files as well as versions: PyPI.
+    pub published_at: Option<jiff::Timestamp>,
+
     pub file_count: Option<u64>,
     pub unpacked_size: Option<u64>,
 }
@@ -184,11 +187,12 @@ impl PackageRecord {
         }
     }
 
-    /// This record as it applies to one file, with that file's install-script answer and
-    /// attestation. Returns `None` when the record names no `filename`.
+    /// This record as it applies to one file, with that file's install-script answer,
+    /// attestation and publish time. Returns `None` when the record names no `filename`.
     pub fn narrowed_to(&self, filename: &str) -> Option<Self> {
         let artifact = self.artifact_named(filename)?.clone();
         Some(Self {
+            published_at: artifact.published_at.or(self.published_at),
             has_install_scripts: artifact.runs_install_scripts,
             yanked: artifact.yanked.clone(),
             provenance: Provenance {
@@ -240,6 +244,7 @@ mod tests {
                 integrity: Some("sha512-AAAA".into()),
                 legacy_sha1: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".into()),
                 attestation_url: None,
+                published_at: None,
                 file_count: Some(9),
                 unpacked_size: Some(37893),
             }],
@@ -315,6 +320,28 @@ mod tests {
             .expect("its own file");
         assert_eq!(narrowed, record);
         assert!(record.runs_install_scripts(Some("lodash-4.17.21.tgz")));
+    }
+
+    /// Narrowed to a file the registry dates, the record is as old as that file; to one it
+    /// does not, as old as the version.
+    #[test]
+    fn narrowing_takes_the_files_own_publish_time() {
+        let at = |text: &str| Some(text.parse::<jiff::Timestamp>().expect("a time"));
+        let mut record = abbreviated("x", "1.0.0", false);
+        record.published_at = at("2026-10-01T00:00:00Z");
+        let mut old = record.artifacts[0].clone();
+        old.filename = "x-1.0.0.tar.gz".into();
+        old.published_at = at("2024-01-01T00:00:00Z");
+        let mut undated = record.artifacts[0].clone();
+        undated.filename = "x-1.0.0-py3-none-any.whl".into();
+        record.artifacts = vec![old, undated];
+
+        let narrowed = |file: &str| record.narrowed_to(file).expect("names a file").published_at;
+        assert_eq!(narrowed("x-1.0.0.tar.gz"), at("2024-01-01T00:00:00Z"));
+        assert_eq!(
+            narrowed("x-1.0.0-py3-none-any.whl"),
+            at("2026-10-01T00:00:00Z")
+        );
     }
 
     /// Narrowed to one file, the record claims that file's attestation, whatever the

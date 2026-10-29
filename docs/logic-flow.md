@@ -198,8 +198,8 @@ flowchart LR
 | ID | Input | Code | From |
 |---|---|---|---|
 | V1 | `PackageRecord`: `published_at`, `yanked`, `deprecated`, `has_install_scripts`, `install_scripts`, `provenance`, `integrity`, `repository` | npm `normalize.rs` `version_record`; PyPI `normalize.rs` `normalize`; cargo `wire.rs` `record`; Go `wire.rs`; Maven `wire.rs` | the metadata document. npm reads `hasInstallScript` and the three script keys; PyPI marks scripts when a version has sdists only; cargo, Go and Maven publish none |
-| V2 | the requested file's own scripts, yanked and attestation | `record.rs` `PackageRecord::narrowed_to`, called in `Deciding::locate` | when the record names no file by the requested name, the version's first file is used |
-| V3 | `published` | `policy/facts.rs` `published_date`; `dated_versions`; `dated_by_host` | `published_at`, else the separately fetched times, else a HEAD's `Last-Modified` |
+| V2 | the requested file's own scripts, yanked, attestation and, on PyPI, publish time (0124) | `record.rs` `PackageRecord::narrowed_to`, called in `Deciding::locate` | when the record names no file by the requested name, the version's first file is used |
+| V3 | `published` | `policy/facts.rs` `published_date`; `dated_versions`; `dated_by_host` | `published_at`, else the separately fetched times, else a HEAD's `Last-Modified`. A PyPI version's is its newest file's `upload-time` (0124) |
 | V4 | intel rows for the version | `intel/store.rs` `PackageIntel::for_version`, `intel/range.rs` `Interval::contains`, `VersionOrder` | exact string, equal in the ecosystem's order, or inside a range; SemVer, PEP 440, Go or Maven order |
 | V5 | `known_malware`, `advisories` (merged by id, highest CVSS, `kev` OR'd), `intel` | `policy/facts.rs` `with_intel` | informational rows are dropped here |
 | V6 | `advisory_malware`, `_vulnerability`, `_unsound`, `_unmaintained`, `_notice` | `signal.rs` `of_advisories` | all rows, informational ones included |

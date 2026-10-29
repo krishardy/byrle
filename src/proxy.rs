@@ -7091,6 +7091,44 @@ mod tests {
         assert_eq!(unfiltered.len(), 3, "nothing refused, nothing removed");
     }
 
+    /// A wheel uploaded yesterday to a 2024 release is a day old: the version leaves the
+    /// index, the wheel's fetch is refused, and the old sdist's is served.
+    #[tokio::test]
+    async fn a_file_added_to_an_old_pypi_release_is_dated_by_its_own_upload() {
+        let yesterday = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
+        let files: Vec<serde_json::Value> = [
+            ("x-1.0.tar.gz", "2024-01-01T00:00:00Z".to_owned()),
+            ("x-1.0-py3-none-any.whl", yesterday.to_string()),
+            ("x-0.9.tar.gz", "2023-01-01T00:00:00Z".to_owned()),
+        ]
+        .into_iter()
+        .map(|(file, uploaded)| {
+            serde_json::json!({
+                "filename": file,
+                "url": format!("https://files.pythonhosted.org/packages/aa/bb/{file}"),
+                "hashes": {"sha256": x_hex(file)},
+                "upload-time": uploaded,
+            })
+        })
+        .collect();
+        let index =
+            serde_json::json!({"meta": {"api-version": "1.1"}, "name": "x", "files": files});
+        let proxy = offline(
+            None,
+            Some("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n"),
+        );
+        let names = served_filenames(&proxy, index.to_string().as_bytes()).await;
+        assert_eq!(names, ["x-0.9.tar.gz"]);
+
+        let (status, body) =
+            refused(pinned(&proxy, "/pypi/packages/aa/bb/x-1.0-py3-none-any.whl").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("cooldown"), "{body}");
+        assert!(fetched(
+            &pinned(&proxy, "/pypi/packages/aa/bb/x-1.0.tar.gz").await
+        ));
+    }
+
     /// With no stream covering PyPI the index is still filtered by the checks that need no intel.
     #[tokio::test]
     async fn a_pypi_index_no_stream_covers_is_filtered_without_intel() {

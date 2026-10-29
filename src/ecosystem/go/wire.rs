@@ -129,6 +129,7 @@ pub fn record(
             yanked: None,
             legacy_sha1: None,
             attestation_url: None,
+            published_at: None,
             file_count: None,
             unpacked_size: None,
         }],
