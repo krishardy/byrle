@@ -1,4 +1,4 @@
-reader: install-scripts 6
+reader: install-scripts 7
 
 npm, every install lifecycle script and two others: runs ["preinstall", "install", "postinstall"], bodies [("preinstall", "a"), ("install", "b"), ("postinstall", "c")]
 npm, only scripts that do not run on install: runs [], bodies []
@@ -22,6 +22,7 @@ crate, build = false and build.rs: runs [], bodies []
 crate, build.rs only deeper: runs [], bodies []
 crate, proc-macro: runs ["proc-macro"], bodies []
 crate, proc_macro, the old spelling: runs ["proc-macro"], bodies []
+crate, crate-type proc-macro: runs ["proc-macro"], bodies []
 crate, neither: runs [], bodies []
 crate, no Cargo.toml: error: the archive holds no manifest to read
 crate, Cargo.toml at the root: error: the archive holds no manifest to read

@@ -111,7 +111,7 @@ pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_UNPACKED_BYTES: usize = 4 << 30;
 
 /// The readers' version, stored with each analysis; bumped whenever a reader's answer changes.
-pub const READER: &str = "install-scripts 6";
+pub const READER: &str = "install-scripts 7";
 
 /// What reads an artifact for the code it runs on install, such as [`npm_install_scripts`].
 pub type Reader = fn(&mut dyn crate::ecosystem::Source) -> Result<InstallScripts, ReadError>;
@@ -292,9 +292,17 @@ pub fn crate_build_scripts(archive: &mut dyn Read) -> Result<InstallScripts, Rea
                     _ => Build::Off,
                 };
                 let lib = manifest.get("lib");
-                let proc_macro = ["proc-macro", "proc_macro"].iter().any(|key| {
-                    lib.and_then(|l| l.get(key)).and_then(toml::Value::as_bool) == Some(true)
-                });
+                let lib_key = |key: &&str| lib.and_then(|l| l.get(*key));
+                let proc_macro = ["proc-macro", "proc_macro"]
+                    .iter()
+                    .any(|key| lib_key(key).and_then(toml::Value::as_bool) == Some(true))
+                    || ["crate-type", "crate_type"].iter().any(|key| {
+                        lib_key(key)
+                            .and_then(toml::Value::as_array)
+                            .is_some_and(|types| {
+                                types.iter().any(|t| t.as_str() == Some("proc-macro"))
+                            })
+                    });
                 manifests.push((build, proc_macro));
             }
             _ => {}
@@ -670,6 +678,10 @@ mod tests {
                 krate(&[("x-1/Cargo.toml", b"[lib]\nproc_macro = true\n")]),
             ),
             (
+                "crate, crate-type proc-macro",
+                krate(&[("x-1/Cargo.toml", b"[lib]\ncrate-type = [\"proc-macro\"]\n")]),
+            ),
+            (
                 "crate, neither",
                 krate(&[("x-1/Cargo.toml", b"[package]\nbuild = false\n[lib]\n")]),
             ),
@@ -996,6 +1008,31 @@ mod tests {
             [("install".to_owned(), "node-gyp-build".to_owned())]
         );
         assert!(found.runs_on_install());
+    }
+
+    /// cargo 1.99.1 builds a proc-macro from either flag or either spelling of `crate-type`
+    /// naming `proc-macro`, even beside `proc-macro = false`. rustc refuses another spelling.
+    #[test]
+    fn every_way_cargo_reads_a_proc_macro_is_one() {
+        for (lib, proc_macro) in [
+            ("proc-macro = true", true),
+            ("proc_macro = true", true),
+            ("crate-type = [\"proc-macro\"]", true),
+            ("crate_type = [\"proc-macro\"]", true),
+            ("proc-macro = false\ncrate-type = [\"proc-macro\"]", true),
+            ("crate-type = [\"rlib\", \"proc-macro\"]", true),
+            ("proc-macro = false", false),
+            ("crate-type = [\"rlib\"]", false),
+            ("crate-type = [\"proc_macro\"]", false),
+            ("crate-type = \"proc-macro\"", false),
+            ("crate-type = [1]", false),
+        ] {
+            let manifest = format!("[package]\nbuild = false\n[lib]\n{lib}\n");
+            let found =
+                crate_build_scripts(&mut &*tarball(&[("x-1/Cargo.toml", manifest.as_bytes())]))
+                    .expect("reads");
+            assert_eq!(found.names == ["proc-macro"], proc_macro, "{lib}");
+        }
     }
 
     /// npm runs `node-gyp rebuild` on install for a package with a `binding.gyp` at its root
