@@ -494,6 +494,9 @@ Items that I've added that are not stage-bound.
     forward. Raised 2026-10-20. Done 2026-10-20: per commit it removes the Claude credit
     lines, adds the author's sign-off, then signs. CI's `signed-off` job runs it with
     `CHECKS=sign-off`.
+52. Documentation of what each signal means: for every `signal_weights` key, what fires
+    it, what it says about the version, an example of its detail, and why its default
+    weight is what it is. Raised 2026-10-29.
 
 ## Architecture Refactor
 
