@@ -111,7 +111,7 @@ pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_UNPACKED_BYTES: usize = 4 << 30;
 
 /// The readers' version, stored with each analysis; bumped whenever a reader's answer changes.
-pub const READER: &str = "install-scripts 5";
+pub const READER: &str = "install-scripts 6";
 
 /// What reads an artifact for the code it runs on install, such as [`npm_install_scripts`].
 pub type Reader = fn(&mut dyn crate::ecosystem::Source) -> Result<InstallScripts, ReadError>;
@@ -173,38 +173,73 @@ pub fn reader(ecosystem: Ecosystem, filename: &str) -> Option<Reader> {
 /// npm's install lifecycle, in the order npm runs them.
 pub const NPM_INSTALL_SCRIPTS: [&str; 3] = ["preinstall", "install", "postinstall"];
 
-/// The scripts an npm tarball's `package.json` declares. A tarball with two, which an
-/// extractor would keep the last of, declares the scripts of both.
+/// The scripts an npm tarball's `package.json` declares, and `install: node-gyp rebuild`
+/// where npm adds it. A tarball with two `package.json`, which an extractor would keep the
+/// last of, declares the scripts of both.
 ///
 /// One gzip stream and one JSON object: 0.4ms for `bufferutil` 4.1.0, 163,631 bytes.
 pub fn npm_install_scripts(tarball: &mut dyn Read) -> Result<InstallScripts, ReadError> {
-    let mut found: Option<InstallScripts> = None;
+    let (mut found, mut binding_gyp, mut gyp) = (None::<InstallScripts>, false, false);
     let anomalies = walk(tarball, &mut |path, member| {
-        if installed(path).as_deref() != Some("package.json") {
-            return Ok(());
-        }
-        let manifest: serde_json::Value = serde_json::from_slice(&read_member(path, member)?)
-            .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
-        let found = found.get_or_insert_default();
-        let Some(scripts) = manifest.get("scripts").and_then(|s| s.as_object()) else {
-            return Ok(());
-        };
-        for name in NPM_INSTALL_SCRIPTS {
-            if let Some(body) = scripts.get(name).and_then(|b| b.as_str())
-                && !found.names.iter().any(|known| known == name)
-            {
-                found.names.push(name.to_owned());
-                found.bodies.push((name.to_owned(), body.to_owned()));
+        match installed(path).as_deref() {
+            Some(NODE_GYP_FILE) => binding_gyp |= !member.directory,
+            Some("package.json") => {
+                let manifest: serde_json::Value =
+                    serde_json::from_slice(&read_member(path, member)?)
+                        .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+                gyp |= npm_runs_node_gyp(&manifest);
+                let found = found.get_or_insert_default();
+                let Some(scripts) = manifest.get("scripts").and_then(|s| s.as_object()) else {
+                    return Ok(());
+                };
+                for name in NPM_INSTALL_SCRIPTS {
+                    if let Some(body) = scripts.get(name).and_then(|b| b.as_str())
+                        && !found.names.iter().any(|known| known == name)
+                    {
+                        found.names.push(name.to_owned());
+                        found.bodies.push((name.to_owned(), body.to_owned()));
+                    }
+                }
             }
+            _ => {}
         }
         Ok(())
     })?;
     let mut found = found.ok_or(ReadError::NothingToRead)?;
+    if binding_gyp && gyp && !found.names.iter().any(|name| name == "install") {
+        found.names.push("install".to_owned());
+        found
+            .bodies
+            .push(("install".to_owned(), NODE_GYP_INSTALL.to_owned()));
+    }
     let lifecycle = |name: &String| NPM_INSTALL_SCRIPTS.iter().position(|step| step == name);
     found.names.sort_by_key(lifecycle);
     found.bodies.sort_by_key(|(name, _)| lifecycle(name));
     found.anomalies = anomalies;
     Ok(found)
+}
+
+/// The file at a package's root that makes npm build it with node-gyp.
+pub const NODE_GYP_FILE: &str = "binding.gyp";
+
+/// The `install` script npm runs for a package with a [`NODE_GYP_FILE`] and none of its own.
+pub const NODE_GYP_INSTALL: &str = "node-gyp rebuild";
+
+/// Whether npm runs [`NODE_GYP_INSTALL`] for `manifest`, given a [`NODE_GYP_FILE`]: its
+/// `scripts` have no `install` or `preinstall` npm reads as true, and `gypfile` is not `false`.
+fn npm_runs_node_gyp(manifest: &serde_json::Value) -> bool {
+    let truthy = |value: Option<&serde_json::Value>| match value {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(set)) => *set,
+        Some(serde_json::Value::Number(n)) => n.as_f64() != Some(0.0),
+        Some(serde_json::Value::String(text)) => !text.is_empty(),
+        Some(_) => true,
+    };
+    let scripts = manifest.get("scripts");
+    let script = |name: &str| truthy(scripts.and_then(|s| s.get(name)));
+    !script("install")
+        && !script("preinstall")
+        && manifest.get("gypfile") != Some(&serde_json::Value::Bool(false))
 }
 
 /// Whether a PyPI sdist carries a `setup.py`, which pip runs to build it.
@@ -330,6 +365,7 @@ pub fn installed(path: &str) -> Option<String> {
 struct Member<'a> {
     /// Whether it is a regular file, not a directory or a link.
     file: bool,
+    directory: bool,
     /// The size its header states.
     size: u64,
     bytes: &'a mut dyn Read,
@@ -440,6 +476,7 @@ fn each_entry<R: Read>(
         }
         let member = Member {
             file: kind.is_file(),
+            directory: kind.is_dir(),
             size: entry.size(),
             bytes: &mut entry,
         };
@@ -650,6 +687,17 @@ mod tests {
                     ]
                     .concat(),
                 ),
+            ),
+            (
+                "npm, binding.gyp and no install script",
+                npm(&[("package/package.json", b"{}"), ("package/binding.gyp", b"{}")]),
+            ),
+            (
+                "npm, binding.gyp with gypfile false",
+                npm(&[
+                    ("package/package.json", br#"{"gypfile":false}"#),
+                    ("package/binding.gyp", b"{}"),
+                ]),
             ),
             (
                 "npm, two package.json",
@@ -948,6 +996,126 @@ mod tests {
             [("install".to_owned(), "node-gyp-build".to_owned())]
         );
         assert!(found.runs_on_install());
+    }
+
+    /// npm runs `node-gyp rebuild` on install for a package with a `binding.gyp` at its root
+    /// and no `install` or `preinstall` it reads as true, unless `gypfile` is `false`.
+    #[test]
+    fn a_binding_gyp_is_npm_s_install_script() {
+        let gyp = |manifest: &[u8], at: &str| {
+            let found = npm_install_scripts(&mut &*tarball(&[
+                ("package/package.json", manifest),
+                (at, b"{}"),
+            ]))
+            .expect("reads");
+            found
+                .bodies
+                .iter()
+                .map(|(name, body)| format!("{name}: {body}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let root = "package/binding.gyp";
+        for (manifest, at, expected) in [
+            (&br#"{}"#[..], root, "install: node-gyp rebuild"),
+            (br#"{"gypfile":false}"#, root, ""),
+            (br#"{"gypfile":"false"}"#, root, "install: node-gyp rebuild"),
+            (br#"{"scripts":{"install":"own"}}"#, root, "install: own"),
+            (
+                br#"{"scripts":{"preinstall":"pre"}}"#,
+                root,
+                "preinstall: pre",
+            ),
+            (
+                br#"{"scripts":{"postinstall":"post"}}"#,
+                root,
+                "install: node-gyp rebuild, postinstall: post",
+            ),
+            (br#"{"scripts":{"install":""}}"#, root, "install: "),
+            (
+                br#"{"scripts":{"install":0}}"#,
+                root,
+                "install: node-gyp rebuild",
+            ),
+            (
+                br#"{"scripts":{"install":null}}"#,
+                root,
+                "install: node-gyp rebuild",
+            ),
+            (
+                br#"{"scripts":{"install":false}}"#,
+                root,
+                "install: node-gyp rebuild",
+            ),
+            (br#"{"scripts":{"install":1}}"#, root, ""),
+            (br#"{"scripts":{"install":true}}"#, root, ""),
+            (br#"{"scripts":{"install":{}}}"#, root, ""),
+            (
+                br#"{"scripts":"install"}"#,
+                root,
+                "install: node-gyp rebuild",
+            ),
+            (
+                br#"{}"#,
+                "package/./binding.gyp",
+                "install: node-gyp rebuild",
+            ),
+            (br#"{}"#, "package/src/binding.gyp", ""),
+        ] {
+            let manifest = String::from_utf8_lossy(manifest);
+            assert_eq!(
+                gyp(manifest.as_bytes(), at),
+                expected,
+                "{manifest} with {at}"
+            );
+        }
+
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "package/binding.gyp/", &[][..])
+            .expect("appends");
+        let mut header = tar::Header::new_gnu();
+        header.set_size(2);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "package/package.json", &b"{}"[..])
+            .expect("appends");
+        let directory = gzip(&builder.into_inner().expect("builds"));
+        assert!(
+            !npm_install_scripts(&mut &*directory)
+                .expect("reads")
+                .runs_on_install()
+        );
+
+        for copies in [
+            [&br#"{"gypfile":false}"#[..], b"{}"],
+            [b"{}", br#"{"gypfile":false}"#],
+        ] {
+            let either = tarball(&[
+                ("package/package.json", copies[0]),
+                ("package/package.json", copies[1]),
+                ("package/binding.gyp", b"{}"),
+            ]);
+            assert_eq!(
+                npm_install_scripts(&mut &*either).expect("reads").names,
+                ["install"],
+                "a copy that does not turn it off, in either order"
+            );
+        }
+        let hidden = [
+            gzip(&tar(&[("package/package.json", b"{}")], false)),
+            tarball(&[("package/binding.gyp", b"{}")]),
+        ]
+        .concat();
+        assert_eq!(
+            npm_install_scripts(&mut &*hidden).expect("reads").names,
+            ["install"],
+            "in a second gzip member"
+        );
     }
 
     /// Every script npm runs on install, in the order it runs them, and nothing else.

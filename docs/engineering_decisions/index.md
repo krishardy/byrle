@@ -134,3 +134,4 @@ Implemented means it is in the code, and the file names where.
 | 0120 | [The allocator returns freed memory at once](0120-allocator-purge-delay.md) | Implemented 2026-10-19 |  |
 | 0121 | [Advisory rows are named by their unique index, and a refresh writes only what changed](0121-advisory-rows-unkeyed.md) | Implemented 2026-10-19 |  |
 | 0122 | [A tarball is read as the extractor that reads the most would read it, and its odd shapes are a signal](0122-tarballs-read-as-the-widest-extractor.md) | Implemented 2026-10-29 |  |
+| 0123 | [An npm tarball with a `binding.gyp` runs `node-gyp rebuild` on install, as npm runs it](0123-node-gyp-install-from-binding-gyp.md) | Implemented 2026-10-29 |  |

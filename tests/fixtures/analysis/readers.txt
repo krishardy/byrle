@@ -1,4 +1,4 @@
-reader: install-scripts 5
+reader: install-scripts 6
 
 npm, every install lifecycle script and two others: runs ["preinstall", "install", "postinstall"], bodies [("preinstall", "a"), ("install", "b"), ("postinstall", "c")]
 npm, only scripts that do not run on install: runs [], bodies []
@@ -34,4 +34,6 @@ unclosed table, expected `]`
 
 crate, not gzip: error: not readable as an archive: unexpected end of file
 sdist, setup.py in a second gzip member: runs ["setup.py"], bodies [], anomalies [GzipMembers(2)]
+npm, binding.gyp and no install script: runs ["install"], bodies [("install", "node-gyp rebuild")]
+npm, binding.gyp with gypfile false: runs [], bodies []
 npm, two package.json: runs ["install"], bodies [("install", "b")], anomalies [Duplicate("package.json")]
