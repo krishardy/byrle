@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
 use tracing::warn;
@@ -30,6 +31,9 @@ pub const MAX_ROWS: usize = 65_536;
 /// Splits for one record, at most: 2^20 hours is past the longest cooldown.
 const MAX_SPLITS: usize = 20;
 
+/// After a row fails to be read, none is asked for this long: each would wait its timeout.
+const REST: Duration = Duration::from_secs(300);
+
 /// The index's answer is read this far, at most, for its first line.
 const MAX_ENTRY_BYTES: usize = 64 << 10;
 
@@ -44,6 +48,8 @@ pub struct Heads {
     rows: Mutex<Rows>,
     /// Held while a seed is read, so concurrent requests read one.
     seeding: tokio::sync::Mutex<()>,
+    /// When a row last failed to be read.
+    failed: Mutex<Option<Instant>>,
 }
 
 /// One line of the index.
@@ -63,6 +69,7 @@ impl Heads {
             index: index.trim_end_matches('/').to_owned(),
             rows: Mutex::new(Rows::new()),
             seeding: tokio::sync::Mutex::new(()),
+            failed: Mutex::new(None),
         }
     }
 
@@ -109,6 +116,9 @@ impl Heads {
             }
             last = Some((below, held));
             splits += 1;
+            if self.resting() {
+                return Some(held);
+            }
             if let Err(e) = self.point(sumdb, below + span / 2).await {
                 warn!(error.message = %e, "a go version is dated by the checksum tree after it: the index could not be read between");
                 return Some(held);
@@ -117,8 +127,8 @@ impl Heads {
     }
 
     /// Read a row from the index [`MARGIN`] before `before`, unless one at or before `before`
-    /// is kept. A failed read is logged: a record below every row is then dated by its
-    /// `.info` `Time`, the earlier of it and the oldest row.
+    /// is kept, or a read failed within [`REST`]. A failed read is logged: a record below every
+    /// row is then dated by its `.info` `Time`, the earlier of it and the oldest row.
     async fn seed(&self, sumdb: &sumdb::Client, before: Timestamp) {
         let seeded = || {
             self.rows
@@ -131,7 +141,7 @@ impl Heads {
             return;
         }
         let _one = self.seeding.lock().await;
-        if seeded() {
+        if seeded() || self.resting() {
             return;
         }
         if let Err(e) = self.point(sumdb, before - MARGIN).await {
@@ -139,10 +149,25 @@ impl Heads {
         }
     }
 
+    /// [`Heads::read_point`], noting when it fails.
+    async fn point(&self, sumdb: &sumdb::Client, at: Timestamp) -> Result<(), String> {
+        let read = self.read_point(sumdb, at).await;
+        *self.failed.lock().expect("failed lock") = read.as_ref().err().map(|_| Instant::now());
+        read
+    }
+
+    /// Whether a row failed to be read within [`REST`].
+    fn resting(&self) -> bool {
+        self.failed
+            .lock()
+            .expect("failed lock")
+            .is_some_and(|at| at.elapsed() < REST)
+    }
+
     /// Add the row the index's first entry from [`MARGIN`] before `at` makes: its record,
     /// held [`MARGIN`] after its `Timestamp`, so no earlier than `at`. Errors when the index
     /// or the database does not answer, or the database has no record of the entry.
-    async fn point(&self, sumdb: &sumdb::Client, at: Timestamp) -> Result<(), String> {
+    async fn read_point(&self, sumdb: &sumdb::Client, at: Timestamp) -> Result<(), String> {
         let since = (at - MARGIN).strftime("%Y-%m-%dT%H:%M:%SZ");
         let url = format!("{}/index?since={since}&limit=1", self.index);
         let line = self.first_line(&url).await?;
@@ -414,29 +439,39 @@ mod tests {
         assert!(*db.size.lock().unwrap() == 2000);
     }
 
-    /// The index answering 500: the seed is logged and a record below every row keeps its
-    /// claimed time; between rows, a record is dated by the row after it.
+    /// An index answering 500: a record below every row keeps its claimed time, nothing is
+    /// asked for [`REST`], and a failed split dates a record by the row after it. Logged.
     #[tokio::test]
     async fn an_index_that_does_not_answer_dates_by_what_is_kept() {
-        let published = every_ten_minutes(200);
-        let (index, base, _db, sumdb) = serve(published.clone()).await;
+        let (index, base, _db, sumdb) = serve(every_ten_minutes(200)).await;
         *index.broken.lock().unwrap() = true;
-        let heads = Heads::new(reqwest::Client::new(), &base);
         let now = Timestamp::now();
-        heads.saw(200, now);
         let claimed = Some(at("2020-01-01T00:00:00Z"));
         let before = now - SignedDuration::from_hours(24);
         let (guard, log) = capture(tracing::Level::WARN);
+        let heads = Heads::new(reqwest::Client::new(), &base);
+        heads.saw(200, now);
         assert_eq!(
             heads.dated(&sumdb, 10, claimed, Some(before)).await,
             claimed
         );
         heads.saw(100, now - SignedDuration::from_hours(30));
+        assert_eq!(
+            heads.dated(&sumdb, 150, claimed, Some(before)).await,
+            Some(now)
+        );
+        assert_eq!(*index.asked.lock().unwrap(), 1, "resting");
+
+        let heads = Heads::new(reqwest::Client::new(), &base);
+        heads.saw(100, now - SignedDuration::from_hours(30));
+        heads.saw(200, now);
         assert_eq!(heads.dated(&sumdb, 150, claimed, None).await, Some(now));
         drop(guard);
         let log = text(&log);
-        assert!(
-            log.contains("dated by their .info Time: the index could not be read"),
+        assert_eq!(
+            log.matches("dated by their .info Time: the index could not be read")
+                .count(),
+            1,
             "{log}"
         );
         assert!(
@@ -445,6 +480,40 @@ mod tests {
             ),
             "{log}"
         );
+    }
+
+    /// An index that takes connections and never answers: one read waits its timeout, and
+    /// the requests behind it date at once.
+    #[tokio::test]
+    async fn an_index_that_hangs_is_waited_on_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = accepted.clone();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::Relaxed);
+                held.push(socket);
+            }
+        });
+        let (_index, _base, _db, sumdb) = serve(every_ten_minutes(20)).await;
+        let http = crate::http::client_builder(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let heads = Heads::new(http, &format!("http://{addr}"));
+        let now = Timestamp::now();
+        heads.saw(20, now);
+        let before = Some(now - SignedDuration::from_hours(24));
+        let claimed = Some(at("2020-01-01T00:00:00Z"));
+        let started = Instant::now();
+        let dated =
+            futures_util::future::join_all((0..4).map(|_| heads.dated(&sumdb, 5, claimed, before)))
+                .await;
+        assert_eq!(dated, vec![claimed; 4]);
+        assert_eq!(accepted.load(Ordering::Relaxed), 1);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     /// With no row above a record, its claimed time. A split whose entry adds no row, as

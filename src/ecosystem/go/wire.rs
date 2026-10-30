@@ -73,17 +73,18 @@ pub fn list(key: &PackageKey, decoded: &[u8], files: &str) -> PackageMetadata {
     }
 }
 
-/// The version `@latest` names as a record of `key`, undated: its `Time` is a commit's, and
-/// the version is dated as a list's are. Errors when the body names no version.
+/// The version `@latest` names as a record of `key`, its `Time` the publish time unless the
+/// version is dated as a list's are. Errors on no version, or a time that does not parse.
 pub fn latest(key: &PackageKey, decoded: &[u8], files: &str) -> Result<PackageMetadata, String> {
     let info: Info = serde_json::from_slice(decoded).map_err(|e| e.to_string())?;
     if listed(info.version.as_bytes()) != Some(info.version.as_str()) {
         return Err(format!("`{}` is not a Go version", info.version));
     }
+    let published_at = published(&info)?;
     Ok(PackageMetadata {
         key: key.clone(),
         latest: Some(info.version.clone()),
-        records: vec![record(key, &info.version, None, files)],
+        records: vec![record(key, &info.version, published_at, files)],
         skipped: Vec::new(),
     })
 }
@@ -209,15 +210,21 @@ mod tests {
     }
 
     #[test]
-    fn latest_names_one_version_undated() {
+    fn latest_names_one_version_with_its_time() {
         let metadata =
             latest(&text(), &super::super::fixture("text.latest"), FILES).expect("reads");
         assert_eq!(metadata.latest.as_deref(), Some("v0.43.0"));
-        assert_eq!(metadata.records[0].published_at, None, "not its Time");
+        assert_eq!(
+            metadata.records[0].published_at,
+            Some("2026-10-09T15:18:32Z".parse().unwrap())
+        );
+        let untimed = latest(&text(), br#"{"Version":"v1.0.0"}"#, FILES).expect("reads");
+        assert_eq!(untimed.records[0].published_at, None);
         for (body, error) in [
             (&b"not json"[..], "expected"),
             (br#"{"Version":"1.0.0"}"#, "is not a Go version"),
             (br#"{"Version":" "}"#, "is not a Go version"),
+            (br#"{"Version":"v1.0.0","Time":"then"}"#, "Time `then`"),
         ] {
             let found = latest(&text(), body, FILES).unwrap_err();
             assert!(found.contains(error), "{found}");

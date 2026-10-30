@@ -1274,8 +1274,8 @@ fn cooldown_start(proxy: &Proxy) -> Option<jiff::Timestamp> {
         .cooldown_start(jiff::Timestamp::now())
 }
 
-/// `metadata` with a publish time on each version its client dated, for an ecosystem whose
-/// documents carry none, when the policy waits on any: [`ecosystem::Fetch::dated`]. `None`
+/// `metadata` with a publish time on each version its client dated, in place of any its
+/// document carries, when the policy waits on any: [`ecosystem::Fetch::dated`]. `None`
 /// when nothing was asked, or when the times could not be read: undated, `cooldown_days` is
 /// not enforced on the document, and each artifact is decided on its own time.
 async fn dated_versions(
@@ -1295,9 +1295,10 @@ async fn dated_versions(
     };
     let mut dated = metadata.clone();
     for record in &mut dated.records {
-        record.published_at = record
-            .published_at
-            .or_else(|| times.get(record.package.version()).copied());
+        record.published_at = times
+            .get(record.package.version())
+            .copied()
+            .or(record.published_at);
     }
     info!(url.path = %crate::http::url_path(path), byrle.package.versions = dated.records.len(), byrle.package.dated = times.len(), "versions dated for the cooldown");
     Some(dated)
@@ -8657,6 +8658,35 @@ mod tests {
         assert!(body.contains("cooldown"), "{body}");
         let (status, body) = refused(pinned(&proxy, "/go/example.com/m/@v/v1950.zip").await).await;
         assert_eq!(status, 403);
+        assert!(body.contains("cooldown"), "{body}");
+    }
+
+    /// `@latest` whose `.info` answers 500 keeps the `Time` in its body: a young one is 404.
+    #[tokio::test]
+    async fn latest_whose_info_fails_is_dated_by_its_body() {
+        let router = axum::Router::new().route(
+            "/rsc.io/quote/@v/{file}",
+            axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
+        let upstream = crate::proxy::testing::serve(router).await;
+        let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
+            .with_sumdb(sumdb_without_quote().await);
+        let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
+            .with_upstream(Ecosystem::Go, &upstream)
+            .with_client(Ecosystem::Go, Arc::new(go));
+        let young = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
+        let body = format!(r#"{{"Version":"v1.5.2","Time":"{young}"}}"#);
+        let (status, body) = answered(
+            resolve(
+                &proxy,
+                "/go/rsc.io/quote/@latest",
+                "application/json",
+                body.as_bytes(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 404);
         assert!(body.contains("cooldown"), "{body}");
     }
 

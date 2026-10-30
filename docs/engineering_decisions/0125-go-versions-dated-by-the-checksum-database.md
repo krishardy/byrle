@@ -14,7 +14,7 @@
 | What | Was | Is |
 |---|---|---|
 | a Go version's date, under a cooldown | its `.info` `Time` | the time of the first row that holds its record, below |
-| `@latest`'s version | dated by the `.info` `Time` in its body | undated in the body, then dated as a list's versions are |
+| `@latest`'s version | dated by the `Time` in its body | dated as a list's versions are, which takes the place of the body's `Time`; the body's when that fails |
 | a pinned `.zip` or `.mod` | its own `.info` `Time` | the same rule, through `Fetch::version` with the cooldown's start |
 | `byrle explain` and `byrle policy diff` | the `.info` `Time` | the same: their clients have no setting for the index or sum.golang.org |
 
@@ -38,8 +38,10 @@ the cooldown started, so its `.info` `Time` can only be wrong about how much old
 
 When the index cannot be read, the seed is logged, and a record below every row is dated
 by its `.info` `Time`, as before. When a split cannot be read, the record is dated by the
-row above it. When sum.golang.org does not answer, or has no record of the version, the
-`.info` `Time` dates it, logged. No version is left undated by this change.
+row above it. After either fails, no row is read for 5 minutes, so an index that drops
+packets costs one 10 s connect timeout, not one per request. When sum.golang.org does not
+answer, or has no record of the version, the `.info` `Time` dates it, logged. A version
+dated before this change is still dated.
 
 ## Why
 
