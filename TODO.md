@@ -497,6 +497,13 @@ Items that I've added that are not stage-bound.
 52. Documentation of what each signal means: for every `signal_weights` key, what fires
     it, what it says about the version, an example of its detail, and why its default
     weight is what it is. Raised 2026-10-29.
+53. `byrle explain` and `byrle policy diff` date a Go version by its record, as the proxy
+    does since decision 0125. They pass `before: None` to `Clients::version_of` today, so
+    they read the `.info` `Time`, and `explain` reports a backdated version as allowed
+    while the proxy refuses it. Their clients are built from the environment, which names
+    no index or checksum database, so their tests cannot keep off the network. Add a
+    setting for both: a `BYRLE_*` URL for the index, and for the checksum database a
+    `GOSUMDB`-style name, key and URL. Raised 2026-10-30.
 
 ## Architecture Refactor
 
