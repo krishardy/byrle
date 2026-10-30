@@ -3,6 +3,7 @@
 
 pub mod clients;
 pub mod dirhash;
+pub mod heads;
 pub mod inspect;
 pub mod lockfile;
 pub mod note;
@@ -37,11 +38,13 @@ pub const REGISTRY: Registry = Registry {
     documents: &["text/plain", "application/json"],
     other_is_probe: false,
     publish_times: PublishTimeSource {
-        said: "`Time` in each version's `.info`, and in `@latest`",
+        said: "each version's record in sum.golang.org, placed in time by index.golang.org; \
+               `Time` in its `.info` below the cooldown's start",
         full_accept: None,
         cost: Some(
-            "an `.info` fetch per version of a `@v/list`, newest first, until one is older \
-             than the cooldown",
+            "an `.info` fetch and a sum.golang.org lookup per version of a `@v/list`, newest \
+             first, until one is older than the cooldown, and index.golang.org reads to place \
+             each record within an hour",
         ),
     },
     streams: &[&OSV],

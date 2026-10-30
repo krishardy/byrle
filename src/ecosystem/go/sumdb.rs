@@ -18,8 +18,13 @@ pub const MAX_TILES: usize = 1024;
 /// What the checksum database says of a module version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
-    /// The `h1:` of its zip and of its `go.mod`.
-    Known { zip: String, go_mod: String },
+    /// The `h1:` of its zip and `go.mod`, its record number, and its proving tree's size.
+    Known {
+        zip: String,
+        go_mod: String,
+        record: u64,
+        tree: u64,
+    },
     /// It holds no record of it: 404 or 410.
     Unknown,
 }
@@ -113,6 +118,8 @@ impl Client {
         Ok(Answer::Known {
             zip: line("")?,
             go_mod: line("/go.mod")?,
+            record: id,
+            tree: tree.size,
         })
     }
 
@@ -358,10 +365,12 @@ mod tests {
         Database::sized(size, (0..70_000).map(record).collect())
     }
 
-    fn known(i: u64) -> Answer {
+    fn known(i: u64, tree: u64) -> Answer {
         Answer::Known {
             zip: format!("h1:zip{i}="),
             go_mod: format!("h1:mod{i}="),
+            record: i,
+            tree,
         }
     }
 
@@ -372,11 +381,11 @@ mod tests {
         let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
         assert_eq!(
             client.lookup("example.com/m", "v1234").await,
-            Ok(known(1234))
+            Ok(known(1234, 70_000))
         );
         assert_eq!(
             client.lookup("example.com/m", "v69999").await,
-            Ok(known(69_999))
+            Ok(known(69_999, 70_000))
         );
         assert_eq!(
             client.lookup("example.com/other", "v1").await,
@@ -415,16 +424,19 @@ mod tests {
         let db = database(60_000);
         let base = serve(db.clone()).await;
         let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
-        assert_eq!(client.lookup("example.com/m", "v7").await, Ok(known(7)));
+        assert_eq!(
+            client.lookup("example.com/m", "v7").await,
+            Ok(known(7, 60_000))
+        );
         *db.size.lock().unwrap() = 70_000;
         assert_eq!(
             client.lookup("example.com/m", "v65000").await,
-            Ok(known(65_000))
+            Ok(known(65_000, 70_000))
         );
         *db.size.lock().unwrap() = 65_536;
         assert_eq!(
             client.lookup("example.com/m", "v8").await,
-            Ok(known(8)),
+            Ok(known(8, 65_536)),
             "an older tree"
         );
 
@@ -568,13 +580,18 @@ mod tests {
             crate::ecosystem::go::note::SUM_GOLANG_ORG,
         )
         .unwrap();
-        assert_eq!(
-            client.lookup("rsc.io/quote", "v1.5.2").await,
-            Ok(Answer::Known {
-                zip: "h1:w5fcysjrx7yqtD/aO+QwRjYZOKnaM9Uh2b40tElTs3Y=".to_owned(),
-                go_mod: "h1:LzX7hefJvL54yjefDEDHNONDjII0t9xZLPXsUe+TKr0=".to_owned(),
-            })
-        );
+        let Ok(Answer::Known {
+            zip,
+            go_mod,
+            record,
+            ..
+        }) = client.lookup("rsc.io/quote", "v1.5.2").await
+        else {
+            panic!("known");
+        };
+        assert_eq!(zip, "h1:w5fcysjrx7yqtD/aO+QwRjYZOKnaM9Uh2b40tElTs3Y=");
+        assert_eq!(go_mod, "h1:LzX7hefJvL54yjefDEDHNONDjII0t9xZLPXsUe+TKr0=");
+        assert_eq!(record, 942, "as sum.golang.org answered on 2026-10-29");
         assert!(matches!(
             client.lookup("golang.org/x/text", "v0.20.0").await,
             Ok(Answer::Known { .. })

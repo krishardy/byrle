@@ -428,7 +428,7 @@ async fn package_answer(
     let metadata = crate::ecosystem::fetched(clients.metadata(at, reference.key()).await)
         .map_err(|e| stopped(1, e))?;
     let Some(package) = clients
-        .version_of(at, &metadata, reference.version())
+        .version_of(at, &metadata, reference.version(), None)
         .await
         .map_err(|e| stopped(1, e))?
     else {

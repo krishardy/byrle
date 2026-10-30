@@ -536,7 +536,7 @@ impl Comparison {
                 Ok(metadata) => metadata,
                 Err(e) => return Ok(Compared::Unread(e)),
             };
-        let record = match self.clients.version_of(at, &metadata, version).await {
+        let record = match self.clients.version_of(at, &metadata, version, None).await {
             Ok(Some(record)) => record,
             Ok(None) => return Ok(Compared::Unpublished),
             Err(e) => return Ok(Compared::Unread(e)),

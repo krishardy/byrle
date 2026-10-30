@@ -60,7 +60,7 @@ Go's column of [cargo-plan](cargo-plan.md)'s table, with what was measured since
 |---|---|---|
 | Route a path | `@v/list`, `@latest`, `.info`, `.mod`, `.zip`, under `/go/` | nothing: `classify_path` |
 | Read and filter a document | `@v/list` lines, and `@latest`'s JSON | `@latest` is a second document kind that names one version |
-| Publish time | `.info`'s `Time`, a request per version | a time asked per version, newest first, as npm's full packument is asked per document |
+| Publish time | `.info`'s `Time`, a request per version; since 0125, the version's record in sum.golang.org, placed in time by index.golang.org | a time asked per version, newest first, as npm's full packument is asked per document |
 | Artifact digest | `h1:` from sum.golang.org, over the zip's files | a digest the proxy fetches, and checks after the whole zip is spooled |
 | Decide without 503 | go does not retry a 503 | an answer held open while the artifact is analysed |
 | Code run at fetch or build | none: `go generate` is never run by a build | `meaningless` gains `install_scripts` |

@@ -3,12 +3,15 @@
 
 use std::sync::{Arc, Mutex};
 
+use tracing::warn;
+
 use crate::ecosystem::{Claim, Claimed, Fetch, Fetched, FullDocument};
 use crate::identity::PackageKey;
 use crate::policy::facts::PublishTimes;
 use crate::record::{PackageMetadata, PackageRecord};
 use crate::util::lru::Lru;
 
+use super::heads::{self, Heads};
 use super::paths::{LIST, escape};
 use super::sumdb::{self, Answer};
 use super::wire::{Info, list, preferred, published, record};
@@ -25,6 +28,10 @@ pub struct Client {
     sumdb: Arc<sumdb::Client>,
     /// Each module version's claim, by module path and version.
     claims: Arc<Mutex<Lru<(String, String), Claim>>>,
+    /// Each module version's record number in the checksum database, which never changes.
+    records: Arc<Mutex<Lru<(String, String), u64>>>,
+    /// The checksum database's trees, which date a version by its record.
+    heads: Arc<Heads>,
 }
 
 impl std::fmt::Debug for Client {
@@ -41,17 +48,25 @@ impl Client {
         let sumdb = sumdb::Client::new(http.clone(), sumdb::DEFAULT, super::note::SUM_GOLANG_ORG)
             .expect("the go command's key parses");
         Self {
+            heads: Arc::new(Heads::new(http.clone(), heads::INDEX)),
             http,
             proxy: proxy.trim_end_matches('/').to_owned(),
             max_bytes,
             sumdb: Arc::new(sumdb),
             claims: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
+            records: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
         }
     }
 
-    /// The same, asking `sumdb` for claims.
+    /// The same, asking `sumdb` for claims and records.
     pub fn with_sumdb(mut self, sumdb: sumdb::Client) -> Self {
         self.sumdb = Arc::new(sumdb);
+        self
+    }
+
+    /// The same, reading rows from the module index at `index`.
+    pub fn with_index(mut self, index: &str) -> Self {
+        self.heads = Arc::new(Heads::new(self.http.clone(), index));
         self
     }
 
@@ -82,18 +97,97 @@ impl Client {
             .map_err(|e| format!("{url}: {e}"))
     }
 
-    /// `version`'s record from its own `.info`, with its time: go fetches versions its list
-    /// leaves out, pseudo-versions among them. `None` when the proxy does not have it.
+    /// `version`'s record from its own `.info`, dated for a cooldown starting `before`: go
+    /// fetches versions its list leaves out, pseudo-versions among them. `None` when the
+    /// proxy does not have it.
     pub async fn version(
         &self,
         key: &PackageKey,
         version: &str,
+        before: Option<jiff::Timestamp>,
     ) -> Result<Option<PackageRecord>, String> {
         let Some(info) = self.info(key, version).await? else {
             return Ok(None);
         };
-        let published_at = published(&info)?;
+        let time = published(&info)?;
+        let published_at = match before {
+            Some(before) => self.date(key, version, time, before).await,
+            None => time,
+        };
         Ok(Some(record(key, version, published_at, &self.files(key))))
+    }
+
+    /// When `version` of `key` became public, for a cooldown starting `before`: by its
+    /// record in the checksum database, [`Heads::dated`]. Its `.info` `time` when the database
+    /// does not answer or has no record of it, which is logged.
+    async fn date(
+        &self,
+        key: &PackageKey,
+        version: &str,
+        time: Option<jiff::Timestamp>,
+        before: jiff::Timestamp,
+    ) -> Option<jiff::Timestamp> {
+        let record = match self.record(key, version).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                warn!(byrle.package.purl = %key, byrle.package.version = version, "a go version is dated by its .info Time: the checksum database has no record of it");
+                return time;
+            }
+            Err(e) => {
+                warn!(byrle.package.purl = %key, byrle.package.version = version, error.message = %e, "a go version is dated by its .info Time: the checksum database did not answer");
+                return time;
+            }
+        };
+        self.heads
+            .dated(&self.sumdb, record, time, Some(before))
+            .await
+    }
+
+    /// `version` of `key`'s record number, kept once known. `None` when the database has no
+    /// record of it. Errors when the database does not answer or prove its answer.
+    async fn record(&self, key: &PackageKey, version: &str) -> Result<Option<u64>, String> {
+        let asked = (key.registry_name(), version.to_owned());
+        let kept = self
+            .records
+            .lock()
+            .expect("records lock")
+            .get(&asked)
+            .copied();
+        if kept.is_some() {
+            return Ok(kept);
+        }
+        Ok(self.lookup(asked).await?.map(|(_, record)| record))
+    }
+
+    /// What the database says of `asked`, a module path and version: its claim and record
+    /// number, both kept, and its tree, seen now. `None` when it has no record of it.
+    async fn lookup(&self, asked: (String, String)) -> Result<Option<(Claim, u64)>, String> {
+        let Answer::Known {
+            zip,
+            go_mod,
+            record,
+            tree,
+        } = self.sumdb.lookup(&asked.0, &asked.1).await?
+        else {
+            return Ok(None);
+        };
+        self.heads.saw(tree, jiff::Timestamp::now());
+        let claim = Claim {
+            artifact: zip,
+            artifact_digest: super::dirhash::zip_h1::<std::fs::File>,
+            manifest: go_mod,
+            manifest_digest: super::dirhash::go_mod_h1,
+            signer: None,
+        };
+        self.records
+            .lock()
+            .expect("records lock")
+            .insert(asked.clone(), record);
+        self.claims
+            .lock()
+            .expect("claims lock")
+            .insert(asked, claim.clone());
+        Ok(Some((claim, record)))
     }
 
     /// A time for each of `metadata`'s versions: each `.info` in the go command's order of
@@ -112,8 +206,11 @@ impl Client {
                 times.insert(version.to_owned(), at);
                 continue;
             }
-            let info = self.info(&metadata.key, version).await?;
-            let Some(at) = info.as_ref().map(published).transpose()?.flatten() else {
+            let Some(info) = self.info(&metadata.key, version).await? else {
+                continue;
+            };
+            let time = published(&info)?;
+            let Some(at) = self.date(&metadata.key, version, time, before).await else {
                 continue;
             };
             times.insert(version.to_owned(), at);
@@ -136,21 +233,10 @@ impl Client {
         if let Some(claim) = kept {
             return Ok(Claimed::Known(claim));
         }
-        let Answer::Known { zip, go_mod } = self.sumdb.lookup(&asked.0, version).await? else {
-            return Ok(Claimed::Unknown);
-        };
-        let claim = Claim {
-            artifact: zip,
-            artifact_digest: super::dirhash::zip_h1::<std::fs::File>,
-            manifest: go_mod,
-            manifest_digest: super::dirhash::go_mod_h1,
-            signer: None,
-        };
-        self.claims
-            .lock()
-            .expect("claims lock")
-            .insert(asked, claim.clone());
-        Ok(Claimed::Known(claim))
+        Ok(match self.lookup(asked).await? {
+            Some((claim, _)) => Claimed::Known(claim),
+            None => Claimed::Unknown,
+        })
     }
 
     /// One module's `@v/list` as records.
@@ -202,8 +288,9 @@ impl Fetch for Client {
         &'a self,
         key: &'a PackageKey,
         version: &'a str,
+        before: Option<jiff::Timestamp>,
     ) -> futures_util::future::BoxFuture<'a, Result<Option<PackageRecord>, String>> {
-        Box::pin(Client::version(self, key, version))
+        Box::pin(Client::version(self, key, version, before))
     }
 
     fn dated<'a>(
@@ -337,7 +424,7 @@ pub(crate) mod tests {
         ])
         .await;
         let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
-        let record = Fetch::version(&client, &toml(), "v1.0.0")
+        let record = Fetch::version(&client, &toml(), "v1.0.0", None)
             .await
             .unwrap()
             .expect("found");
@@ -349,25 +436,131 @@ pub(crate) mod tests {
             record.artifacts[0].url,
             format!("{base}/github.com/!burnt!sushi/toml/@v/v1.0.0.zip")
         );
-        assert_eq!(client.version(&toml(), "v9.0.0").await, Ok(None));
+        assert_eq!(client.version(&toml(), "v9.0.0", None).await, Ok(None));
         for (version, error) in [
             ("v2.0.0", "Time `then`"),
             ("v3.0.0", "expected"),
             ("v4.0.0", "answered 500"),
         ] {
-            let found = client.version(&toml(), version).await.unwrap_err();
+            let found = client.version(&toml(), version, None).await.unwrap_err();
             assert!(found.contains(error), "{version}: {found}");
         }
         let addr = scripted(vec![Answer::cut_short()]).await;
         let cut = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
-        assert!(cut.version(&toml(), "v1.0.0").await.is_err());
+        assert!(cut.version(&toml(), "v1.0.0", None).await.is_err());
         let closed = crate::util::test_support::closing_server().await;
         let closed = Client::new(reqwest::Client::new(), &format!("http://{closed}"), 1 << 20);
-        assert!(closed.version(&toml(), "v1.0.0").await.is_err());
+        assert!(closed.version(&toml(), "v1.0.0", None).await.is_err());
     }
 
-    /// Versions are dated newest first until one is older than the cutoff; each after it is
-    /// given its time, and one whose `.info` has no time stays undated.
+    /// A checksum database holding only rsc.io/quote, so no other module has a record.
+    async fn sumdb_of_quote() -> sumdb::Client {
+        use super::super::sumdb::testing::{Database, client};
+        client(Database::new(vec![quote_record()])).await
+    }
+
+    /// Records of `example.com/m` at `v0` to `v1999`, one every 10 minutes, each claiming
+    /// a 2020 `.info` `Time`, with an index of them. Returns the client and when each was
+    /// published.
+    async fn backdated() -> (
+        Client,
+        Vec<jiff::Timestamp>,
+        Arc<super::super::sumdb::testing::Database>,
+    ) {
+        use super::super::heads::testing::{every_ten_minutes, serve};
+        let published = every_ten_minutes(2000);
+        let (_index, index, db, sumdb) = serve(published.clone()).await;
+        let router = axum::Router::new().route(
+            "/example.com/m/@v/{file}",
+            axum::routing::get(|| async { r#"{"Version":"v0","Time":"2020-01-01T00:00:00Z"}"# }),
+        );
+        let base = crate::proxy::testing::serve(router).await;
+        let client = Client::new(reqwest::Client::new(), &base, 1 << 20)
+            .with_sumdb(sumdb)
+            .with_index(&index);
+        (client, published, db)
+    }
+
+    /// v500, older than the seed, keeps its 2020 `Time`; v1950 is dated by its record, which
+    /// and whose claim are kept. With no cooldown, no record is asked.
+    #[tokio::test]
+    async fn a_version_is_dated_by_its_record_not_its_commit() {
+        let (client, published, db) = backdated().await;
+        let m = PackageKey::from_registry_name(Ecosystem::Go, "example.com/m").unwrap();
+        let before = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(7 * 24);
+        let claimed: jiff::Timestamp = "2020-01-01T00:00:00Z".parse().unwrap();
+        let dated = |version: &'static str, before| {
+            let client = client.clone();
+            let m = m.clone();
+            async move {
+                client
+                    .version(&m, version, before)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .published_at
+                    .unwrap()
+            }
+        };
+        assert_eq!(dated("v500", Some(before)).await, claimed);
+        let new = dated("v1950", Some(before)).await;
+        let late = new.duration_since(published[1950]);
+        assert!(
+            late > jiff::SignedDuration::ZERO
+                && late <= super::super::heads::GRAIN + super::super::heads::MARGIN,
+            "{late:?}"
+        );
+        let asked = db.log.asked.lock().unwrap().len();
+        assert_eq!(dated("v1950", Some(before)).await, new);
+        assert!(matches!(
+            client.claim(&m, "v1950").await,
+            Ok(Claimed::Known(_))
+        ));
+        assert_eq!(db.log.asked.lock().unwrap().len(), asked, "kept");
+        assert_eq!(dated("v1951", None).await, claimed, "no cooldown");
+
+        let metadata = list(&m, b"v500\nv1950\n", "x");
+        let times = client.dated(&metadata, before).await.unwrap();
+        assert_eq!(times["v1950"], new);
+        assert_eq!(times["v500"], claimed);
+    }
+
+    /// A database that does not answer leaves the `.info` `Time`, logged.
+    #[tokio::test]
+    async fn a_database_that_does_not_answer_leaves_the_info_time() {
+        let base = infos(vec![(
+            "v1.0.0",
+            r#"{"Version":"v1.0.0","Time":"2020-01-02T03:04:05Z"}"#,
+        )])
+        .await;
+        let closed = crate::util::test_support::closing_server().await;
+        let sumdb = sumdb::Client::new(
+            reqwest::Client::new(),
+            &format!("http://{closed}"),
+            super::super::note::SUM_GOLANG_ORG,
+        )
+        .unwrap();
+        let client = Client::new(reqwest::Client::new(), &base, 1 << 20).with_sumdb(sumdb);
+        let (guard, log) = crate::util::test_support::capture(tracing::Level::WARN);
+        let record = client
+            .version(&toml(), "v1.0.0", Some(jiff::Timestamp::now()))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(guard);
+        assert_eq!(
+            record.published_at,
+            Some("2020-01-02T03:04:05Z".parse().unwrap())
+        );
+        let log = crate::util::test_support::text(&log);
+        assert!(
+            log.contains("the checksum database did not answer"),
+            "{log}"
+        );
+    }
+
+    /// Versions are dated newest first until one is older than the cutoff, each after it
+    /// given its time. A version with no record keeps its `.info` `Time`, logged.
     #[tokio::test]
     async fn versions_are_dated_newest_first_until_one_is_old_enough() {
         let base = infos(vec![
@@ -384,13 +577,21 @@ pub(crate) mod tests {
             ("v0.9.0", r#"{"Version":"v0.9.0","Time":"then"}"#),
         ])
         .await;
-        let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
+        let client =
+            Client::new(reqwest::Client::new(), &base, 1 << 20).with_sumdb(sumdb_of_quote().await);
         let metadata = list(&toml(), b"v1.0.0\nv1.2.0\nv1.0.1\nv1.1.0\nv1.3.0\n", "x");
         let before: jiff::Timestamp = "2026-10-01T00:00:00Z".parse().unwrap();
+        let (guard, log) = crate::util::test_support::capture(tracing::Level::WARN);
         let times = Fetch::dated(&client, &metadata, before)
             .await
             .unwrap()
             .expect("dated");
+        drop(guard);
+        let log = crate::util::test_support::text(&log);
+        assert!(
+            log.contains("the checksum database has no record of it"),
+            "{log}"
+        );
         let old: jiff::Timestamp = "2020-01-01T00:00:00Z".parse().unwrap();
         assert_eq!(
             times,

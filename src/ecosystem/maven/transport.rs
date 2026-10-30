@@ -428,10 +428,12 @@ impl Fetch for Client {
         Box::pin(Client::claim(self, key, version, file))
     }
 
+    /// The POM's `Last-Modified` dates it, whatever `before` is.
     fn version<'a>(
         &'a self,
         key: &'a PackageKey,
         version: &'a str,
+        _before: Option<jiff::Timestamp>,
     ) -> futures_util::future::BoxFuture<'a, Result<Option<PackageRecord>, String>> {
         Box::pin(Client::version(self, key, version))
     }
@@ -741,7 +743,7 @@ pub(crate) mod tests {
     async fn a_version_is_dated_by_its_pom() {
         let base = poms(&[("3.17.0", "Wed, 21 Aug 2024 14:04:19 GMT")]).await;
         let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
-        let record = Fetch::version(&client, &lang3(), "3.17.0")
+        let record = Fetch::version(&client, &lang3(), "3.17.0", None)
             .await
             .unwrap()
             .expect("published");

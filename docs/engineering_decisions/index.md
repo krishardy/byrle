@@ -136,3 +136,4 @@ Implemented means it is in the code, and the file names where.
 | 0122 | [A tarball is read as the extractor that reads the most would read it, and its odd shapes are a signal](0122-tarballs-read-as-the-widest-extractor.md) | Implemented 2026-10-29 |  |
 | 0123 | [An npm tarball with a `binding.gyp` runs `node-gyp rebuild` on install, as npm runs it](0123-node-gyp-install-from-binding-gyp.md) | Implemented 2026-10-29 |  |
 | 0124 | [A PyPI file is dated by its own upload, and refused alone for it](0124-pypi-file-publish-times.md) | Implemented 2026-10-29 |  |
+| 0125 | [A Go version is dated by its record in sum.golang.org, placed in time by index.golang.org](0125-go-versions-dated-by-the-checksum-database.md) | Implemented 2026-10-30 |  |

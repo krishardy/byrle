@@ -1265,8 +1265,14 @@ fn refuses_unservable(proxy: &Proxy) -> bool {
         && crate::policy::decide::weighs(proxy.config.policy.as_deref(), &["unservable".to_owned()])
 }
 
-/// A cooldown longer than this, a century, dates a document as this one does.
-const MAX_COOLDOWN_DAYS: u32 = 36_500;
+/// [`Policy::cooldown_start`] now, under the policy in force.
+fn cooldown_start(proxy: &Proxy) -> Option<jiff::Timestamp> {
+    proxy
+        .config
+        .policy
+        .as_deref()?
+        .cooldown_start(jiff::Timestamp::now())
+}
 
 /// `metadata` with a publish time on each version its client dated, for an ecosystem whose
 /// documents carry none, when the policy waits on any: [`ecosystem::Fetch::dated`]. `None`
@@ -1279,9 +1285,7 @@ async fn dated_versions(
     path: &str,
 ) -> Option<PackageMetadata> {
     let metadata = metadata?;
-    let days = Some(proxy.config.policy.as_deref()?.longest_cooldown()).filter(|days| *days > 0)?;
-    let wait = jiff::SignedDuration::from_hours(24 * i64::from(days.min(MAX_COOLDOWN_DAYS)));
-    let before = jiff::Timestamp::now() - wait;
+    let before = cooldown_start(proxy)?;
     let times = match proxy.config.clients.dated(at, metadata, before).await {
         Ok(times) => times?,
         Err(e) => {
@@ -2043,7 +2047,12 @@ impl<'a> Deciding<'a> {
             .proxy
             .config
             .clients
-            .version(self.request.repository, key, claimed_version)
+            .version(
+                self.request.repository,
+                key,
+                claimed_version,
+                cooldown_start(self.proxy),
+            )
             .await
         {
             Ok(Some(alone)) => Lookup::Found(Box::new(alone)),
@@ -8588,6 +8597,69 @@ mod tests {
         assert!(body.contains("gave no metadata"), "{body}");
     }
 
+    /// A checksum database with no record of rsc.io/quote, so its `.info` `Time` dates it.
+    async fn sumdb_without_quote() -> crate::ecosystem::go::sumdb::Client {
+        use crate::ecosystem::go::sumdb::testing::{Database, client};
+        client(Database::new(vec![
+            crate::ecosystem::go::heads::testing::record(0),
+        ]))
+        .await
+    }
+
+    /// v500 and v1950, published 10.4 and 0.3 days ago, both claim 2020. Under a 7-day
+    /// cooldown v1950's line is removed, `@latest` naming it is 404, and its zip 403.
+    #[tokio::test]
+    async fn a_go_version_with_a_backdated_commit_is_refused_by_its_record() {
+        use crate::ecosystem::go::heads::testing::{every_ten_minutes, serve as index};
+        let (_index, index, _db, sumdb) = index(every_ten_minutes(2000)).await;
+        let router = axum::Router::new().route(
+            "/example.com/m/@v/{file}",
+            axum::routing::get(
+                |axum::extract::Path(file): axum::extract::Path<String>| async move {
+                    let version = file.trim_end_matches(".info");
+                    format!(r#"{{"Version":"{version}","Time":"2020-01-01T00:00:00Z"}}"#)
+                },
+            ),
+        );
+        let upstream = crate::proxy::testing::serve(router).await;
+        let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
+            .with_sumdb(sumdb)
+            .with_index(&index);
+        let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
+            .with_upstream(Ecosystem::Go, &upstream)
+            .with_client(Ecosystem::Go, Arc::new(go));
+
+        let DocumentStep::Forward { body, .. } = resolve(
+            &proxy,
+            "/go/example.com/m/@v/list",
+            "text/plain",
+            b"v500\nv1950\n",
+        )
+        .await
+        else {
+            panic!("the list is forwarded");
+        };
+        assert_eq!(
+            body.map(|b| String::from_utf8(b).unwrap()).as_deref(),
+            Some("v500\n")
+        );
+        let (status, body) = answered(
+            resolve(
+                &proxy,
+                "/go/example.com/m/@latest",
+                "application/json",
+                br#"{"Version":"v1950","Time":"2020-01-01T00:00:00Z"}"#,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 404);
+        assert!(body.contains("cooldown"), "{body}");
+        let (status, body) = refused(pinned(&proxy, "/go/example.com/m/@v/v1950.zip").await).await;
+        assert_eq!(status, 403);
+        assert!(body.contains("cooldown"), "{body}");
+    }
+
     /// Under a cooldown, a list's versions are dated from their `.info`, newest first, until
     /// one is old enough; the versions after it are kept. Undated, the list is forwarded.
     #[tokio::test]
@@ -8626,7 +8698,8 @@ mod tests {
                     }),
                 );
             let upstream = crate::proxy::testing::serve(router).await;
-            let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20);
+            let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
+                .with_sumdb(sumdb_without_quote().await);
             let proxy = offline(
                 None,
                 Some(&format!("version: 1\ncooldown_days: {cooldown}\n")),

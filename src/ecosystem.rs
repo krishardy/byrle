@@ -37,11 +37,13 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
     ) -> BoxFuture<'a, Result<Option<FullDocument>, String>>;
 
     /// The record of `version` read on its own, for an ecosystem that serves versions its
-    /// document does not list. `Ok(None)` for one that does not, or a version it lacks.
+    /// document does not list, dated for a cooldown starting `before`. `Ok(None)` for one
+    /// that does not, or a version it lacks.
     fn version<'a>(
         &'a self,
         _key: &'a PackageKey,
         _version: &'a str,
+        _before: Option<jiff::Timestamp>,
     ) -> BoxFuture<'a, Result<Option<crate::record::PackageRecord>, String>> {
         Box::pin(async { Ok(None) })
     }
@@ -335,23 +337,27 @@ impl Clients {
         at: Repository,
         key: &PackageKey,
         version: &str,
+        before: Option<jiff::Timestamp>,
     ) -> Result<Option<crate::record::PackageRecord>, String> {
-        self.of(at, key).version(key, version).await
+        self.of(at, key).version(key, version, before).await
     }
 
     /// The record of `version` of `metadata`'s package: read on its own where the
-    /// ecosystem serves versions its document does not list, else `metadata`'s.
-    /// `Ok(None)` when neither has it.
+    /// ecosystem serves versions its document does not list, dated for a cooldown starting
+    /// `before`, else `metadata`'s. `Ok(None)` when neither has it.
     pub async fn version_of(
         &self,
         at: Repository,
         metadata: &PackageMetadata,
         version: &str,
+        before: Option<jiff::Timestamp>,
     ) -> Result<Option<crate::record::PackageRecord>, String> {
-        Ok(match self.version(at, &metadata.key, version).await? {
-            Some(alone) => Some(alone),
-            None => metadata.version(version).cloned(),
-        })
+        Ok(
+            match self.version(at, &metadata.key, version, before).await? {
+                Some(alone) => Some(alone),
+                None => metadata.version(version).cloned(),
+            },
+        )
     }
 
     /// A time for each of `metadata`'s versions: [`Fetch::dated`].
