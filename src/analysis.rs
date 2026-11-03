@@ -913,8 +913,8 @@ mod tests {
         assert_eq!(processors(&prefixed).unwrap().names, [PROCESSOR_SERVICES]);
     }
 
-    /// An entry in a compression this build cannot read, or whose bytes do not match its
-    /// CRC, is an error, as an archive that does not read is.
+    /// An entry in a compression this build cannot read, whose bytes do not match its CRC,
+    /// or whose local header is missing, is an error, as an archive that does not read is.
     #[test]
     fn a_jar_entry_that_cannot_be_read_is_an_error() {
         let built = crate::util::test_support::zip_of(&[(PROCESSOR_SERVICES, b"evil.Processor")]);
@@ -936,6 +936,12 @@ mod tests {
         corrupt[at] = b'E';
         assert!(matches!(
             processors(&corrupt),
+            Err(ReadError::NotAnArchive(_))
+        ));
+        let mut no_local_header = built.clone();
+        no_local_header[3] = 0x05;
+        assert!(matches!(
+            processors(&no_local_header),
             Err(ReadError::NotAnArchive(_))
         ));
     }
