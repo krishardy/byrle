@@ -137,3 +137,5 @@ Implemented means it is in the code, and the file names where.
 | 0123 | [An npm tarball with a `binding.gyp` runs `node-gyp rebuild` on install, as npm runs it](0123-node-gyp-install-from-binding-gyp.md) | Implemented 2026-10-29 |  |
 | 0124 | [A PyPI file is dated by its own upload, and refused alone for it](0124-pypi-file-publish-times.md) | Implemented 2026-10-29 |  |
 | 0125 | [A Go version is dated by its record in sum.golang.org, placed in time by index.golang.org](0125-go-versions-dated-by-the-checksum-database.md) | Implemented 2026-10-30 |  |
+| 0126 | [An artifact or manifest is served to GET and HEAD only](0126-files-served-to-get-and-head-only.md) | Implemented 2026-11-03 |  |
+| 0127 | [An artifact or manifest answered with any 2xx is verified as a 200 is](0127-every-2xx-verified.md) | Implemented 2026-11-03 |  |
