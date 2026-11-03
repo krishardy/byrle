@@ -196,14 +196,14 @@ flowchart LR
     V9 --> V10[V10 signal::of_detections]
     V6 --> SIG[signal keys]
     V10 --> SIG
-    V11[V11 own_signals:<br/>unservable, no_strong_digest,<br/>digest_mismatch, signature_failed] --> SIG
+    V11[V11 own_signals:<br/>unservable, no_strong_digest,<br/>digest_mismatch, signature_failed,<br/>cooldown_unanswered] --> SIG
 ```
 
 | ID | Input | Code | From |
 |---|---|---|---|
 | V1 | `PackageRecord`: `published_at`, `yanked`, `deprecated`, `has_install_scripts`, `install_scripts`, `provenance`, `integrity`, `repository` | npm `normalize.rs` `version_record`; PyPI `normalize.rs` `normalize`; cargo `wire.rs` `record`; Go `wire.rs`; Maven `wire.rs` | the metadata document. npm reads `hasInstallScript` and the three script keys; PyPI marks scripts when a version has sdists only; cargo, Go and Maven publish none |
 | V2 | the requested file's own scripts, yanked, attestation and, on PyPI, publish time (0124) | `record.rs` `PackageRecord::narrowed_to`, called in `Deciding::locate` | when the record names no file by the requested name, the version's first file is used |
-| V3 | `published` | `policy/facts.rs` `published_date`; `dated_versions`; `dated_by_host` | `published_at`, else the separately fetched times, else a HEAD's `Last-Modified`. A PyPI version's is its oldest file's `upload-time`; a PyPI file in a version the policy serves is decided again on its own `upload-time`, and removed alone from the index when refused (0124). A Go version under a cooldown is dated by the first tree of sum.golang.org that holds its record, rows read from index.golang.org until they are an hour apart; below the seed row, the earlier of its `.info` `Time` and the seed (0125) |
+| V3 | `published` | `policy/facts.rs` `published_date`; `dated_versions`; `dated_by_host` | `published_at`, else the separately fetched times, else a HEAD's `Last-Modified` when they lack the version, else, under a cooldown on a pinned fetch, the file's first sighting in `artifact_first_seen` (0129). A PyPI version's is its oldest file's `upload-time`; a PyPI file in a version the policy serves is decided again on its own `upload-time`, and removed alone from the index when refused (0124). A Go version under a cooldown is dated by the first tree of sum.golang.org that holds its record, rows read from index.golang.org until they are an hour apart; below the seed row, the earlier of its `.info` `Time` and the seed (0125) |
 | V4 | intel rows for the version | `intel/store.rs` `PackageIntel::for_version`, `intel/range.rs` `Interval::contains`, `VersionOrder` | exact string, equal in the ecosystem's order, or inside a range; SemVer, PEP 440, Go or Maven order |
 | V5 | `known_malware`, `advisories` (merged by id, highest CVSS, `kev` OR'd), `intel` | `policy/facts.rs` `with_intel` | informational rows are dropped here |
 | V6 | `advisory_malware`, `_vulnerability`, `_unsound`, `_unmaintained`, `_notice` | `signal.rs` `of_advisories` | all rows, informational ones included |
@@ -235,7 +235,7 @@ flowchart TD
 |---|---|---|---|
 | S1 | Checks: `denied`, `known_malware`, `cooldown`, `kev`, `max_cvss`, `install_scripts`, `yanked`, `deprecated`, `provenance` | `policy/decide.rs` `decide`, `Applied::of`, `matching`, `on_off` | a failed check adds its weight unless its action is `allow`; `merge::applies` makes a check meaningless for an ecosystem `NotApplicable`; an unknown publish date fails a non-zero cooldown, and S3 then drops the check; an unscored advisory fails `max_cvss` |
 | S2 | Signals | `Decision::with_signals`, `Policy::weight_of` | default weights in `decide::default_weight` and [policy-reference](policy-reference.md#signal_weights): each check and the proxy's own weigh `risk_threshold`, but `no_strong_digest` 0, `provenance_dropped` half and `provenance_surprise` a quarter per bit; detector signals 1; advisories 8, 4, 3, 2, 1 |
-| S3 | Unanswerable checks | `policy/enforce.rs` `enforced`, `unenforceable` | removed: install scripts not analysed, provenance unknown, no date with a cooldown, intel not consulted (malware, KEV, CVSS), KEV with no exploitation stream |
+| S3 | Unanswerable checks | `policy/enforce.rs` `enforced`, `unenforceable` | removed: install scripts not analysed, provenance unknown, no date with a cooldown (on a pinned fetch, V11's `cooldown_unanswered` weighs it instead, 0129), intel not consulted (malware, KEV, CVSS), KEV with no exploitation stream |
 | S4 | Action | `Decision::score`, `Decision::action` | the sum of check and signal weights; a tie refuses; quarantine when the score without `cooldown`'s weight is under the threshold |
 
 `risk_threshold` is 100 by default and may not be 0 (`policy.rs`). Two other sums are

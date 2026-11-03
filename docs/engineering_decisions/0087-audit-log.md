@@ -40,6 +40,7 @@ reasoning per version. A version offered and not removed is not in the log.
 | `refused` | a refusal by the policy | yes |
 | `unservable` | a refusal: its origin is one the proxy does not serve | yes |
 | `no-strong-digest` | a refusal: its metadata publishes no strong digest | yes |
+| `undated` | a refusal: under a cooldown, nothing dates it, `cooldown_unanswered` ([undated-files-first-seen](0129-undated-files-first-seen.md)). Added 2026-11-03 | yes |
 | `deferred` | 503 while it is analysed | yes |
 | `upstream-mismatch` | 502: the upstream's bytes did not match their digest | yes |
 | `not-listed` | a refusal: its metadata names neither its version nor its file | no |

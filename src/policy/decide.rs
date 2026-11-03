@@ -275,11 +275,12 @@ pub const NAME: &str = "policy";
 pub const PROXY: &str = "proxy";
 
 /// The rules of the proxy's own refusals, each weighing the threshold unless weighed or passed.
-pub const PROXY_RULES: [&str; 4] = [
+pub const PROXY_RULES: [&str; 5] = [
     "no_strong_digest",
     "unservable",
     "digest_mismatch",
     "signature_failed",
+    "cooldown_unanswered",
 ];
 
 /// The rules of the checks' signals, as [`Check::rule`] names them.

@@ -30,6 +30,8 @@ pub enum Answered {
     Unservable,
     /// Refused because its metadata publishes no strong digest.
     NoStrongDigest,
+    /// Refused because, under a cooldown, nothing dates it: `cooldown_unanswered`.
+    Undated,
     /// Refused because its metadata names neither its version nor its file. Nothing decided.
     NotListed,
     /// 502: the registry gave no metadata for it. Nothing decided.

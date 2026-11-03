@@ -1166,6 +1166,7 @@ mod tests {
                     "unservable",
                     "digest_mismatch",
                     "signature_failed",
+                    "cooldown_unanswered",
                     "new_package",
                     "new_publisher",
                     "no_repository",

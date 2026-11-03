@@ -140,3 +140,4 @@ Implemented means it is in the code, and the file names where.
 | 0126 | [An artifact or manifest is served to GET and HEAD only](0126-files-served-to-get-and-head-only.md) | Implemented 2026-11-03 |  |
 | 0127 | [An artifact or manifest answered with any 2xx is verified as a 200 is](0127-every-2xx-verified.md) | Implemented 2026-11-03 |  |
 | 0128 | [RUSTSEC-2026-0387 accepted while `crypto-bigint` 0.5.5 is built only for `pgp`](0128-crypto-bigint-advisory.md) | Implemented 2026-11-03 |  |
+| 0129 | [An undated file is dated by its first sighting, and `cooldown_unanswered` refuses one with none](0129-undated-files-first-seen.md) | Implemented 2026-11-03 |  |

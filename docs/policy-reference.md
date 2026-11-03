@@ -233,6 +233,7 @@ after a later build moves a default.
 | `no_strong_digest` | no strong digest is published for its artifact. Under the threshold, its bytes are forwarded unverified and unanalysed, so `install_scripts` and the detectors have no answer | 0 |
 | `digest_mismatch` | its bytes are not the ones its digest or claim names. Under the threshold, a claim that fails is fetched unverified, and bytes that do not match their digest are served whole, their last chunk released rather than held; neither is recorded as verified | `risk_threshold` |
 | `signature_failed` | a Maven `.pom` or `.module` whose signature fails. Under the threshold it is served against the digest its bytes matched | `risk_threshold` |
+| `cooldown_unanswered` | under a cooldown, a pinned file that neither the registry, the file host's `Last-Modified` nor its first sighting dates; the first sighting is missing only when the analysis store errors ([undated-files-first-seen](engineering_decisions/0129-undated-files-first-seen.md)) | `risk_threshold` |
 | `new_package` | the first version was published under 30 days ago | 1 |
 | `new_publisher` | no earlier version was published by this account | 1 |
 | `no_repository` | a full npm document names no repository | 1 |
@@ -253,8 +254,8 @@ after a later build moves a default.
 | `advisory_unmaintained` | RustSec reports the crate unmaintained | 2 |
 | `advisory_notice` | RustSec published a notice about it, or a kind this build does not know | 1 |
 
-`unservable`, `no_strong_digest`, `digest_mismatch` and `signature_failed` are the proxy's
-own refusals. `no_strong_digest` weighs 0 unless weighed, so with no policy, or one that
+`unservable`, `no_strong_digest`, `digest_mismatch`, `signature_failed` and
+`cooldown_unanswered` are the proxy's own refusals. `no_strong_digest` weighs 0 unless weighed, so with no policy, or one that
 does not weigh it, such an artifact is forwarded unverified. One that weighs the threshold alone answers as it always has. When only a sum
 reaches it, with another of them or with the checks, the refusal is the policy's, naming
 them. Observe mode still refuses a version when they weigh the threshold alone; a version

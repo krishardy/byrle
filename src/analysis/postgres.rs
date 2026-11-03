@@ -12,6 +12,7 @@ use crate::analysis::virustotal::{Counts, Scanned, Verdict};
 use crate::analysis::{Anomaly, InstallScripts};
 use crate::ecosystem::Signature;
 use crate::integrity::Sri;
+use jiff::Timestamp;
 use sqlx::PgPool;
 
 /// The stores a proxy decides with: the intel store, when one is configured, with the
@@ -409,9 +410,35 @@ impl Analyses for PgAnalyses {
     ) -> Stored<'a, ()> {
         Box::pin(self.write_signature(digest, repository, verifier, signature))
     }
+
+    fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp> {
+        Box::pin(self.write_first_seen(purl, filename))
+    }
 }
 
 impl PgAnalyses {
+    /// The no-op update makes the row come back whether this call wrote it or another did.
+    async fn write_first_seen(
+        &self,
+        purl: &str,
+        filename: &str,
+    ) -> Result<Timestamp, AnalysisError> {
+        let seen = sqlx::query_scalar!(
+            r#"
+            INSERT INTO artifact_first_seen (purl, filename) VALUES ($1, $2)
+            ON CONFLICT (purl, filename) DO UPDATE SET purl = EXCLUDED.purl
+            RETURNING floor(EXTRACT(EPOCH FROM first_seen))::bigint AS "seen!"
+            "#,
+            purl,
+            filename,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        Timestamp::from_second(seen)
+            .map_err(|e| AnalysisError::Backend(sqlx::Error::Decode(Box::new(e))))
+    }
+
     async fn write_claimed(&self, claim: &str, digest: &Sri) -> Result<(), AnalysisError> {
         sqlx::query!(
             r#"

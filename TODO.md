@@ -504,6 +504,9 @@ Items that I've added that are not stage-bound.
     no index or checksum database, so their tests cannot keep off the network. Add a
     setting for both: a `BYRLE_*` URL for the index, and for the checksum database a
     `GOSUMDB`-style name, key and URL. Raised 2026-10-30.
+    Neither reads a file's first sighting either, which dates an undated pinned fetch
+    since decision 0129, so both report an undated version as having no date. Added
+    2026-11-03.
 
 ## Architecture Refactor
 

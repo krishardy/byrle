@@ -1589,7 +1589,11 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     );
     let record = analysed;
     let today = crate::policy::today();
-    let own = deciding.own_signals(unservable.as_ref(), &fetch, (claiming.as_ref(), &state));
+    let own = deciding.own_signals(
+        (unservable.as_ref(), dated.undated),
+        &fetch,
+        (claiming.as_ref(), &state),
+    );
     let weighing = match deciding
         .refusal(
             &record,
@@ -1666,6 +1670,8 @@ struct Dated {
     times: Option<facts::PublishTimes>,
     /// The full document's records, for the heuristics.
     full: Option<PackageMetadata>,
+    /// Under a cooldown, neither the registry, the file host nor a first sighting dates it.
+    undated: bool,
 }
 
 /// Whether `refusal` blocks the version, which does not lapse, so it is never served and
@@ -1693,6 +1699,10 @@ impl Dated {
             .unwrap_or(record)
     }
 }
+
+/// Why `cooldown_unanswered` fires, in its signal and its refusal.
+const UNDATED: &str = "no publish time could be read and no first sighting stored, so \
+                       `cooldown_days` cannot be answered";
 
 /// The purl of `key` at `version`, as log lines and answers name it.
 fn purl_of(key: &PackageKey, version: &str) -> String {
@@ -1994,7 +2004,7 @@ impl<'a> Deciding<'a> {
     /// once no claim is being checked.
     fn own_signals(
         &self,
-        unservable: Option<&String>,
+        (unservable, undated): (Option<&String>, bool),
         fetch: &ArtifactFetch,
         (claiming, state): (Option<&Claiming>, &AnalysisState),
     ) -> Vec<Signal> {
@@ -2025,10 +2035,12 @@ impl<'a> Deciding<'a> {
                 "its bytes are not the ones its digest or claim names".to_owned(),
             )
         });
+        let unanswered = undated.then(|| own("cooldown_unanswered", UNDATED.to_owned()));
         unservable
             .into_iter()
             .chain(undigested)
             .chain(mismatched)
+            .chain(unanswered)
             .collect()
     }
 
@@ -2295,11 +2307,47 @@ impl<'a> Deciding<'a> {
             Some(FullDocument { times, metadata }) => (Some(times), metadata.ok()),
             None => (None, None),
         };
-        let times = match times {
-            Some(times) => Some(times),
-            None => dated_by_host(self.proxy, record, self.request.path).await,
+        let version = record.package.version();
+        let has = |times: &Option<facts::PublishTimes>| {
+            times.as_ref().is_some_and(|t| t.contains_key(version))
         };
-        Dated { times, full }
+        let mut times = times;
+        if !has(&times)
+            && let Some(host) = dated_by_host(self.proxy, record, self.request.path).await
+        {
+            times.get_or_insert_default().extend(host);
+        }
+        let cooldown = (self.proxy.config.policy.as_deref()).is_some_and(Policy::uses_cooldown);
+        let mut undated = cooldown && !has(&times);
+        if undated && let Some(seen) = self.first_seen(version).await {
+            times
+                .get_or_insert_default()
+                .insert(version.to_owned(), seen);
+            undated = false;
+        }
+        Dated {
+            times,
+            full,
+            undated,
+        }
+    }
+
+    /// When the proxy first decided this file at `version`, recording now on the first
+    /// time. `None` with no analysis store, or when it errors.
+    async fn first_seen(&self, version: &str) -> Option<jiff::Timestamp> {
+        let path = self.request.path;
+        let purl = purl_of(self.request.key, version);
+        let store = self.proxy.analyses()?;
+        match store.first_seen(&purl, self.request.filename).await {
+            Ok(seen) => {
+                info!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, byrle.package.published = %seen, "no publish time: dated by the file's first sighting");
+                Some(seen)
+            }
+            Err(e) => {
+                warn!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, error.message = %e, "no publish time, and its first sighting could not be read");
+                None
+            }
+        }
     }
 
     /// [`analysed`] for this request, logging a return after a deferral once the
@@ -2355,6 +2403,12 @@ impl<'a> Deciding<'a> {
         }
         if let Some(origin) = unservable.filter(|_| own.answers("unservable")) {
             return (audit::Answered::Unservable, self.unservable(&origin));
+        }
+        if own.answers("cooldown_unanswered") {
+            return (
+                audit::Answered::Undated,
+                self.unassessable(self.refusal_status(), UNDATED),
+            );
         }
         match held.claiming {
             Some(Claiming::Failed(why)) if own.answers("digest_mismatch") => {
@@ -5729,12 +5783,12 @@ mod tests {
                 Some("2020-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap()),
                 false,
             ),
-            ("no Last-Modified", StatusCode::OK, None, false),
+            ("no Last-Modified", StatusCode::OK, None, true),
             (
                 "a 404 carrying a date",
                 StatusCode::NOT_FOUND,
                 Some(jiff::Timestamp::now()),
-                false,
+                true,
             ),
         ] {
             let router = Router::new().fallback(any(move |_req: Request| async move {
@@ -5764,6 +5818,145 @@ mod tests {
             .await;
             let step = pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await;
             assert_eq!(matches!(step, ArtifactStep::Answer(_)), refused, "{label}");
+        }
+    }
+
+    /// A full packument whose `time` lacks the version still asks the file host, and its
+    /// `Last-Modified` dates the version.
+    #[tokio::test]
+    async fn a_time_map_without_the_version_asks_the_file_host() {
+        let host = serve(Router::new().fallback(any(|_req: Request| async {
+            (
+                [(header::LAST_MODIFIED, "Wed, 01 Jan 2020 00:00:00 GMT")],
+                "",
+            )
+        })))
+        .await;
+        let packument = format!(
+            r#"{{"name":"widget","time":{{"modified":"2020-01-01T00:00:00Z"}},"versions":{{"1.0.0":{{"version":"1.0.0","dist":{{"tarball":"{host}/widget/-/widget-1.0.0.tgz","integrity":"sha512-{}"}}}}}}}}"#,
+            "A".repeat(86) + "=="
+        );
+        let registry = serve(Router::new().route(
+            "/widget",
+            get(move || {
+                let packument = packument.clone();
+                async move { ([(header::CONTENT_TYPE, "application/json")], packument) }
+            }),
+        ))
+        .await;
+        let proxy = offline(
+            None,
+            Some("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n"),
+        )
+        .with_upstream(Ecosystem::Npm, &registry)
+        .with_origin_policy([host.as_str()], [])
+        .expect("the host is an origin");
+        let step = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
+        assert!(
+            matches!(step, ArtifactStep::Fetch(_)),
+            "dated 2020 by the file host"
+        );
+    }
+
+    /// An undated file the index lists, behind a host that sends no `Last-Modified`.
+    async fn undated_pypi(proxy: &Proxy) -> String {
+        let router = Router::new().fallback(any(|_req: Request| async { StatusCode::OK }));
+        let host = serve(router).await;
+        let index = format!(
+            r#"{{"name":"x","files":[{{"filename":"x-1.0.tar.gz","url":"{host}/x-1.0.tar.gz","hashes":{{"sha256":"{}"}}}}]}}"#,
+            "a".repeat(64)
+        );
+        resolve(
+            proxy,
+            "/pypi/simple/x/",
+            pypi::SIMPLE_JSON,
+            index.as_bytes(),
+        )
+        .await;
+        host
+    }
+
+    /// Under a cooldown, a file nothing dates is dated by its first sighting, which a later
+    /// request reads back unchanged. A file the index does not list is not recorded.
+    #[tokio::test]
+    async fn an_undated_file_is_dated_by_its_first_sighting() {
+        let store = Arc::new(crate::analysis::store::InProcess::new(8));
+        let analyser = crate::analysis::run::tests::analyser("first-seen", 1 << 20, store.clone());
+        let yaml = "version: 1\ncooldown_days: 7\ninstall_scripts: allow\n";
+        let base = offline(None, Some(yaml)).with_analyser(Some(Arc::new(analyser)));
+        let host = undated_pypi(&base).await;
+        let proxy = base
+            .with_origin_policy([host.as_str()], [])
+            .expect("the host is an origin");
+        let (guard, log) = capture(tracing::Level::INFO);
+        let (_, body) = refused(pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await).await;
+        drop(guard);
+        let today = crate::policy::today();
+        let lifts = today.checked_add(jiff::Span::new().days(7)).unwrap();
+        assert!(body.contains(&format!("installable on {lifts}")), "{body}");
+        assert!(
+            text(&log).contains("dated by the file's first sighting"),
+            "{}",
+            text(&log)
+        );
+        let first = store
+            .seen("pkg:pypi/x@1.0", "x-1.0.tar.gz")
+            .expect("recorded");
+        refused(pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await).await;
+        assert_eq!(store.seen("pkg:pypi/x@1.0", "x-1.0.tar.gz"), Some(first));
+        pinned(&proxy, "/pypi/packages/x-2.0.tar.gz").await;
+        assert_eq!(
+            store.seen("pkg:pypi/x@2.0", "x-2.0.tar.gz"),
+            None,
+            "not listed"
+        );
+    }
+
+    /// A store that cannot record a first sighting leaves the file undated, and it is not
+    /// served.
+    #[tokio::test]
+    async fn an_undated_file_whose_store_errors_is_not_served() {
+        let store = Arc::new(crate::analysis::store::tests::Broken);
+        let analyser = crate::analysis::run::tests::analyser("broken", 1 << 20, store);
+        let yaml = "version: 1\ncooldown_days: 7\ninstall_scripts: allow\n";
+        let base = offline(None, Some(yaml)).with_analyser(Some(Arc::new(analyser)));
+        let host = undated_pypi(&base).await;
+        let proxy = base
+            .with_origin_policy([host.as_str()], [])
+            .expect("the host is an origin");
+        let (guard, log) = capture(tracing::Level::WARN);
+        let step = pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await;
+        drop(guard);
+        assert!(matches!(step, ArtifactStep::Answer(_)));
+        assert!(
+            text(&log).contains("its first sighting could not be read"),
+            "{}",
+            text(&log)
+        );
+    }
+
+    /// With no store to record a first sighting in, an undated file is refused as
+    /// `cooldown_unanswered`, and served when the policy weighs that 0.
+    #[tokio::test]
+    async fn an_undated_file_with_no_store_is_cooldown_unanswered() {
+        for (weights, served) in [
+            ("", false),
+            ("signal_weights: { cooldown_unanswered: 0 }\n", true),
+        ] {
+            let yaml = format!("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n{weights}");
+            let base = offline(None, Some(&yaml));
+            let host = undated_pypi(&base).await;
+            let proxy = base
+                .with_origin_policy([host.as_str()], [])
+                .expect("the host is an origin");
+            let step = pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await;
+            if served {
+                assert!(matches!(step, ArtifactStep::Fetch(_)), "{weights}");
+                continue;
+            }
+            let (status, body) = refused(step).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert!(body.contains("no first sighting stored"), "{body}");
         }
     }
 

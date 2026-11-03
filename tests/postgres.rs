@@ -1191,6 +1191,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "artifact_attestation",
         "artifact_claim",
         "artifact_decision",
+        "artifact_first_seen",
         "artifact_install_script",
         "artifact_signature",
         "artifact_source",
@@ -2014,6 +2015,34 @@ async fn a_claim_s_digest_is_kept_under_the_claim() {
     store.put_claimed(claim, &sri(2)).await.expect("replaces");
     assert_eq!(store.claimed(claim).await.expect("answers"), Some(sri(2)));
     assert_eq!(store.claimed("h1:other=").await.expect("answers"), None);
+}
+
+/// A file's first sighting is recorded once: a second call, or one for the same file in
+/// parallel, reads the first time back, and another file of the version starts its own.
+#[tokio::test]
+async fn a_file_s_first_sighting_is_kept_once() {
+    let intel = skip_without_database!("t_first_seen");
+    let store = analyses(&intel);
+    let purl = "pkg:pypi/x@1.0";
+    let first = store
+        .first_seen(purl, "x-1.0.tar.gz")
+        .await
+        .expect("writes");
+    let (a, b) = tokio::join!(
+        store.first_seen(purl, "x-1.0.tar.gz"),
+        store.first_seen(purl, "x-1.0.tar.gz")
+    );
+    assert_eq!((a.expect("reads"), b.expect("reads")), (first, first));
+    let now = jiff::Timestamp::now();
+    assert!(
+        first <= now && now.duration_since(first).as_secs() < 60,
+        "{first}"
+    );
+    let wheel = store
+        .first_seen(purl, "x-1.0-py3-none-any.whl")
+        .await
+        .expect("writes");
+    assert!(wheel >= first);
 }
 
 /// A Maven claim of a SHA-512 sidecar, 135 characters, is kept.

@@ -11,6 +11,7 @@ use crate::analysis::{InstallScripts, ReadError};
 use crate::ecosystem::Signature;
 use crate::integrity::Sri;
 use crate::util::lru::Lru;
+use jiff::Timestamp;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -178,6 +179,10 @@ pub trait Analyses: Send + Sync {
         verifier: &'a str,
         signature: &'a Signature,
     ) -> Stored<'a, ()>;
+
+    /// When the file `filename` of `purl` was first asked of this store, recording now when
+    /// it was not. A later call returns the first time, never a new one.
+    fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp>;
 }
 
 /// The decisions this process has recorded, the oldest dropped past its budget.
@@ -199,6 +204,7 @@ pub struct InProcess(
     Mutex<Decisions>,
     Mutex<Lru<String, Sri>>,
     Mutex<Lru<(Sri, String, String), Signature>>,
+    Mutex<Lru<(String, String), Timestamp>>,
 );
 
 impl InProcess {
@@ -219,7 +225,19 @@ impl InProcess {
             }),
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
+            Mutex::new(Lru::new(max_entries)),
         )
+    }
+
+    /// When `filename` of `purl` was first seen, without recording it.
+    #[cfg(test)]
+    pub fn seen(&self, purl: &str, filename: &str) -> Option<Timestamp> {
+        let key = (purl.to_owned(), filename.to_owned());
+        self.9
+            .lock()
+            .expect("first-seen store lock")
+            .get(&key)
+            .copied()
     }
 
     fn decisions_held(&self) -> std::sync::MutexGuard<'_, Decisions> {
@@ -458,6 +476,19 @@ impl Analyses for InProcess {
             Ok(())
         })
     }
+
+    fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp> {
+        Box::pin(async move {
+            let key = (purl.to_owned(), filename.to_owned());
+            let mut held = self.9.lock().expect("first-seen store lock");
+            if let Some(at) = held.get(&key) {
+                return Ok(*at);
+            }
+            let now = Timestamp::now();
+            held.insert(key, now);
+            Ok(now)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -542,6 +573,9 @@ pub(crate) mod tests {
             _: &'a str,
             _: &'a Signature,
         ) -> Stored<'a, ()> {
+            broken()
+        }
+        fn first_seen<'a>(&'a self, _: &'a str, _: &'a str) -> Stored<'a, Timestamp> {
             broken()
         }
     }

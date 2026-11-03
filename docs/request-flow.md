@@ -20,8 +20,8 @@ forwarded, logged at WARN. Every other answer is the same in both modes
 The policy's checks, the detectors' and advisories' signals, and the proxy's own refusals
 are each a signal with a weight, and a version is refused when the weights present sum to
 `risk_threshold` ([every-refusal-a-signal](engineering_decisions/0116-every-refusal-a-signal.md)).
-The proxy's own, `unservable`, `no_strong_digest`, `digest_mismatch` and
-`signature_failed`, answer as drawn below when one weighs the threshold alone, which each
+The proxy's own, `unservable`, `no_strong_digest`, `digest_mismatch`, `signature_failed`
+and `cooldown_unanswered`, answer as drawn below when one weighs the threshold alone, which each
 does by default but `no_strong_digest`, 0; reached only by a sum, the refusal is the
 policy's; under it, each serves what it can, as
 [policy-reference](policy-reference.md#signal_weights) says.
@@ -126,7 +126,7 @@ flowchart TD
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 405 | proxy | an artifact or manifest asked with a method but GET or HEAD, in enforce mode; `Allow: GET, HEAD` |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
-| refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata does not list the version; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
+| refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; under a cooldown, nothing dates the file, while `cooldown_unanswered` weighs the threshold; the metadata does not list the version; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
 | 502 | proxy | the upstream could not be reached, or stalled before answering; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` while a policy is set and intel has not loaded or has a gap |
 

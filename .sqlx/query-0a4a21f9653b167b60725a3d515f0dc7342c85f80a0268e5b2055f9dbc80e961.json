@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_first_seen (purl, filename) VALUES ($1, $2)\n            ON CONFLICT (purl, filename) DO UPDATE SET purl = EXCLUDED.purl\n            RETURNING floor(EXTRACT(EPOCH FROM first_seen))::bigint AS \"seen!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seen!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0a4a21f9653b167b60725a3d515f0dc7342c85f80a0268e5b2055f9dbc80e961"
+}
