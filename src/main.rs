@@ -19,14 +19,13 @@ use byrle::startup;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// A variable that does not parse ends the process with exit 2, as a malformed command line
-/// does: the operator asked for something, and continuing without it would hide that.
-fn or_exit<T>(result: Result<T, env::EnvError>) -> T {
-    or_exit_with(result, 2)
+/// Unwrap the variable or exit 2 if it can't be unwrapped
+fn unwrap_or_exit_2<T>(result: Result<T, env::EnvError>) -> T {
+    unwrap_or_exit(result, 2)
 }
 
-/// [`or_exit`] with `code`, for a command whose exit 2 means something else.
-fn or_exit_with<T>(result: Result<T, env::EnvError>, code: u8) -> T {
+/// Unwrap the variable or exit with a given code if it can't be unwrapped
+fn unwrap_or_exit<T>(result: Result<T, env::EnvError>, code: u8) -> T {
     result.unwrap_or_else(|e| {
         eprintln!("byrle: {e}");
         std::process::exit(i32::from(code))
@@ -66,11 +65,11 @@ async fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
         Ok(None) => {}
     }
     let as_of = args.as_of.unwrap_or_else(today);
-    let ceiling = or_exit(env::process().expiry_ceiling_days());
+    let ceiling = unwrap_or_exit_2(env::process().expiry_ceiling_days());
     let loaded = check::load(&args.path, as_of, ceiling);
     let clients = args
         .fetch
-        .then(|| or_exit(byrle::ecosystem::Clients::from_env(&env::process())));
+        .then(|| unwrap_or_exit_2(byrle::ecosystem::Clients::from_env(&env::process())));
     let label = args.path.display().to_string();
     let answer = check::answer(loaded, &label, as_of, (args.strict, clients.as_ref())).await;
     for note in &answer.notes {
@@ -233,7 +232,9 @@ async fn run_doctor() -> std::process::ExitCode {
     std::process::ExitCode::from(checked.code)
 }
 
-/// `byrle status`: what this build does for each ecosystem, and which streams cover it.
+/// `byrle status`: prints [`byrle::status::report`] for this machine's upstreams and intel
+/// snapshot, with no snapshot when the intel store cannot be read. When
+/// [`env::REMOTE_URL`] is set, it asks that deployment instead.
 async fn run_status() -> std::process::ExitCode {
     match remote("status") {
         Err(code) => return code,
@@ -246,7 +247,7 @@ async fn run_status() -> std::process::ExitCode {
         Ok(None) => {}
     }
     let environment = env::process();
-    let upstreams = or_exit(environment.upstreams());
+    let upstreams = unwrap_or_exit_2(environment.upstreams());
     use byrle::intel::store::Intel as _;
     let snapshot = match postgres::from_env(&environment).await {
         Ok(Some(store)) => match store.snapshot().await {
@@ -308,7 +309,9 @@ fn finish(
     std::process::ExitCode::from(outcome.code)
 }
 
-/// `byrle artifact show|export`, against the analysis store at [`env::DATABASE_URL`].
+/// `byrle artifact show|export`: prints the latest decision on each artifact named, or every
+/// decision in a date range, as JSON Lines. It reads the analysis store at
+/// [`env::DATABASE_URL`], or asks the deployment at [`env::REMOTE_URL`] when it is set.
 async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
     use byrle::analysis::decision::command;
     match remote("artifact") {
@@ -354,7 +357,9 @@ async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
     })
 }
 
-/// `byrle account create|disable|list`.
+/// `byrle account create|disable|password|link|list`: changes or lists the accounts in the
+/// store at [`env::DATABASE_URL`]. `password` reads the password from the first line of
+/// stdin. Each change is appended to [`env::ACCOUNT_EVENT_LOG`] when it is set.
 async fn run_account(command: cli::AccountCommand) -> std::process::ExitCode {
     use byrle::account::command;
     let (store, log) = match (accounts("account").await, event_log("account")) {
@@ -398,7 +403,9 @@ async fn run_account(command: cli::AccountCommand) -> std::process::ExitCode {
     finish(outcome, log.as_deref())
 }
 
-/// `byrle token create|revoke|list`.
+/// `byrle token create|revoke|list`: changes or lists the API tokens in the store at
+/// [`env::DATABASE_URL`]. `create` prints the new token on stdout, the only time it is
+/// shown. Each change is appended to [`env::ACCOUNT_EVENT_LOG`] when it is set.
 async fn run_token(command: cli::TokenCommand) -> std::process::ExitCode {
     use byrle::account::command;
     let (store, log) = match (accounts("token").await, event_log("token")) {
@@ -417,7 +424,9 @@ async fn run_token(command: cli::TokenCommand) -> std::process::ExitCode {
     finish(outcome, log.as_deref())
 }
 
-/// `byrle intel history`: the newest entries of the ingestion history.
+/// `byrle intel history`: prints the newest `--limit` entries of the ingestion history, one
+/// per stream each `byrle refresh` loaded or failed to load, newest first. It reads the intel
+/// store at [`env::DATABASE_URL`], or asks the deployment at [`env::REMOTE_URL`] when set.
 async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
     match remote("intel history") {
         Err(code) => return code,
@@ -453,7 +462,6 @@ async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
     }
 }
 
-/// The snapshot `--snapshot` names, read from the snapshot directory without its lock.
 /// `byrle refresh`: load every stream into the intel store, and append what each stream
 /// did to the ingestion history.
 async fn run_refresh() -> std::process::ExitCode {
@@ -463,16 +471,18 @@ async fn run_refresh() -> std::process::ExitCode {
     std::process::ExitCode::from(run.code)
 }
 
-/// `byrle daemon`: serve the proxy until the process is stopped.
+/// `byrle daemon`: serves the proxy, and the console when [`env::CONSOLE_URL`] is set. It
+/// reloads the policy on `SIGHUP` and runs the watcher every [`env::WATCH_INTERVAL`] unless 0.
+/// A variable that does not parse exits 2. A failed startup or bind panics.
 async fn run_daemon() -> std::process::ExitCode {
     let environment = env::process();
-    byrle::allocator::set_purge_delay(or_exit(environment.allocator_purge_delay_ms()));
-    let filter = or_exit(environment.log_filter());
+    byrle::allocator::set_purge_delay(unwrap_or_exit_2(environment.allocator_purge_delay_ms()));
+    let filter = unwrap_or_exit_2(environment.log_filter());
     let filter = tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|e| {
         eprintln!("byrle: {}: `{filter}` {e}", env::LOG_FILTER);
         std::process::exit(2)
     });
-    let format = or_exit(environment.log_format());
+    let format = unwrap_or_exit_2(environment.log_format());
     tracing::subscriber::set_global_default(byrle::logging::subscriber(
         filter,
         format,
@@ -499,7 +509,7 @@ async fn run_daemon() -> std::process::ExitCode {
         &proxy,
         &listen,
         console.as_ref().map(|site| &site.console),
-        &or_exit(environment.proxy_base()),
+        &unwrap_or_exit_2(environment.proxy_base()),
     );
 
     #[cfg(unix)]
