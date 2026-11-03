@@ -14,3 +14,4 @@ mutants.out.old/
 # Dot-directories that are part of the repository.
 !/.sqlx/
 !/.github/
+/.tmp/
