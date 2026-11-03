@@ -64,7 +64,10 @@ flowchart TD
     MOD -->|no proved answer| M503[503 checksum-database]
     MOD -->|no record| MREF[forwarded unverified;<br/>refusal status while<br/>no_strong_digest weighs<br/>the threshold]
     MOD -->|a record| MFWD[fetched; 502 when its h1:<br/>is not the one claimed]
-    KIND -->|any other method, a HEAD<br/>but a Maven artifact's, or a path<br/>of a shape the adapter lists| FWD
+    KIND -->|an artifact or manifest asked<br/>with a method but GET or HEAD| METH{BYRLE_MODE}
+    METH -->|enforce| M405[405, Allow: GET, HEAD]
+    METH -->|observe, logged at WARN| FWD
+    KIND -->|any method to a metadata<br/>or listed path, a HEAD but a<br/>Maven artifact's| FWD
     KIND -->|a path of no shape<br/>the adapter lists| UNREC{BYRLE_MODE}
     UNREC -->|enforce| UREF[refusal status:<br/>unrecognised path]
     UNREC -->|observe, logged at WARN| FWD
@@ -121,6 +124,7 @@ flowchart TD
 | 400 | proxy | the path has a `.` or `..` segment, which the upstream URL would remove; cargo's `index/config.json` asked with no `Host` |
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
+| 405 | proxy | an artifact or manifest asked with a method but GET or HEAD, in enforce mode; `Allow: GET, HEAD` |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
 | refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata does not list the version; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
 | 502 | proxy | the upstream could not be reached, or stalled before answering; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |

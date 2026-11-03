@@ -77,7 +77,8 @@ flowchart TD
     R8 -->|observe: WARN| R9
     R8 -->|no| R9[R9 negotiate, Exchange::observe]
     R9 --> R10{R10 artifact_fetch:<br/>GET, or HEAD where<br/>decides_head}
-    R10 -->|any other method,<br/>Metadata, Other,<br/>Manifest HEAD| R11
+    R10 -->|Artifact or Manifest,<br/>not GET or HEAD:<br/>enforce| X405[405]
+    R10 -->|any method to Metadata<br/>or Other, a HEAD,<br/>observe| R11
     R10 -->|Artifact| A[section 5.1:<br/>decide_artifact]
     R10 -->|Manifest GET| M[manifest_claim]
     A -->|refused or deferred| ANS[answer]
@@ -104,7 +105,7 @@ flowchart TD
 | R7 | Computed sidecar | `sidecar`, `sidecar_document` | fetches and filters the document, writes no audit line |
 | R8 | Unrecognised | `unrecognised` | |
 | R9 | Negotiate | `negotiate`, `Exchange::observe` | whether the proxy reads the document: needs an `Accept-Encoding` it can decode |
-| R10 | Decide | `Exchange::artifact_fetch` | `decides_head` is true for Maven only |
+| R10 | Decide | `Exchange::artifact_fetch`, `method_not_allowed` | `decides_head` is true for Maven only; an artifact or manifest asked with another method is 405, forwarded in observe mode |
 | R11 | Send | `Exchange::send`, `upstream_url`, `upstream_headers` | only the headers in `FORWARDED`; no request body; redirects followed, up to reqwest's 10 |
 | R12 | Respond | `Exchange::respond`, `forward_document`, `forward_manifest`, `forward_artifact` | |
 
@@ -312,7 +313,7 @@ Forwarded with no policy decision:
 
 | ID | Request | Code |
 |---|---|---|
-| F1 | Any method but GET, and a HEAD but a Maven artifact's | `Exchange::artifact_fetch` |
+| F1 | Any method to a metadata or `Other` path; a HEAD but a Maven artifact's; an artifact or manifest asked with another method in observe mode | `Exchange::artifact_fetch` |
 | F2 | A listed `Other` shape: npm `/-/` endpoints, PyPI `/simple/` and `.metadata`, Go `.info` and checksum database, Maven sidecars and `.asc` | each `classify_path` |
 | F3 | An unrecognised path in observe mode | `unrecognised` |
 | F4 | A document over the size limit, undecodable, or not read (D1, D2, R9) | `forward_document`, `filtered_document`, `negotiate` |

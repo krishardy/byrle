@@ -3465,6 +3465,9 @@ impl Exchange<'_> {
     /// and the claim a manifest GET is checked against. Any other request is fetched with
     /// no digest.
     async fn artifact_fetch(&self) -> ArtifactStep {
+        if let Some(response) = self.method_not_allowed() {
+            return ArtifactStep::Answer(response);
+        }
         let decided_head = self.method == Method::HEAD && self.repository.registry().decides_head;
         if self.method != Method::GET && !decided_head {
             return ArtifactStep::Fetch(ArtifactFetch::default());
@@ -3497,6 +3500,34 @@ impl Exchange<'_> {
             | RequestTarget::Other
             | RequestTarget::Unrecognised => ArtifactStep::Fetch(ArtifactFetch::default()),
         }
+    }
+
+    /// 405 for an artifact or manifest asked with a method but GET or HEAD, which no check
+    /// reads and an upstream may answer with the file. `None` in observe mode, where it is
+    /// forwarded. Logged at WARN either way.
+    fn method_not_allowed(&self) -> Option<Response> {
+        let file = matches!(
+            self.target,
+            RequestTarget::Artifact { .. } | RequestTarget::Manifest { .. }
+        );
+        if !file || self.method == Method::GET || self.method == Method::HEAD {
+            return None;
+        }
+        let url_path = crate::http::url_path(&self.path);
+        let method = &self.method;
+        if self.proxy.config.mode == Mode::Observe {
+            warn!(url.path = %url_path, http.request.method = %method, user_agent.original = %self.client, "a file asked with {method}: forwarded in observe mode");
+            return None;
+        }
+        warn!(url.path = %url_path, http.request.method = %method, user_agent.original = %self.client, "a file asked with {method}: 405");
+        Some(
+            (
+                StatusCode::METHOD_NOT_ALLOWED,
+                [(header::ALLOW, "GET, HEAD")],
+                format!("byrle: {url_path} is a file, served to GET and HEAD only\n"),
+            )
+                .into_response(),
+        )
     }
 
     /// The claim a manifest's body is checked against. Answers 503 when the database does
@@ -10407,6 +10438,82 @@ mod tests {
         );
         assert_eq!(raw_get(&base, "/npm/-/v1/search?text=../..").await, 200);
         assert_eq!(seen.lock().unwrap().paths.len(), 1);
+    }
+
+    /// A file asked with a method but GET or HEAD is 405, and nothing is asked upstream.
+    /// npm's audit POST and a HEAD are forwarded, as the file is in observe mode.
+    #[tokio::test]
+    async fn a_file_asked_with_another_method_is_405() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/octet-stream",
+            None,
+            b"EVIL".to_vec(),
+        )
+        .await;
+        let proxy = |mode| {
+            Proxy::new(reqwest::Client::new())
+                .with_mode(mode)
+                .with_upstream(Ecosystem::Npm, &upstream)
+                .with_upstream(Ecosystem::Go, &upstream)
+                .router()
+        };
+        let base = serve(proxy(Mode::Enforce)).await;
+        let client = reqwest::Client::new();
+        let (guard, log) = capture(tracing::Level::WARN);
+        for method in ["POST", "PUT", "OPTIONS", "PATCH", "DELETE"] {
+            for path in [
+                "/npm/evil/-/evil-6.6.6.tgz",
+                "/go/github.com/evil/mod/@v/v6.6.6.zip",
+                "/go/github.com/evil/mod/@v/v6.6.6.mod",
+            ] {
+                let method = Method::from_bytes(method.as_bytes()).unwrap();
+                let response = client
+                    .request(method.clone(), format!("{base}{path}"))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 405, "{method} {path}");
+                assert_eq!(response.headers()[header::ALLOW], "GET, HEAD");
+            }
+        }
+        drop(guard);
+        assert!(
+            seen.lock().unwrap().paths.is_empty(),
+            "nothing asked upstream"
+        );
+        assert!(
+            text(&log).contains("a file asked with POST: 405"),
+            "{}",
+            text(&log)
+        );
+        let audit = client
+            .post(format!("{base}/npm/-/npm/v1/security/advisories/bulk"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(audit.status(), 200);
+        let head = client
+            .head(format!("{base}/npm/evil/-/evil-6.6.6.tgz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(head.status(), 200, "HEAD is forwarded");
+        let observed = serve(proxy(Mode::Observe)).await;
+        let (guard, log) = capture(tracing::Level::WARN);
+        let response = client
+            .post(format!("{observed}/npm/evil/-/evil-6.6.6.tgz"))
+            .send()
+            .await
+            .unwrap();
+        drop(guard);
+        assert_eq!(response.status(), 200);
+        assert_eq!(seen.lock().unwrap().paths.len(), 3);
+        assert!(
+            text(&log).contains("a file asked with POST: forwarded in observe mode"),
+            "{}",
+            text(&log)
+        );
     }
 
     /// An upstream set after the origin policy keeps the origins the operator added, and
