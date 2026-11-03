@@ -75,24 +75,44 @@ if ! cargo audit --version >/dev/null 2>&1; then
     exit 1
 fi
 
-# RUSTSEC-2023-0071 is against `rsa`: its private-key operations leak timing (Marvin). It is
-# compiled for `pgp`, which byrle calls only to verify Maven signatures with public keys,
-# and is in Cargo.lock through `sqlx-mysql` as well, which is not built
+# The crates byrle depends on directly that `$1`, a `cargo tree -i` spec, is built under, one
+# per line. Every path is read (`--no-dedupe`), so a second route to it is not hidden.
+built_under() {
+    cargo tree -e normal --target all -i "$1" --prefix depth --no-dedupe 2>/dev/null \
+        | awk 'match($0, /^[0-9]+/) {
+                   depth = substr($0, 1, RLENGTH) + 0
+                   split(substr($0, RLENGTH + 1), words, " ")
+                   if (words[1] == "byrle") print parent[depth - 1]
+                   parent[depth] = words[1]
+               }' | sort -u || true
+}
+
+# Ignore advisory $1, against crate $2, only while byrle builds $2 under `pgp` alone, which
+# byrle calls only to verify Maven signatures with public keys. The premise is asserted
+# rather than trusted: any other route to $2 fails this check instead of the ignore quietly
+# covering it.
+accept_under_pgp() {
+    local advisory="$1" crate="$2" under
+    note "$advisory premise: $crate is built only for pgp"
+    under="$(built_under "$crate")"
+    if [[ -n "$under" && "$under" != "pgp" ]]; then
+        echo "    $crate is built for $(echo "$under" | paste -sd, -), not pgp alone."
+        echo "    The $advisory exception no longer holds; deal with the advisory."
+        failed=1
+    else
+        echo "    ok: $crate is built for ${under:-nothing}, which only verifies"
+        audit_args+=(--ignore "$advisory")
+    fi
+}
+
+# `rsa`'s private-key operations leak timing (Marvin). It is in Cargo.lock through
+# `sqlx-mysql` as well, which is not built
 # (docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md).
-#
-# The premise is asserted rather than trusted: anything but `pgp` depending on `rsa` in the
-# build fails this check instead of the ignore quietly covering it.
-note "RUSTSEC-2023-0071 premise: rsa is built only for pgp"
-dependents="$(cargo tree -e normal --target all -i rsa --depth 1 --prefix none 2>/dev/null \
-    | awk '$1 != "rsa" {print $1}' | sort -u || true)"
-if [[ -n "$dependents" && "$dependents" != "pgp" ]]; then
-    echo "    rsa is built for $(echo "$dependents" | paste -sd, -), not pgp alone."
-    echo "    The RUSTSEC-2023-0071 exception no longer holds; deal with the advisory."
-    failed=1
-else
-    echo "    ok: rsa is built for ${dependents:-nothing}, which only verifies"
-    audit_args+=(--ignore RUSTSEC-2023-0071)
-fi
+accept_under_pgp RUSTSEC-2023-0071 rsa
+# `crypto-bigint` 0.5's constant-time operations vary in time. `pgp` 0.21 reaches it through
+# `elliptic-curve` 0.13 and `cx448`, and verifying reads no secret
+# (docs/engineering_decisions/0128-crypto-bigint-advisory.md).
+accept_under_pgp RUSTSEC-2026-0387 crypto-bigint@0.5.5
 
 note "vulnerable dependencies (cargo audit)"
 

@@ -103,9 +103,10 @@ pub async fn closing_server() -> std::net::SocketAddr {
 }
 
 /// The address of a server that sends response headers and then nothing, holding the
-/// connection open. For a test that a read timeout ends a stalled body.
+/// connection open. For a test that a read timeout ends a stalled body. It reads the
+/// request's headers first: hyper 1.12 refuses an answer sent before its request.
 pub async fn stalling_server() -> std::net::SocketAddr {
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -116,6 +117,14 @@ pub async fn stalling_server() -> std::net::SocketAddr {
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
             tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => request.extend_from_slice(&chunk[..n]),
+                    }
+                }
                 let _ = stream
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n")
                     .await;

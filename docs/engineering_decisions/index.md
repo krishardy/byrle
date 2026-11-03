@@ -139,3 +139,4 @@ Implemented means it is in the code, and the file names where.
 | 0125 | [A Go version is dated by its record in sum.golang.org, placed in time by index.golang.org](0125-go-versions-dated-by-the-checksum-database.md) | Implemented 2026-10-30 |  |
 | 0126 | [An artifact or manifest is served to GET and HEAD only](0126-files-served-to-get-and-head-only.md) | Implemented 2026-11-03 |  |
 | 0127 | [An artifact or manifest answered with any 2xx is verified as a 200 is](0127-every-2xx-verified.md) | Implemented 2026-11-03 |  |
+| 0128 | [RUSTSEC-2026-0387 accepted while `crypto-bigint` 0.5.5 is built only for `pgp`](0128-crypto-bigint-advisory.md) | Implemented 2026-11-03 |  |
