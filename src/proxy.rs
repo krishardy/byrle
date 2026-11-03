@@ -3109,6 +3109,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-")
         .to_string();
+    if crate::route::rewritten_by_url_parser(requested) {
+        return rewritten(requested, &client);
+    }
     if let Some(response) = own_endpoint(&proxy, &path).await {
         return response;
     }
@@ -3296,6 +3299,20 @@ fn outside_mount(mount: &Mount, requested: &str) -> Response {
         format!(
             "byrle: {} is outside the proxy's path, {mount}\n",
             crate::http::url_path(requested)
+        ),
+    )
+        .into_response()
+}
+
+/// 400 for a path [`crate::route::rewritten_by_url_parser`] finds, in every mode: the
+/// upstream would be asked for a path other than the one classified.
+fn rewritten(requested: &str, client: &str) -> Response {
+    let url_path = crate::http::url_path(requested);
+    warn!(url.path = %url_path, user_agent.original = %client, "a `.` or `..` segment in the path: 400");
+    (
+        StatusCode::BAD_REQUEST,
+        format!(
+            "byrle: {url_path} holds a `.` or `..` segment, which the upstream URL would not keep\n"
         ),
     )
         .into_response()
@@ -10334,6 +10351,62 @@ mod tests {
             2,
             "nothing asked upstream"
         );
+    }
+
+    /// The request line as written, unparsed, so no client removes a `..` before the proxy
+    /// reads it. The answer's status.
+    async fn raw_get(base: &str, target: &str) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(base.trim_start_matches("http://"))
+            .await
+            .unwrap();
+        let request = format!("GET {target} HTTP/1.1\r\nHost: proxy\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).await.unwrap();
+        answer[9..12].parse().unwrap()
+    }
+
+    /// A path whose `.` or `..` segment the upstream URL would remove is 400, in observe mode
+    /// too, and nothing is asked upstream. A `..` in the query is forwarded.
+    #[tokio::test]
+    async fn a_path_the_upstream_url_would_rewrite_is_refused() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/octet-stream",
+            None,
+            b"EVIL".to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_mode(Mode::Observe)
+                .with_upstream(Ecosystem::Npm, &upstream)
+                .with_upstream(Ecosystem::Go, &upstream)
+                .router(),
+        )
+        .await;
+        let (guard, log) = capture(tracing::Level::WARN);
+        for target in [
+            "/npm/-/npm/v1/attestations/../../../../evil/-/evil-6.6.6.tgz",
+            "/npm/-/npm/v1/attestations/%2e%2e/%2e%2e/%2e%2e/%2E%2e/evil/-/evil-6.6.6.tgz",
+            "/go/sumdb/x/tile/%2e%2e/%2e%2e/%2e%2e/github.com/evil/mod/@v/v6.6.6.zip",
+            "/npm/-/npm/v1/attestations\\..\\..\\..\\..\\evil\\-\\evil-6.6.6.tgz",
+        ] {
+            assert_eq!(raw_get(&base, target).await, 400, "{target}");
+        }
+        drop(guard);
+        assert!(
+            seen.lock().unwrap().paths.is_empty(),
+            "nothing asked upstream"
+        );
+        assert!(
+            text(&log).contains("segment in the path: 400"),
+            "{}",
+            text(&log)
+        );
+        assert_eq!(raw_get(&base, "/npm/-/v1/search?text=../..").await, 200);
+        assert_eq!(seen.lock().unwrap().paths.len(), 1);
     }
 
     /// An upstream set after the origin policy keeps the origins the operator added, and

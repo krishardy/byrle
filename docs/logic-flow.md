@@ -57,7 +57,9 @@ and account event logs, and runs each detector program once for its version
 ```mermaid
 flowchart TD
     classDef ext stroke-width:4px
-    IN([client request]):::ext --> R1{R1 under BYRLE_PROXY_URL's path?<br/>Mount::strip}
+    IN([client request]):::ext --> R0{R0 a . or .. segment<br/>the upstream URL removes?}
+    R0 -->|yes, WARN| X400[400]
+    R0 -->|no| R1{R1 under BYRLE_PROXY_URL's path?<br/>Mount::strip}
     R1 -->|no| X404a[404]
     R1 -->|yes| R2{R2 own_endpoint:<br/>health, ready}
     R2 -->|yes| OWN[200 or 503, no token asked]
@@ -92,6 +94,7 @@ flowchart TD
 
 | ID | Step | Code | Notes |
 |---|---|---|---|
+| R0 | Dot segments | `route::rewritten_by_url_parser`, `rewritten` | every mode; `%2e` in any case, `/` or `\` between segments; the query is not read |
 | R1 | Mount | `Mount::strip`, `outside_mount` | |
 | R2 | Own paths | `own_endpoint`, `Proxy::health`, `Proxy::readiness` | any method, before the token |
 | R3 | Classify | `route::classify`, each adapter's `classify_path` | a name `ecosystem::askable` refuses is not read here; a path no adapter lists is `Unrecognised` ([0119](engineering_decisions/0119-unrecognised-paths-refused.md)) |

@@ -36,7 +36,9 @@ detector's runs in flight times one run's time. An `artifact-analysis` 503 also 
 
 ```mermaid
 flowchart TD
-    REQ([request]) --> MOUNT{under BYRLE_PROXY_URL's path?}
+    REQ([request]) --> DOTS{a . or .. segment,<br/>%2e in any case,<br/>split on / or \?}
+    DOTS -->|yes| D400[400]
+    DOTS -->|no| MOUNT{under BYRLE_PROXY_URL's path?}
     MOUNT -->|no| M404[404: outside the proxy's path]
     MOUNT -->|yes, read below it| OWN{path}
     OWN -->|/-/byrle/health| H200[200: counters]
@@ -116,7 +118,7 @@ flowchart TD
 | Code | Produced by | When |
 |---|---|---|
 | 200 | proxy | health; ready; a verified artifact; a filtered and rewritten metadata document; Go's `sumdb/sum.golang.org/supported`, empty; cargo's `index/config.json`; a `maven-metadata.xml`'s `.sha1` or `.md5`, computed |
-| 400 | proxy | cargo's `index/config.json` asked with no `Host` |
+| 400 | proxy | the path has a `.` or `..` segment, which the upstream URL would remove; cargo's `index/config.json` asked with no `Host` |
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |

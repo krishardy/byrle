@@ -65,6 +65,7 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 
 | Input | Bound | Where |
 |---|---|---|
+| A request path | 400 for a `.` or `..` segment, `%2e` in any case, split on `/` or `\`, so the path asked upstream is the path classified | `route::rewritten_by_url_parser` |
 | A metadata document | 64 MiB, applied to the decoded size, so a compression bomb stops at the limit; one over it is forwarded unread and logged `UNINSPECTED` | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
 | An archive member read into memory | 4 MiB | `analysis::MAX_MEMBER_BYTES` |
 | An artifact spooled for analysis | 1 GiB; one over it is stored as unreadable, which `install_scripts: block` refuses | `BYRLE_MAX_ARTIFACT_BYTES` |
