@@ -78,7 +78,7 @@ pub fn classify(path: &str) -> Option<(crate::ecosystem::Repository, RequestTarg
     Some((repository, repository.registry().classify(path)))
 }
 
-/// Whether a request path, its query left out, holds a segment the upstream URL's parser
+/// Whether a request path, its query left out, has a segment the upstream URL's parser
 /// would remove: `.` or `..`, with `%2e` in any case, split on `/` or `\`. The fetched path
 /// would then differ from the one classified.
 pub fn rewritten_by_url_parser(path: &str) -> bool {

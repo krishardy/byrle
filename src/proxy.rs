@@ -3312,7 +3312,7 @@ fn rewritten(requested: &str, client: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
         format!(
-            "byrle: {url_path} holds a `.` or `..` segment, which the upstream URL would not keep\n"
+            "byrle: {url_path} has a `.` or `..` segment, which the upstream URL would not keep\n"
         ),
     )
         .into_response()
