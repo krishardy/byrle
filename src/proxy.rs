@@ -3742,7 +3742,7 @@ impl Exchange<'_> {
             artifact.manifest.clone(),
         ) {
             (Some(document), _) => self.forward_document(document, upstream).await,
-            (None, Some(claim)) if upstream.status == reqwest::StatusCode::OK => {
+            (None, Some(claim)) if upstream.status.is_success() => {
                 self.forward_manifest(upstream, &claim, &artifact.purl)
                     .await
             }
@@ -3805,7 +3805,7 @@ impl Exchange<'_> {
             .into_response()
     }
 
-    /// Forward a body the proxy does not read, verifying a 200 against `artifact`'s digest
+    /// Forward a body the proxy does not read, verifying a 2xx against `artifact`'s digest
     /// when it has one.
     fn forward_artifact(&self, upstream: Upstream, artifact: ArtifactFetch) -> Response {
         let Upstream {
@@ -3820,7 +3820,7 @@ impl Exchange<'_> {
         let Some(sri) = artifact.digest else {
             return (forward_status, headers, Body::from_stream(body)).into_response();
         };
-        if status != reqwest::StatusCode::OK {
+        if !status.is_success() {
             if status == reqwest::StatusCode::NOT_MODIFIED {
                 self.proxy.revalidated.fetch_add(1, Ordering::Relaxed);
                 info!(
@@ -8467,6 +8467,28 @@ mod tests {
         assert!(text.contains("it is over 8 bytes"), "{text}");
     }
 
+    /// A `go.mod` answered with a 2xx other than 200 is checked as a 200 is.
+    #[tokio::test]
+    async fn a_go_mod_answered_with_another_2xx_is_checked() {
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        for (body, expected) in [
+            (go_mod.clone(), 203),
+            (b"module rsc.io/quote\n".to_vec(), 502),
+        ] {
+            let router = axum::Router::new().route(
+                "/rsc.io/quote/@v/v1.5.2.mod",
+                axum::routing::get(move || {
+                    let body = body.clone();
+                    async move { (StatusCode::NON_AUTHORITATIVE_INFORMATION, body) }
+                }),
+            );
+            let upstream = crate::proxy::testing::serve(router).await;
+            let base = serve(go_proxy(&upstream, quote_sumdb().await).router()).await;
+            let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
+
     /// A version sum.golang.org does not know is forwarded, refused once weighed; one it
     /// cannot prove is 503. A failed body or an answer other than 200 is passed on as it came.
     #[tokio::test]
@@ -9461,6 +9483,11 @@ mod tests {
 
     /// An npm registry holding `widget` 1.0.0, whose packument publishes `integrity`.
     fn widget_registry(integrity: &str, tarball: Vec<u8>) -> Router {
+        widget_registry_answering(integrity, tarball, StatusCode::OK)
+    }
+
+    /// The same, answering the tarball with `status`.
+    fn widget_registry_answering(integrity: &str, tarball: Vec<u8>, status: StatusCode) -> Router {
         let packument = format!(
             r#"{{"name":"widget","dist-tags":{{"latest":"1.0.0"}},"versions":{{
                 "1.0.0":{{"version":"1.0.0","dist":{{
@@ -9486,6 +9513,7 @@ mod tests {
                     let tarball = tarball.clone();
                     async move {
                         (
+                            status,
                             [(header::CONTENT_TYPE, "application/octet-stream")],
                             tarball,
                         )
@@ -9878,6 +9906,36 @@ mod tests {
         let base = registry_with(&sri_of(&honest), tampered).await;
 
         assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
+    }
+
+    /// A 2xx other than 200 is verified as a 200 is: a 203 or 206 with other bytes never
+    /// arrives complete, and one with the published bytes is served.
+    #[tokio::test]
+    async fn a_tarball_answered_with_another_2xx_is_verified() {
+        let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let mut tampered = honest.clone();
+        tampered[25_000] ^= 0xFF;
+        for status in [
+            StatusCode::NON_AUTHORITATIVE_INFORMATION,
+            StatusCode::PARTIAL_CONTENT,
+        ] {
+            for (body, served) in [(tampered.clone(), false), (honest.clone(), true)] {
+                let upstream =
+                    serve(widget_registry_answering(&sri_of(&honest), body, status)).await;
+                let base = serve(
+                    Proxy::new(reqwest::Client::new())
+                        .with_upstream(Ecosystem::Npm, upstream)
+                        .router(),
+                )
+                .await;
+                let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), status);
+                let complete = response.bytes().await.is_ok();
+                assert_eq!(complete, served, "{status}, served: {served}");
+            }
+        }
     }
 
     /// A failed digest must not deliver a whole artifact.

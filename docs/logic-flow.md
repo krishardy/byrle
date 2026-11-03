@@ -89,8 +89,8 @@ flowchart TD
     R11 --> UP([upstream answer]):::ext
     UP --> R12{R12 Exchange::respond}
     R12 -->|2xx metadata the proxy reads| D[section 5.2:<br/>forward_document]
-    R12 -->|200 manifest with a claim| FM[forward_manifest:<br/>whole body checked]
-    R12 -->|anything else| FA[forward_artifact:<br/>VerifyingStream on a 200 with a digest]
+    R12 -->|2xx manifest with a claim| FM[forward_manifest:<br/>whole body checked]
+    R12 -->|anything else| FA[forward_artifact:<br/>VerifyingStream on a 2xx with a digest]
 ```
 
 | ID | Step | Code | Notes |
@@ -317,5 +317,5 @@ Forwarded with no policy decision:
 | F2 | A listed `Other` shape: npm `/-/` endpoints, PyPI `/simple/` and `.metadata`, Go `.info` and checksum database, Maven sidecars and `.asc` | each `classify_path` |
 | F3 | An unrecognised path in observe mode | `unrecognised` |
 | F4 | A document over the size limit, undecodable, or not read (D1, D2, R9) | `forward_document`, `filtered_document`, `negotiate` |
-| F5 | A non-2xx or 304 answer; a non-200 artifact answer with a digest | `Exchange::respond`, `forward_artifact` |
+| F5 | A non-2xx or 304 answer | `Exchange::respond`, `forward_artifact` |
 | F6 | No strong digest, while `no_strong_digest` weighs 0 by default; a manifest with no claim | `Deciding::answer`, `unclaimed` |
