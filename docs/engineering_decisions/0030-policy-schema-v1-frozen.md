@@ -56,6 +56,9 @@ Amended 2026-11-03, decided by the user: `cooldown_unanswered` is added to
 `signal_weights`, for [undated-files-first-seen](0129-undated-files-first-seen.md). It
 weighs `risk_threshold` unless weighed.
 
+Amended 2026-11-04, decided by the user: `guarddog.error` is added to `signal_weights`, for
+[detector-run-failures](0131-detector-run-failures.md). It weighs 1 unless weighed.
+
 ## The keys
 
 | Level | Keys |
@@ -65,7 +68,7 @@ weighs `risk_threshold` unless weighed.
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
-| `signal_weights` | `denied`, `known_malware`, `cooldown`, `kev`, `max_cvss`, `install_scripts`, `yanked`, `deprecated`, `provenance_unverified`, `provenance_dropped`, `provenance_identity_changed`, `provenance_surprise`, `no_strong_digest`, `unservable`, `digest_mismatch`, `signature_failed`, `cooldown_unanswered`, `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `trustpub_dropped`, `trustpub_repository_changed`, `signing_key_new`, `signing_key_expired`, `archive_suspicious`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
+| `signal_weights` | `denied`, `known_malware`, `cooldown`, `kev`, `max_cvss`, `install_scripts`, `yanked`, `deprecated`, `provenance_unverified`, `provenance_dropped`, `provenance_identity_changed`, `provenance_surprise`, `no_strong_digest`, `unservable`, `digest_mismatch`, `signature_failed`, `cooldown_unanswered`, `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `trustpub_dropped`, `trustpub_repository_changed`, `signing_key_new`, `signing_key_expired`, `archive_suspicious`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES`, and `guarddog.error` |
 | `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `ignored_vuln_advisory_ids` |
 
 | Key | Value | Default |

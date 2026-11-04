@@ -5,6 +5,9 @@
 /// The release whose rules are listed here.
 pub const VERSION: &str = "3.2.0";
 
+/// The rules a policy may weigh for GuardDog: its own, and [`super::ERROR_RULE`].
+pub const WEIGHED: [&str; 65] = super::joined(&RULES, &[super::ERROR_RULE]);
+
 /// Every rule GuardDog 3.2.0 lists for npm or PyPI.
 pub const RULES: [&str; 64] = [
     "bundled_binary",

@@ -159,7 +159,7 @@ timeout. No production client sets a redirect policy, so each follows up to 10 r
 | B5 | VirusTotal API v3: file lookup, upload URL, upload, analysis | `analysis/virustotal.rs` | the artifact's sha256; the large-file upload URL is VirusTotal's answer | whole, no limit; `x-apikey` on each request |
 | B6 | `crates.io/api/v1/crates/<name>/versions` | `ecosystem/cargo/trustpub.rs` `TrustPub::page` | crate name; `meta.next_page`, up to 20 pages | whole, no limit |
 | B7 | keys.openpgp.org, keyserver.ubuntu.com | `ecosystem/maven/keys.rs` `KeyServers::copy` | the `.asc`'s issuer | whole, no limit |
-| B8 | `BYRLE_DETECTORS` programs, as subprocesses | `analysis/detector.rs` `Command::run` | the ecosystem, name and version, as arguments; the program fetches its own copy | stdout and stderr up to 16 MiB; cleared environment, 0700 working directory, killed on timeout |
+| B8 | `BYRLE_DETECTORS` programs, as subprocesses | `analysis/detector.rs` `Command::run` | the ecosystem, name and version, as arguments; the program fetches its own copy | stdout and stderr up to 16 MiB; cleared environment, 0700 working directory, killed on timeout; a non-zero exit stores nothing |
 | B9 | OSV bundles, CISA KEV, Datadog manifests, GitHub GraphQL | `intel/fetch.rs` `bundle`, `graphql` | `intel/stream.rs`; `BYRLE_STREAM_URLS` replaces any | OSV 512 MiB, each zip entry 16 MiB; KEV and Datadog 16 MiB; GitHub 64 MiB over all pages, each page read whole first; a stream that parsed to under half its source's stored rows is not loaded, unless `--force` lists it |
 | B10 | OIDC discovery, JWKS, token endpoint | `console/oidc.rs` `Provider::fetched`, `exchange` | `BYRLE_OIDC_*`; endpoints must pass `http::trusted` | 256 KiB |
 | B11 | Postgres, one pool | `intel/postgres.rs`, `analysis/postgres.rs`, `account/postgres.rs`, `usage/postgres.rs` | `DATABASE_URL` | tables below |
@@ -210,7 +210,7 @@ flowchart LR
 | V7 | `provenance` | metadata: `analysis/attestation.rs` `from_metadata`; pinned fetch: `Deciding::attested` | |
 | V8 | `has_install_scripts` OR the analysis's; `install_scripts_analyzed`; the analysis's anomalies | `Deciding::analysed`; `analysis.rs` `npm_install_scripts`, `sdist_install_scripts`, `crate_build_scripts`, `jar_annotation_processors` | a tarball is read through every gzip member and past a single zero block, and every copy of a manifest counts (0122). A root `binding.gyp` with no `install` or `preinstall` is `install: node-gyp rebuild` (0123). A `.crate` is a proc-macro by `proc-macro`, `proc_macro`, `crate-type` or `crate_type`. An artifact over the spool's ceiling, or decompressing past 4 GiB, is `Unreadable`, which counts as install scripts |
 | V9 | detections | `Deciding::detections`; `analysis/detector/*.rs` | pinned fetch only. `archive` reads V8's anomalies |
-| V10 | detector signal keys, `<detector>.<rule>` | `signal.rs` `of_detections`, `detector.rs` `key` | |
+| V10 | detector signal keys, `<detector>.<rule>` | `signal.rs` `of_detections`, `detector.rs` `key` | a command's run whose `errors` names a rule adds `<detector>.error` |
 | V11 | the proxy's own | `Deciding::own_signals`; `signature_failed` for manifests in `signed_manifest` | |
 
 A metadata document's versions get V1, V3, V4 to V6, and V7 from metadata alone. They get

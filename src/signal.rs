@@ -39,16 +39,31 @@ pub fn score(signals: &[Signal], weights: &SignalWeights) -> u32 {
 }
 
 /// The signals `detections`, each a detector's name and what it found, give: one per rule
-/// that fired, in their order.
+/// that fired, in their order, then [`detector::ERROR_RULE`] for a detection whose `errors`
+/// names any rule, with those rules as its detail.
 pub fn of_detections(detections: &[(String, Detection)]) -> Vec<Signal> {
     detections
         .iter()
         .flat_map(|(detector, detection)| {
-            detection.findings.iter().map(|finding| Signal {
+            let errored = (!detection.errors.is_empty()).then(|| Signal {
                 detector: detector.clone(),
-                rule: finding.rule.clone(),
-                detail: finding.detail.clone(),
-            })
+                rule: detector::ERROR_RULE.to_owned(),
+                detail: detection
+                    .errors
+                    .iter()
+                    .map(|error| error.rule.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
+            detection
+                .findings
+                .iter()
+                .map(|finding| Signal {
+                    detector: detector.clone(),
+                    rule: finding.rule.clone(),
+                    detail: finding.detail.clone(),
+                })
+                .chain(errored)
         })
         .collect()
 }
@@ -189,10 +204,12 @@ mod tests {
                     detail: String::new(),
                 })
                 .collect(),
-            errors: vec![Finding {
-                rule: "e".to_owned(),
-                detail: "no dns".to_owned(),
-            }],
+            errors: ["e", "f"]
+                .map(|rule| Finding {
+                    rule: rule.to_owned(),
+                    detail: "no dns".to_owned(),
+                })
+                .to_vec(),
         };
         let detected = [
             (
@@ -200,26 +217,46 @@ mod tests {
                 fired(&["threat-process-hooks", "bundled_binary"]),
             ),
             ("guarddog".to_owned(), fired(&["bundled_binary"])),
-            ("metadata".to_owned(), fired(&["no_repository"])),
+            (
+                "metadata".to_owned(),
+                Detection {
+                    errors: Vec::new(),
+                    ..fired(&["no_repository"])
+                },
+            ),
         ];
-        let signals = of_detections(&detected);
+        let signals = of_detections(&detected[..2]);
         assert_eq!(
             signals.iter().map(ToString::to_string).collect::<Vec<_>>(),
             [
                 "guarddog: threat-process-hooks",
                 "guarddog: bundled_binary",
+                "guarddog: error",
                 "guarddog: bundled_binary",
-                "no repository: ",
+                "guarddog: error",
             ]
         );
-        assert_eq!(signals[0].key(), "guarddog.threat-process-hooks");
-        assert_eq!(signals[3].key(), "no_repository");
+        assert_eq!(signals[2].key(), "guarddog.error");
+        assert_eq!(signals[2].detail, "e, f", "the rules that could not run");
+        let quiet = Detection {
+            findings: Vec::new(),
+            errors: Vec::new(),
+        };
+        assert_eq!(
+            of_detections(&[("guarddog".to_owned(), quiet)]),
+            [],
+            "no error, no signal"
+        );
+        let signals = of_detections(&detected[2..]);
+        assert_eq!(signals[0].to_string(), "no repository: ");
+        assert_eq!(signals[0].key(), "no_repository");
+        let signals = of_detections(&detected);
         let weights = SignalWeights::of_pairs(&[("guarddog.threat-process-hooks", 4)]);
         assert_eq!(signals[0].weight(&weights), 4);
         assert_eq!(
             score(&signals, &weights),
-            6,
-            "4, then bundled_binary and no_repository once each at 1"
+            7,
+            "4, then bundled_binary, guarddog.error and no_repository once each at 1"
         );
     }
 

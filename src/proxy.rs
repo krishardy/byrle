@@ -13152,6 +13152,11 @@ mod tests {
                 "{:?}",
                 lines[1].signals
             );
+            assert!(
+                lines[1].signals.contains(&"guarddog: error".to_owned()),
+                "a rule that could not run: {:?}",
+                lines[1].signals
+            );
         }
 
         let (proxy, analyser, _, _) = sourcing(

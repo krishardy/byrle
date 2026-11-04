@@ -142,3 +142,4 @@ Implemented means it is in the code, and the file names where.
 | 0128 | [RUSTSEC-2026-0387 accepted while `crypto-bigint` 0.5.5 is built only for `pgp`](0128-crypto-bigint-advisory.md) | Implemented 2026-11-03 |  |
 | 0129 | [An undated file is dated by its first sighting, and `cooldown_unanswered` refuses one with none](0129-undated-files-first-seen.md) | Implemented 2026-11-03 |  |
 | 0130 | [A stream that parses to under half its stored rows is not loaded, unless forced](0130-shrunk-stream-not-loaded.md) | Implemented 2026-11-04 |  |
+| 0131 | [A detector command that exits non-zero is not run, and a rule that could not run fires `error`](0131-detector-run-failures.md) | Implemented 2026-11-04 |  |

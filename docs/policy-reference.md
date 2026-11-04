@@ -270,7 +270,8 @@ intel store holds, which are named without the detector. An unsound, unmaintaine
 nothing: it is a signal only. A vulnerability or malware advisory is also refused by
 `max_cvss` or `known_malware`. Another detector's rule is weighed as `detector.rule`, such
 as `guarddog.threat-process-hooks: 3`, 1 unless set. A rule the detector does not have is refused, as an unknown key is. The rules
-are in [detectors](engineering_decisions/0092-detectors.md).
+are in [detectors](engineering_decisions/0092-detectors.md). `guarddog.error` fires when a
+run reports a rule that could not run ([detector-run-failures](engineering_decisions/0131-detector-run-failures.md)).
 
 Each weight is a whole number, 0 or more. The signals are in
 [metadata-heuristics](engineering_decisions/0090-metadata-heuristics.md),
