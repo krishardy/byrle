@@ -78,7 +78,7 @@ form the proxy accepts ([admin-plan](../admin-plan.md) §4.1). A 401 has no
 | Cookie | `byrle_session=<id>; Path=<console path>; Max-Age=28800; HttpOnly; Secure; SameSite=Strict` |
 | CSRF | a cookie request other than GET or HEAD carries `X-Byrle-CSRF`, the SHA-256 of `byrle-csrf\0` and the session id, which login returns. A token request needs none |
 | Origin | a `POST` with an `Origin` other than `BYRLE_CONSOLE_URL`'s is 403, login included. A request with no `Origin`, such as curl's, is let through |
-| Failures | 5 per account and 20 per address in 15 minutes; past either, a login is 429 without its password being checked. An IPv6 address counts by its /64. The counts are per process, so instances sharing a database each count their own |
+| Failures | 5 per account and 20 per address in 15 minutes; past either, a login is 429 without its password being checked. A login is counted as a failure when it is let in, before its password is checked, and taken back if it succeeds or the store does not answer, so logins sent at once cannot each be checked. An IPv6 address counts by its /64. The counts are per process, so instances sharing a database each count their own |
 | Hashing | 2 passwords at once, each on a blocking thread. An account that is unknown, has no password, or a name that is not a name is checked against a hash of a random string, so it takes as long |
 | Address | the peer's, or the last `X-Forwarded-For` entry on a request carrying `BYRLE_RP_KEY` ([fronting-tls](../fronting-tls.md)) |
 

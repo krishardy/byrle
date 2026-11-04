@@ -105,7 +105,7 @@ The console is on when `BYRLE_CONSOLE_URL` is set, and needs the database
 
 | Exposure | Control |
 |---|---|
-| The login form | Argon2id hashes; 5 failures per account and 20 per address in 15 minutes, then 429 unchecked; an unknown account takes as long as a known one; passwords hashed 2 at a time off the threads that answer requests |
+| The login form | Argon2id hashes; 5 failures per account and 20 per address in 15 minutes, then 429 unchecked, each login counted before its password is checked; an unknown account takes as long as a known one; passwords hashed 2 at a time off the threads that answer requests |
 | Who a request is from | the address of the peer, or the last `X-Forwarded-For` entry when the request carries `BYRLE_RP_KEY`, which nginx sets and a client cannot ([fronting-tls](fronting-tls.md)) |
 | Sessions and tokens | stored as their SHA-256, never as themselves; a session ends at logout, after `BYRLE_SESSION_HOURS`, or when its account is disabled |
 | The session cookie | `HttpOnly; Secure; SameSite=Strict`, under the console's path |
