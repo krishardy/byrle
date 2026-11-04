@@ -3,7 +3,7 @@
 //!
 //! See docs/engineering_decisions/0092-detectors.md.
 
-use crate::analysis::detector::{self, Detection};
+use crate::analysis::detector::{self, Detection, guarddog};
 use crate::policy::SignalWeights;
 
 /// One rule a detector fired on a version.
@@ -39,21 +39,23 @@ pub fn score(signals: &[Signal], weights: &SignalWeights) -> u32 {
 }
 
 /// The signals `detections`, each a detector's name and what it found, give: one per rule
-/// that fired, in their order, then [`detector::ERROR_RULE`] for a detection whose `errors`
-/// names any rule, with those rules as its detail.
+/// that fired, in their order, then one per rule [`guarddog::error_rule`] gives the rules in
+/// its `errors`, with those rules as its detail.
 pub fn of_detections(detections: &[(String, Detection)]) -> Vec<Signal> {
     detections
         .iter()
         .flat_map(|(detector, detection)| {
-            let errored = (!detection.errors.is_empty()).then(|| Signal {
+            let mut errored = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+            for error in &detection.errors {
+                errored
+                    .entry(guarddog::error_rule(detector, &error.rule))
+                    .or_default()
+                    .push(&error.rule);
+            }
+            let errored = errored.into_iter().map(|(rule, rules)| Signal {
                 detector: detector.clone(),
-                rule: detector::ERROR_RULE.to_owned(),
-                detail: detection
-                    .errors
-                    .iter()
-                    .map(|error| error.rule.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                rule: rule.to_owned(),
+                detail: rules.join(", "),
             });
             detection
                 .findings
@@ -257,6 +259,53 @@ mod tests {
             score(&signals, &weights),
             7,
             "4, then bundled_binary, guarddog.error and no_repository once each at 1"
+        );
+    }
+
+    /// GuardDog's WHOIS rules that could not run fire `whois_error`, and its other rules
+    /// `error`. Another detector's rules of the same names fire `error`.
+    #[test]
+    fn a_whois_rule_that_could_not_run_is_a_signal_of_its_own() {
+        let errored = Detection {
+            findings: Vec::new(),
+            errors: [
+                "unclaimed_maintainer_email_domain",
+                "rules-all",
+                "potentially_compromised_email_domain",
+            ]
+            .map(|rule| Finding {
+                rule: rule.to_owned(),
+                detail: "timed out".to_owned(),
+            })
+            .to_vec(),
+        };
+        let signals = of_detections(&[
+            ("guarddog".to_owned(), errored.clone()),
+            ("other".to_owned(), errored),
+        ]);
+        assert_eq!(
+            signals
+                .iter()
+                .map(|s| (s.key(), s.detail.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("guarddog.error".to_owned(), "rules-all"),
+                (
+                    "guarddog.whois_error".to_owned(),
+                    "unclaimed_maintainer_email_domain, potentially_compromised_email_domain"
+                ),
+                (
+                    "other.error".to_owned(),
+                    "unclaimed_maintainer_email_domain, rules-all, \
+                     potentially_compromised_email_domain"
+                ),
+            ]
+        );
+        let whois_only = SignalWeights::of_pairs(&[("guarddog.whois_error", 0)]);
+        assert_eq!(
+            score(&signals[..2], &whois_only),
+            1,
+            "the WHOIS rules weigh 0"
         );
     }
 

@@ -98,7 +98,8 @@ Decided with the user: GuardDog scans by name, so its metadata rules run. That c
   maintainers' email domains by WHOIS, TCP port 43, through `python-whois`. Without that
   access both fail on every run. `SOCKS=host:port` sends them through a SOCKS5 proxy, which
   needs PySocks installed beside GuardDog. This sandbox has no SOCKS5 proxy yet, so the two
-  rules are not measured below.
+  rules are not measured below. A failure of either fires `guarddog.whois_error`
+  ([detector-run-failures](0131-detector-run-failures.md)).
 
 `django` 6.1.1's wheel is never scanned. GuardDog refuses it as "multiple
 End-Of-Central-Directory records (possible scan evasion)": the four signature bytes occur by

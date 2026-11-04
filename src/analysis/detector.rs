@@ -38,7 +38,7 @@ pub const KNOWN: [(&str, &[&str]); 10] = [
     (trustpub::NAME, &trustpub::RULES),
     (signing::NAME, &signing::RULES),
     (archive::NAME, &archive::RULES),
-    ("guarddog", &guarddog::WEIGHED),
+    (guarddog::NAME, &guarddog::WEIGHED),
 ];
 
 /// The detectors built in, whose rules a policy names without the detector's name.
@@ -525,6 +525,7 @@ esac
         assert!(knows("guarddog.threat-process-hooks"));
         assert!(knows("guarddog.bundled_binary"));
         assert!(knows("guarddog.error"));
+        assert!(knows("guarddog.whois_error"));
         assert!(
             !knows("error"),
             "a command's rule is named with its detector"
