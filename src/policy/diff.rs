@@ -205,6 +205,8 @@ pub struct Report {
     pub evaluated: usize,
     /// Only the packages that moved.
     pub changed: Vec<Package>,
+    /// Each top-level setting and `signal_weights` key the two policies give otherwise.
+    pub settings: Vec<super::settings::Setting>,
 }
 
 impl Report {
@@ -236,17 +238,35 @@ impl Report {
     /// [`TIGHTENED`] if one got stricter, and [`ERROR`] if a listed version could not be
     /// read or none was judged, OR-ed.
     pub fn exit_bits(&self) -> u8 {
-        let loosened = !self.loosened().is_empty() || !self.incomparable().is_empty();
-        let tightened = !self.tightened().is_empty();
+        let setting = |s: Strictness| self.settings.iter().any(|m| m.strictness == s);
+        let loosened = !self.loosened().is_empty()
+            || !self.incomparable().is_empty()
+            || setting(Strictness::Looser);
+        let tightened = !self.tightened().is_empty() || setting(Strictness::Stricter);
         let failed = self.unread > 0 || self.judged_none();
         (if loosened { LOOSENED } else { 0 })
             | (if tightened { TIGHTENED } else { 0 })
             | (if failed { ERROR } else { 0 })
     }
 
-    /// Grouped by check and direction, which is what a person reads first.
+    /// The settings that moved, then the packages grouped by check and direction, which is
+    /// what a person reads first.
     pub fn render(&self) -> String {
-        let mut out = format!("{} packages evaluated\n", self.evaluated);
+        let mut out = String::new();
+        if !self.settings.is_empty() {
+            out.push_str(&format!("{} settings moved\n", self.settings.len()));
+            for s in &self.settings {
+                out.push_str(&format!(
+                    "    {}  {} -> {}  ({})\n",
+                    s.key,
+                    s.from,
+                    s.to,
+                    strictness(s.strictness)
+                ));
+            }
+            out.push('\n');
+        }
+        out.push_str(&format!("{} packages evaluated\n", self.evaluated));
         if self.unread > 0 {
             out.push_str(&format!("{} could not be read\n", self.unread));
         }
@@ -476,6 +496,7 @@ impl Comparison {
     async fn report(&self, mut out: Run) -> Run {
         let mut report = Report {
             listed: self.versions.len(),
+            settings: super::settings::compared(&self.policies[0], &self.policies[1]),
             ..Report::default()
         };
         for (purl, reference, version, at) in &self.versions {
@@ -501,6 +522,15 @@ impl Comparison {
 
         out.report = report.render();
         let bits = report.exit_bits();
+        if !report.settings.is_empty() {
+            let count =
+                |s: Strictness| report.settings.iter().filter(|m| m.strictness == s).count();
+            out.summary.push(format!(
+                "settings: {} loosened, {} tightened",
+                count(Strictness::Looser),
+                count(Strictness::Stricter)
+            ));
+        }
         if bits != 0 {
             out.summary.push(format!(
                 "{} loosened, {} incomparable, {} tightened, {} could not be read",
@@ -753,10 +783,18 @@ mod run_tests {
             "{}",
             run.report
         );
-        assert!(run.report.contains("cooldown_days"), "{}", run.report);
+        assert!(
+            run.report
+                .starts_with("1 settings moved\n    cooldown_days  0 -> 36500  (stricter)\n\n"),
+            "{}",
+            run.report
+        );
         assert_eq!(
             run.summary,
-            ["0 loosened, 0 incomparable, 1 tightened, 0 could not be read"]
+            [
+                "settings: 0 loosened, 1 tightened",
+                "0 loosened, 0 incomparable, 1 tightened, 0 could not be read"
+            ]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -780,7 +818,11 @@ mod run_tests {
             &with(&[(crate::env::UPSTREAM_NPM, &format!("http://{addr}"))]),
         )
         .await;
-        assert_eq!(run.code, ERROR);
+        assert_eq!(
+            run.code,
+            ERROR | TIGHTENED,
+            "cooldown_days 1 -> 2 is stricter"
+        );
         assert!(
             run.notes
                 .iter()
@@ -791,6 +833,7 @@ mod run_tests {
         assert_eq!(
             run.summary,
             [
+                "settings: 0 loosened, 1 tightened".to_owned(),
                 "0 loosened, 0 incomparable, 0 tightened, 1 could not be read".to_owned(),
                 "none of the 1 package versions listed was judged".to_owned()
             ]
@@ -892,7 +935,7 @@ mod run_tests {
 
         let failed = scripted(vec![Answer::body("v0.3.0\n"), Answer::Status(500)]).await;
         let failed = run(&args, &run_with(failed)).await;
-        assert_eq!(failed.code, ERROR, "{:?}", failed.notes);
+        assert_eq!(failed.code, ERROR | TIGHTENED, "{:?}", failed.notes);
         assert!(
             failed.notes[0].ends_with(".info answered 500"),
             "{:?}",
@@ -1553,6 +1596,33 @@ mod tests {
         let mut unmoved = Report::default();
         unmoved.push(diff("version: 1", "version: 1", &facts));
         assert_eq!(unmoved.exit_bits(), 0);
+    }
+
+    /// The review's case: `known_malware` weighed 0 over a package with no malware moves no
+    /// package, and the setting alone is a loosening. One weighed higher is a tightening.
+    #[test]
+    fn a_setting_that_moved_sets_its_bit_whatever_the_packages_did() {
+        let policy = |yaml: &str| crate::policy::Policy::parse(yaml).expect("parses");
+        let (default, zeroed) = (
+            policy("version: 1\n"),
+            policy("version: 1\nsignal_weights: { known_malware: 0 }\n"),
+        );
+        let mut report = Report {
+            settings: crate::policy::settings::compared(&default, &zeroed),
+            ..Report::default()
+        };
+        report.push(diff("version: 1", "version: 1", &facts()));
+        assert_eq!(report.exit_bits(), LOOSENED);
+        assert!(
+            report.render().starts_with(
+                "1 settings moved\n    signal_weights.known_malware  100 of 100 -> 0 of 100  \
+                 (LOOSER)\n\n1 packages evaluated\nnothing moved\n"
+            ),
+            "{}",
+            report.render()
+        );
+        report.settings = crate::policy::settings::compared(&zeroed, &default);
+        assert_eq!(report.exit_bits(), TIGHTENED);
     }
 
     #[test]

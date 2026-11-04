@@ -11,6 +11,7 @@ pub mod facts;
 pub mod merge;
 pub mod packages;
 pub mod selector;
+pub mod settings;
 pub mod strictness;
 pub mod vers;
 
@@ -281,6 +282,11 @@ impl SignalWeights {
     /// The weight the policy gives the rule `key`, `None` when it gives none.
     pub fn set(&self, key: &str) -> Option<u32> {
         self.0.get(key).copied()
+    }
+
+    /// Each key the policy sets.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
     }
 
     /// Weights set as `pairs`, of a key and its weight, for a test.

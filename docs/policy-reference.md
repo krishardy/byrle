@@ -5,8 +5,9 @@ Every key a policy file takes, what each does, and which way it loosens. The rea
 
 The file is YAML, named by `BYRLE_POLICY`. The proxy loads it at startup and again on
 `SIGHUP` ([break-glass](break-glass.md)). `byrle policy check <file>` loads it as the proxy
-does, and exits 1 if the proxy would refuse it. `byrle policy diff <old> <new>` reports
-what a change loosens and tightens. An unknown key, or a value of the wrong kind, refuses the
+does, exits 1 if the proxy would refuse it, and lists each setting looser than its default.
+`byrle policy diff <old> <new>` reports what a change loosens and tightens: each setting,
+and each listed package ([settings-compared-directly](engineering_decisions/0132-settings-compared-directly.md)). An unknown key, or a value of the wrong kind, refuses the
 whole file.
 
 ## Example

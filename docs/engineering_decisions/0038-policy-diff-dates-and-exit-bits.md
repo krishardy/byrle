@@ -2,7 +2,9 @@
 
 - **Number:** 0038
 - **Status:** Implemented. `When` and `exit_code` in `src/cli.rs`; `exit_bits` and the bits
-  and `run` in `src/policy/diff.rs`; the runner in `src/main.rs`.
+  and `run` in `src/policy/diff.rs`; the runner in `src/main.rs`. Amended 2026-11-04 by
+  [settings-compared-directly](0132-settings-compared-directly.md): a setting that moved
+  sets its bit whatever the packages did.
 - **Plan reference:** §3, policy impact analysis: an unchanged policy compared with itself
   30 days on "shows exactly which packages break when entries lapse", the renewal workflow's
   scheduled job; and "Nonzero exit on any loosening transition".

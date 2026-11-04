@@ -152,6 +152,8 @@ pub struct Report {
     pub permanent_scores: Vec<String>,
     /// Cooldown waivers whose version is now old enough without them, if dates were fetched.
     pub outlived: Vec<Outlived>,
+    /// Each top-level setting and `signal_weights` key looser than its default.
+    pub looser: Vec<super::settings::Setting>,
 }
 
 /// A `packages` entry that shortens `cooldown_days` for one exact version.
@@ -319,9 +321,14 @@ impl Report {
             }
         }
 
+        let default = Policy::parse("version: 1\n").expect("the empty policy parses");
         Self {
             as_of,
             outlived: Vec::new(),
+            looser: super::settings::compared(&default, policy)
+                .into_iter()
+                .filter(|s| s.strictness == Strictness::Looser)
+                .collect(),
             entries: policy
                 .packages
                 .iter()
@@ -377,11 +384,15 @@ impl Report {
         let with_reason = |i: usize| format!("{}: {}", name(i), self.entries[i].1);
         let sections = [
             (
-                "changes nothing",
-                self.unchanged
+                "looser than the default",
+                self.looser
                     .iter()
-                    .map(|&i| with_reason(i))
+                    .map(|s| format!("{}: {} -> {}", s.key, s.from, s.to))
                     .collect::<Vec<_>>(),
+            ),
+            (
+                "changes nothing",
+                self.unchanged.iter().map(|&i| with_reason(i)).collect(),
             ),
             (
                 "never applies",
@@ -914,6 +925,26 @@ mod tests {
             found.strict_failure().as_deref(),
             Some("changes nothing: 1, never applies: 0, cooldown outlived: 0")
         );
+    }
+
+    /// A setting looser than its default is listed, whatever package it would decide, and
+    /// one stricter is not.
+    #[test]
+    fn a_setting_looser_than_its_default_is_listed() {
+        let policy = Policy::parse(
+            "version: 1\ncooldown_days: 14\nrisk_threshold: 150\n\
+             signal_weights: { known_malware: 0 }\n",
+        )
+        .expect("policy should load");
+        let out = Report::of(&policy, TODAY).render();
+        assert!(
+            out.contains(
+                "\nlooser than the default\n  risk_threshold: 100 -> 150\n  \
+                 signal_weights.known_malware: 100 of 100 -> 0 of 150\n"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("cooldown_days"), "{out}");
     }
 
     #[test]

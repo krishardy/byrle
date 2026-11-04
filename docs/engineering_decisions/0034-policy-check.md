@@ -2,7 +2,9 @@
 
 - **Number:** 0034
 - **Status:** Implemented. `src/policy/check.rs`; the command in `src/main.rs`, and
-  `startup::report_policy` for the proxy.
+  `startup::report_policy` for the proxy. Amended 2026-11-04 by
+  [settings-compared-directly](0132-settings-compared-directly.md): the report lists each
+  setting looser than its default.
 - **Plan reference:** §5.5, "`policy check` flags selectors that can never win" and
   "`permanent: true` ... reported separately by `policy check`"; §6, `policy check --strict`.
 
