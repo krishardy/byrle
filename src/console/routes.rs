@@ -370,44 +370,52 @@ pub const ROUTES: [Route; 35] = [
     },
 ];
 
-/// A page `POST`'s form fields, or an API `POST`'s body. A body too large, or a page's that
-/// is not a form, is none.
-async fn sent(
-    kind: Kind,
-    parts: &Parts,
-    body: axum::body::Body,
-) -> (Vec<(String, String)>, Vec<u8>) {
+/// A page `POST`'s form fields. A body too large, or one that is not a form, is none.
+async fn form(parts: &Parts, body: axum::body::Body) -> Vec<(String, String)> {
     if parts.method != Method::POST {
-        return (Vec::new(), Vec::new());
+        return Vec::new();
     }
-    if kind == Kind::Api {
-        let body = axum::body::to_bytes(body, api::MAX_COMMAND_BODY).await;
-        return (
-            Vec::new(),
-            body.map(|bytes| bytes.to_vec()).unwrap_or_default(),
-        );
-    }
-    let form = axum::body::to_bytes(body, api::MAX_BODY)
+    axum::body::to_bytes(body, api::MAX_BODY)
         .await
         .ok()
         .and_then(|bytes| serde_urlencoded::from_bytes(&bytes).ok())
-        .unwrap_or_default();
-    (form, Vec::new())
+        .unwrap_or_default()
+}
+
+/// An API `POST`'s body. A body too large is none.
+async fn command(parts: &Parts, body: axum::body::Body) -> Vec<u8> {
+    if parts.method != Method::POST {
+        return Vec::new();
+    }
+    axum::body::to_bytes(body, api::MAX_COMMAND_BODY)
+        .await
+        .map(|bytes| bytes.to_vec())
+        .unwrap_or_default()
 }
 
 /// Answer `request` on a route of `kind` guarded by `guard`.
+///
+/// A page's form is read first, as it carries the CSRF token. An API caller is admitted from
+/// its headers, and its body read only then.
 async fn guarded(kind: Kind, guard: Guard, site: Arc<Site>, request: Request) -> Response {
     match guard {
         Guard::Public(handler) | Guard::Authenticated(handler) => handler(site, request).await,
         Guard::Needs(permission, handler) => {
             let (parts, body) = request.into_parts();
-            let (form, body) = sent(kind, &parts, body).await;
+            let (form, unread) = match kind {
+                Kind::Page => (form(&parts, body).await, None),
+                Kind::Api => (Vec::new(), Some(body)),
+            };
             let sent = form
                 .iter()
                 .find(|(field, _)| field == "csrf")
                 .map(|(_, value)| value.as_str());
             match site.caller_sending(&parts, sent).await {
                 Ok((caller, id)) if role::permits(&caller.roles, permission) => {
+                    let body = match unread {
+                        Some(body) => command(&parts, body).await,
+                        None => Vec::new(),
+                    };
                     let csrf = id.as_deref().map(api::csrf);
                     let asked = Asked {
                         caller,
@@ -623,6 +631,57 @@ mod tests {
         let forbidden = guarded(Kind::Api, guard, site, by_token).await;
         assert_eq!(forbidden.status(), 403);
         assert_eq!(forbidden.headers()["content-type"], "application/json");
+    }
+
+    /// An API caller is refused from its headers, before its body is read: a body that never
+    /// ends is answered at once. An admitted caller's body reaches the handler.
+    #[tokio::test]
+    async fn an_api_body_is_read_only_once_the_caller_is_admitted() {
+        let store = store().await;
+        let laptop = Name::parse("laptop").unwrap();
+        for (account, token) in [("bob", "byrle_bob"), ("alice", "byrle_alice")] {
+            store
+                .create_token(
+                    &Name::parse(account).unwrap(),
+                    &laptop,
+                    &TokenDigest::of(token),
+                )
+                .await
+                .unwrap();
+        }
+        let (site, _) = served(store).await;
+        let guard = Guard::Needs(Permission::AccountsWrite, |_, asked| {
+            let read = asked.body.len().to_string();
+            Box::pin(async move { read.into_response() })
+        });
+        let endless = |token: Option<&str>| {
+            let request = axum::http::Request::post("/admin/x");
+            let request = match token {
+                Some(token) => request.header("authorization", format!("Bearer {token}")),
+                None => request,
+            };
+            let stream = futures_util::stream::pending::<Result<Vec<u8>, std::io::Error>>();
+            request.body(axum::body::Body::from_stream(stream)).unwrap()
+        };
+        for (token, refused) in [(None, 401), (Some("byrle_bob"), 403)] {
+            let answered = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                guarded(Kind::Api, guard, site.clone(), endless(token)),
+            )
+            .await
+            .expect("answered without reading the body");
+            assert_eq!(answered.status(), refused, "{token:?}");
+        }
+        let sent = axum::http::Request::post("/admin/x")
+            .header("authorization", "Bearer byrle_alice")
+            .body(axum::body::Body::from("abc"))
+            .unwrap();
+        let admitted = guarded(Kind::Api, guard, site, sent).await;
+        assert_eq!(admitted.status(), 200);
+        let read = axum::body::to_bytes(admitted.into_body(), 64)
+            .await
+            .unwrap();
+        assert_eq!(&read[..], b"3");
     }
 
     /// docs/console-api.md lists each API route, with the permission it needs.
