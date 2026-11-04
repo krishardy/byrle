@@ -11,7 +11,7 @@ use super::refresh::StreamDigest;
 use super::rows::Rows;
 use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
 use sqlx::{PgConnection, PgPool};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Bytes per `CopyData` message, which bounds what one send holds in flight.
 const COPY_CHUNK: usize = 1 << 20;
@@ -196,6 +196,22 @@ impl PgIntel {
             snapshot,
             manifest,
         })
+    }
+
+    /// How many rows each source has: its `advisory` rows, or its `exploited_cve` rows.
+    pub async fn stored_rows(&self) -> Result<BTreeMap<String, u64>, IntelError> {
+        let counted = sqlx::query!(
+            r#"SELECT source AS "source!", count(*) AS "rows!" FROM advisory GROUP BY source
+               UNION ALL
+               SELECT source, count(*) FROM exploited_cve GROUP BY source"#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(IntelError::Backend)?;
+        Ok(counted
+            .into_iter()
+            .map(|c| (c.source, u64::try_from(c.rows).unwrap_or(0)))
+            .collect())
     }
 
     /// Append `not_loaded` to `intel_ingestion` for a refresh that loaded nothing, in one

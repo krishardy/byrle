@@ -464,9 +464,9 @@ async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
 
 /// `byrle refresh`: load every stream into the intel store, and append what each stream
 /// did to the ingestion history.
-async fn run_refresh() -> std::process::ExitCode {
+async fn run_refresh(args: cli::Refresh) -> std::process::ExitCode {
     let notice = |line: &str| eprintln!("byrle refresh: {line}");
-    let run = refresh::run(&env::process(), &notice).await;
+    let run = refresh::run(&env::process(), &args.force, &notice).await;
     print!("{}", run.report);
     std::process::ExitCode::from(run.code)
 }
@@ -617,7 +617,7 @@ async fn main() -> std::process::ExitCode {
         cli::Command::Account(command) => run_account(command).await,
         cli::Command::Token(command) => run_token(command).await,
         cli::Command::Artifact(command) => run_artifact(command).await,
-        cli::Command::Refresh => run_refresh().await,
+        cli::Command::Refresh(args) => run_refresh(args).await,
         cli::Command::Warm(args) => run_warm(args).await,
         cli::Command::Lockfile(cli::LockfileCommand::Verify(args)) => run_lockfile_verify(args),
     }

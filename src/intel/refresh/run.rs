@@ -32,8 +32,13 @@ impl Run {
 }
 
 /// Load every stream in [`stream::all`] into the intel store, and append what each stream
-/// did to the ingestion history.
-pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: Notice<'_>) -> Run {
+/// did to the ingestion history. A stream that parsed to under half its source's stored rows
+/// is not loaded, unless `forced` lists it.
+pub async fn run<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+    forced: &[String],
+    notice: Notice<'_>,
+) -> Run {
     let intel = match postgres::required(environment).await {
         Ok(intel) => intel,
         Err(refused) => {
@@ -47,13 +52,22 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: 
         Err(code) => return Run::stopped(code),
     };
 
-    let read = fetch::read_streams(
+    let mut read = fetch::read_streams(
         &setup.http,
         stream::all(),
         (&setup.urls, setup.github_token.as_deref()),
         notice,
     )
     .await;
+    match intel.stored_rows().await {
+        Ok(stored) => read.refuse_shrunk(&stored, forced, notice),
+        Err(e) => {
+            notice(&format!(
+                "nothing loaded: the stored row counts are not read: {e}"
+            ));
+            return Run::stopped(1);
+        }
+    }
     let (loaded, not_loaded) = (read.loaded, read.not_loaded);
     if loaded.is_empty() {
         notice("nothing loaded: no stream loaded");

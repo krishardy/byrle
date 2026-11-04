@@ -20,7 +20,7 @@ use byrle::intel::snapshot_dir::SnapshotDir;
 use byrle::intel::snapshot_intel::SnapshotIntel;
 use byrle::intel::store::{Intel, IntelError, LoadedSnapshot, PackageIntel};
 use sqlx::PgPool;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
@@ -1728,6 +1728,13 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         (loaded.unchanged, loaded.advisories, loaded.exploited),
         (1, 0, 3)
     );
+    let counted = |kev| {
+        BTreeMap::from([
+            (kev::STREAM.to_owned(), kev),
+            (osv::bundle::NPM_STREAM.to_owned(), rows.len() as u64),
+        ])
+    };
+    assert_eq!(intel.stored_rows().await.expect("query"), counted(3));
     assert_eq!(snapshots(&intel).await, before + 1);
     assert_eq!(
         loaded.manifest,
@@ -1766,6 +1773,7 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         .await
         .expect("load");
     assert_eq!((replaced.advisories, replaced.exploited), (0, 1));
+    assert_eq!(intel.stored_rows().await.expect("query"), counted(1));
     assert_eq!(
         exploitation(&intel, &name).await,
         (true, marked([false, false, true]))

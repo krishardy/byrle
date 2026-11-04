@@ -193,7 +193,18 @@ refused="$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer ${al
 [[ "$refused" == "403" ]] || fail "is-number after its MAL record answered $refused"
 malware="$(api "$admin" "requests?since=${since}&answered=refused&check=known_malware" | json 'len(d["lines"])')"
 [[ "$malware" -ge 1 ]] || fail "R5 shows no refusal for malware"
-echo "    ok (alice's is-number alerted; refused as known_malware)"
+bundles empty
+code=0
+"$binary" refresh >"$workdir/refresh3.out" 2>&1 || code=$?
+[[ "$code" == "1" ]] || fail "a refresh given an empty npm.zip exited $code"
+grep -q "osv/npm is not loaded, and its last load stays: it parsed to 0 rows, under half the 2 stored" \
+    "$workdir/refresh3.out" || fail "the empty npm.zip was not refused: $(tail -5 "$workdir/refresh3.out")"
+sleep 6
+refused="$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer ${alice_token}" \
+    "${registry}is-number/-/is-number-7.0.0.tgz")"
+[[ "$refused" == "403" ]] || fail "is-number after an empty npm.zip answered $refused"
+bundles yes
+echo "    ok (alice's is-number alerted; refused as known_malware, and after an empty npm.zip)"
 
 step "6/9  bob, without the role, is 403 on every route that needs one"
 user="$(session bob)"
