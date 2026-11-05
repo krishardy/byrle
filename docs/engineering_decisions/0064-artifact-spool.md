@@ -174,6 +174,12 @@ safe call for it. Tested 2026-10-12 with a directory `podman unshare chown 1:1` 
 `777`: the build before this opened it and logged `spool open`; this one refuses with
 `is owned by uid 100000`.
 
+A group member can rename a file of their own over a spool file in a group-writable
+directory. Each reader opens the file by its path after the digest was taken from the
+stream, so before 2026-11-05 it read the renamed file. `Spooled` now keeps the device and
+inode it wrote, and `Spooled::reader` errors with `... is not the file written` when the
+file at the path has others. The file is `0600`, so the group cannot write to the inode.
+
 ## The ceiling, and what it is for
 
 `Content-Length` is a claim. The write is bounded by `BYRLE_MAX_ARTIFACT_BYTES`,

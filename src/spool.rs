@@ -222,14 +222,20 @@ impl Spool {
         let path = self
             .dir
             .join(format!("{PREFIX}{}-{number}", std::process::id()));
-        let file = File::options()
+        let (file, written) = File::options()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&path)
+            .and_then(|file| file.metadata().map(|written| (file, written)))
             .map_err(WriteError::Io)?;
         debug!(file.path = %path.display(), "spooling an artifact");
-        let mut spooled = Spooled { path, len: 0 };
+        let inode = (written.dev(), written.ino());
+        let mut spooled = Spooled {
+            path,
+            len: 0,
+            inode,
+        };
         let mut file = tokio::fs::File::from_std(file);
         spooled.len = copy(body, &mut file, self.ceiling, observe).await?;
         Ok(spooled)
@@ -277,6 +283,8 @@ fn lock_error(dir: &Path, lock_path: &Path, e: TryLockError) -> OpenError {
 pub struct Spooled {
     path: PathBuf,
     len: u64,
+    /// The device and inode written, which a reader must open.
+    inode: (u64, u64),
 }
 
 impl Spooled {
@@ -289,9 +297,16 @@ impl Spooled {
         self.len == 0
     }
 
-    /// The artifact, read from its first byte.
+    /// The artifact, read from its first byte. Errors when the file at its path is not the
+    /// one written: a group member renamed another over it.
     pub fn reader(&self) -> io::Result<File> {
-        File::open(&self.path)
+        let (file, found) =
+            File::open(&self.path).and_then(|file| file.metadata().map(|found| (file, found)))?;
+        if (found.dev(), found.ino()) != self.inode {
+            let path = self.path.display();
+            return Err(io::Error::other(format!("{path} is not the file written")));
+        }
+        Ok(file)
     }
 }
 
@@ -414,6 +429,25 @@ mod tests {
 
         drop(spooled);
         assert_eq!(listing(&dir), Vec::<String>::new());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A file renamed over a spool file after it was written is not read in its place.
+    #[tokio::test]
+    async fn a_file_renamed_over_a_spool_file_is_not_read() {
+        let dir = tempdir("spool-replaced");
+        let (spool, _) = Spool::open(&dir, 1024).expect("opens");
+        let spooled = spool
+            .write(chunks(&[b"checked"]), None, |_| {})
+            .await
+            .expect("writes");
+        let name = dir.join(listing(&dir).pop().expect("one file"));
+        let other = dir.join("other");
+        fs::write(&other, b"not checked").expect("writes");
+        fs::rename(&other, &name).expect("renames");
+        let why = spooled.reader().expect_err("another file").to_string();
+        assert_eq!(why, format!("{} is not the file written", name.display()));
+        drop(spooled);
         let _ = fs::remove_dir_all(&dir);
     }
 
