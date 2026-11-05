@@ -222,7 +222,7 @@ fn verdict(policy: &Policy, facts: &Facts, decision: &Decision) -> Verdict {
         .filter(|s| s.weight > 0)
         .map(|s| format!("{} {}", s.key, s.weight))
         .collect();
-    let checks: u32 = decision.results.iter().map(|r| r.weight).sum();
+    let checks = decision.checks();
     if !weighed.is_empty() && checks < decision.threshold {
         reasons.push(format!(
             "signals: {}; risk score {} of {}",

@@ -206,6 +206,9 @@ for each bit: after 8 attested versions in its line a drop weighs 129, after 1 i
 and with none before it in its line, 50. A lower weight is a loosening,
 which `byrle policy diff` reports. A weight on a check its setting turns off, such as
 `install_scripts` under `install_scripts: allow`, is refused, as it would never be added.
+A weight is a whole number up to 4,294,967,295. A sum, or a surprise times its weight, that
+would pass that stops at it rather than wrapping to a small number: before 2026-11-05, a
+release build wrapped `known_malware: 4294967295` and any other signal of 1 to 0.
 
 The other rules' weights add to the same score on a pinned fetch, from the detectors'
 results stored by then and the advisories against the version, and the refusal names them
