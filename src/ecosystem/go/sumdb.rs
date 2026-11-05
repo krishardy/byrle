@@ -43,6 +43,8 @@ pub struct Client {
     /// The largest tree verified so far. Every later one has to extend it.
     latest: tokio::sync::Mutex<Option<Tree>>,
     tiles: Mutex<Lru<(u32, u64), Vec<Hash>>>,
+    /// Where the largest tree is kept past a restart, once the proxy has a store.
+    trees: std::sync::OnceLock<std::sync::Arc<dyn crate::analysis::store::Trees>>,
 }
 
 /// A tile's path: its index in groups of three digits, all but the last after an `x`.
@@ -74,7 +76,25 @@ impl Client {
             verifier: Verifier::parse(key)?,
             latest: tokio::sync::Mutex::new(None),
             tiles: Mutex::new(Lru::new(MAX_TILES)),
+            trees: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Keep the largest tree in `store`, and start from the one it kept.
+    pub fn keeping_trees(&self, store: std::sync::Arc<dyn crate::analysis::store::Trees>) {
+        let _ = self.trees.set(store);
+    }
+
+    /// The tree kept before this process started, `None` without a store or with none
+    /// kept. Errors when the store does not answer: a tree it kept cannot be ruled out.
+    async fn kept(&self) -> Result<Option<Tree>, String> {
+        let Some(store) = self.trees.get() else {
+            return Ok(None);
+        };
+        let name = self.verifier.name();
+        let kept = store.checksum_tree(name).await;
+        let kept = kept.map_err(|e| format!("the last tree of {name} kept was not read: {e}"))?;
+        Ok(kept.map(|(size, root)| Tree { size, root }))
     }
 
     /// The body at `path`, `None` for 404 or 410. Errors when it is not answered.
@@ -113,10 +133,15 @@ impl Client {
         let (data, note) = rest.split_once("\n\n").ok_or_else(not)?;
         let data = format!("{data}\n");
         let tree = Tree::parse(self.verifier.open(note)?)?;
-        if !tlog::includes(self, tree.size, &tree.root, id, data.as_bytes()).await? {
+        let proving = Proving {
+            client: self,
+            fetched: Mutex::default(),
+        };
+        if !tlog::includes(&proving, tree.size, &tree.root, id, data.as_bytes()).await? {
             return Err(format!("{path}: record {id} is not in the signed tree"));
         }
-        self.extend(tree).await?;
+        self.extend(tree, &proving).await?;
+        proving.keep();
         let line = |suffix: &str| {
             let prefix = format!("{module} {version}{suffix} ");
             data.lines()
@@ -132,10 +157,14 @@ impl Client {
         })
     }
 
-    /// Keep `tree` when it extends the largest tree seen, or is extended by it. Errors when
-    /// neither is a prefix of the other: the database showed two histories.
-    async fn extend(&self, tree: Tree) -> Result<(), String> {
+    /// Keep `tree` when it extends the largest tree seen, or is extended by it, proved with
+    /// `tiles`. Errors when neither is a prefix of the other: the database showed two
+    /// histories.
+    async fn extend(&self, tree: Tree, tiles: &dyn Tiles) -> Result<(), String> {
         let mut latest = self.latest.lock().await;
+        if latest.is_none() {
+            *latest = self.kept().await?;
+        }
         let consistent = match *latest {
             None => true,
             Some(seen) => {
@@ -143,7 +172,7 @@ impl Client {
                     true => (seen, tree),
                     false => (tree, seen),
                 };
-                tlog::consistent(self, (old.size, &old.root), (new.size, &new.root)).await?
+                tlog::consistent(tiles, (old.size, &old.root), (new.size, &new.root)).await?
             }
         };
         if !consistent {
@@ -155,16 +184,23 @@ impl Client {
         }
         if latest.is_none_or(|seen| seen.size < tree.size) {
             *latest = Some(tree);
+            if let Some(store) = self.trees.get()
+                && let Err(e) = store
+                    .keep_checksum_tree(self.verifier.name(), (tree.size, tree.root))
+                    .await
+            {
+                tracing::warn!(byrle.sumdb.name = self.verifier.name(), byrle.sumdb.size = tree.size, error.message = %e, "the checksum database's tree was not kept; a restart starts from the last one kept");
+            }
         }
         Ok(())
     }
 
-    /// The tile at `level` and `index`, `width` hashes wide. A full tile never changes, and
-    /// is kept.
-    async fn tile(&self, level: u32, index: u64, width: u64) -> Result<Vec<Hash>, String> {
+    /// The tile at `level` and `index`, `width` hashes wide, and whether it was fetched
+    /// rather than kept. A full tile never changes, and is kept once a proof using it passes.
+    async fn tile(&self, level: u32, index: u64, width: u64) -> Result<(Vec<Hash>, bool), String> {
         let full = width == 1 << HEIGHT;
         if full && let Some(kept) = self.tiles.lock().expect("tile lock").get(&(level, index)) {
-            return Ok(kept.clone());
+            return Ok((kept.clone(), false));
         }
         let path = tile_path(level, index, width);
         let body = self
@@ -174,20 +210,38 @@ impl Client {
         if body.len() as u64 != width * 32 {
             return Err(format!("{path}: {} bytes, not {}", body.len(), width * 32));
         }
-        let hashes: Vec<Hash> = body.as_chunks::<32>().0.to_vec();
-        if full {
-            self.tiles
-                .lock()
-                .expect("tile lock")
-                .insert((level, index), hashes.clone());
-        }
-        Ok(hashes)
+        Ok((body.as_chunks::<32>().0.to_vec(), full))
     }
 }
 
-impl Tiles for Client {
+/// A full tile fetched: its level and index, and its hashes.
+type Fetched = ((u32, u64), Vec<Hash>);
+
+/// One answer's proofs, the full tiles they fetch kept once both pass, not one proving nothing.
+struct Proving<'a> {
+    client: &'a Client,
+    fetched: Mutex<Vec<Fetched>>,
+}
+
+impl Proving<'_> {
+    fn keep(self) {
+        let mut tiles = self.client.tiles.lock().expect("tile lock");
+        for (at, hashes) in self.fetched.into_inner().expect("fetched lock") {
+            tiles.insert(at, hashes);
+        }
+    }
+}
+
+impl Tiles for Proving<'_> {
     fn tile(&self, level: u32, index: u64, width: u64) -> Fetching<'_> {
-        Box::pin(Client::tile(self, level, index, width))
+        Box::pin(async move {
+            let (hashes, fetched) = self.client.tile(level, index, width).await?;
+            if fetched {
+                let mut staged = self.fetched.lock().expect("fetched lock");
+                staged.push(((level, index), hashes.clone()));
+            }
+            Ok(hashes)
+        })
     }
 }
 
@@ -215,6 +269,8 @@ pub(crate) mod testing {
         pub(crate) head: Mutex<Option<String>>,
         /// A tile answered 500.
         pub(crate) refused: Mutex<Option<(u32, u64, u64)>>,
+        /// A tile answered with each hash's first byte changed.
+        pub(crate) corrupt: Mutex<Option<(u32, u64, u64)>>,
     }
 
     pub(crate) const NAME: &str = "sum.test";
@@ -259,6 +315,7 @@ pub(crate) mod testing {
                 root: Mutex::new(None),
                 head: Mutex::new(None),
                 refused: Mutex::new(None),
+                corrupt: Mutex::new(None),
             })
         }
 
@@ -327,11 +384,14 @@ pub(crate) mod testing {
         if *db.refused.lock().unwrap() == Some((level, index, width)) {
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
-        let hashes = db
+        let mut hashes = db
             .log
             .tile(level, index, width)
             .await
             .map_err(|_| StatusCode::NOT_FOUND)?;
+        if *db.corrupt.lock().unwrap() == Some((level, index, width)) {
+            hashes.iter_mut().for_each(|hash| hash[0] ^= 1);
+        }
         Ok(hashes.concat())
     }
 
@@ -372,6 +432,106 @@ mod tests {
     /// A database of 70,000 [`record`]s, the first `size` in its tree.
     fn database(size: u64) -> Arc<Database> {
         Database::sized(size, (0..70_000).map(record).collect())
+    }
+
+    /// A tree kept before a restart is extended by the next client's trees, or refuses them,
+    /// as one it saw itself would. A smaller tree does not replace the one kept.
+    #[tokio::test]
+    async fn a_tree_kept_before_a_restart_must_be_extended() {
+        use crate::analysis::store::Trees as _;
+        let db = database(60_000);
+        let base = serve(db.clone()).await;
+        let store = std::sync::Arc::new(crate::analysis::store::InProcess::new(8));
+        let client = |store: &std::sync::Arc<crate::analysis::store::InProcess>| {
+            let client =
+                Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
+            client.keeping_trees(store.clone());
+            client
+        };
+        client(&store).lookup("example.com/m", "v7").await.unwrap();
+        let kept = store.checksum_tree(super::testing::NAME).await.unwrap();
+        assert_eq!(kept.map(|(size, _)| size), Some(60_000));
+        *db.size.lock().unwrap() = 300;
+        client(&store).lookup("example.com/m", "v1").await.unwrap();
+        let kept = store.checksum_tree(super::testing::NAME).await.unwrap();
+        assert_eq!(
+            kept.map(|(size, _)| size),
+            Some(60_000),
+            "the larger tree stays"
+        );
+
+        let forked = std::sync::Arc::new(crate::analysis::store::InProcess::new(8));
+        forked
+            .keep_checksum_tree(super::testing::NAME, (300, [3; 32]))
+            .await
+            .unwrap();
+        forked
+            .keep_checksum_tree(super::testing::NAME, (200, [2; 32]))
+            .await
+            .unwrap();
+        let kept = forked.checksum_tree(super::testing::NAME).await.unwrap();
+        assert_eq!(
+            kept,
+            Some((300, [3; 32])),
+            "a smaller tree leaves the larger"
+        );
+        *db.size.lock().unwrap() = 70_000;
+        let error = client(&forked)
+            .lookup("example.com/m", "v2")
+            .await
+            .unwrap_err();
+        assert!(error.contains("does not extend"), "{error}");
+    }
+
+    /// Trees whose read or write fails.
+    struct Failing {
+        reads: bool,
+    }
+
+    impl crate::analysis::store::Trees for Failing {
+        fn checksum_tree<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> crate::analysis::store::Stored<'a, Option<(u64, [u8; 32])>> {
+            let reads = self.reads;
+            Box::pin(async move {
+                match reads {
+                    true => Ok(None),
+                    false => Err(crate::analysis::store::AnalysisError::Backend(
+                        sqlx::Error::PoolClosed,
+                    )),
+                }
+            })
+        }
+
+        fn keep_checksum_tree<'a>(
+            &'a self,
+            _: &'a str,
+            _: (u64, [u8; 32]),
+        ) -> crate::analysis::store::Stored<'a, ()> {
+            Box::pin(async {
+                Err(crate::analysis::store::AnalysisError::Backend(
+                    sqlx::Error::PoolClosed,
+                ))
+            })
+        }
+    }
+
+    /// A kept tree that cannot be read fails the lookup; one that cannot be kept does not.
+    #[tokio::test]
+    async fn a_store_that_fails_fails_only_the_read() {
+        let db = database(300);
+        let base = serve(db.clone()).await;
+        for (reads, answered) in [(false, false), (true, true)] {
+            let client =
+                Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
+            client.keeping_trees(std::sync::Arc::new(Failing { reads }));
+            let looked = client.lookup("example.com/m", "v1").await;
+            assert_eq!(looked.is_ok(), answered, "{looked:?}");
+            if let Err(error) = looked {
+                assert!(error.contains("was not read"), "{error}");
+            }
+        }
     }
 
     fn known(i: u64, tree: u64) -> Answer {
@@ -545,6 +705,22 @@ mod tests {
             error.contains("answered 500"),
             "the consistency proof's tile: {error}"
         );
+    }
+
+    /// A full tile in a proof that fails is not kept, so the next lookup fetches it again.
+    #[tokio::test]
+    async fn a_tile_whose_proof_fails_is_not_kept() {
+        let db = database(70_000);
+        let base = serve(db.clone()).await;
+        let client =
+            Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
+        *db.corrupt.lock().unwrap() = Some((0, 0, 256));
+        let error = client.lookup("example.com/m", "v1").await.unwrap_err();
+        assert!(error.contains("is not in the signed tree"), "{error}");
+        assert_eq!(client.tiles.lock().unwrap().len(), 0, "nothing kept");
+        *db.corrupt.lock().unwrap() = None;
+        client.lookup("example.com/m", "v1").await.unwrap();
+        assert!(!client.tiles.lock().unwrap().is_empty(), "kept once proved");
     }
 
     /// Full tiles are kept; a tile of the wrong length, or missing, is an error.

@@ -96,7 +96,7 @@ impl std::error::Error for AnalysisError {}
 pub type Stored<'a, T> = Pin<Box<dyn Future<Output = Result<T, AnalysisError>> + Send + 'a>>;
 
 /// Where analyses are kept.
-pub trait Analyses: Send + Sync {
+pub trait Analyses: Trees {
     /// What was found in these bytes before. `Ok(None)` is an artifact nothing has
     /// analysed, which the fetch path defers and analyses.
     fn get<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Analysis>>;
@@ -185,6 +185,16 @@ pub trait Analyses: Send + Sync {
     fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp>;
 }
 
+/// Where a checksum database's largest tree is kept past a restart.
+pub trait Trees: Send + Sync {
+    /// The largest tree of the checksum database `database` kept, its size and root.
+    fn checksum_tree<'a>(&'a self, database: &'a str) -> Stored<'a, Option<(u64, [u8; 32])>>;
+
+    /// Keep `tree`, a size and root, as `database`'s, unless a larger one is kept.
+    fn keep_checksum_tree<'a>(&'a self, database: &'a str, tree: (u64, [u8; 32]))
+    -> Stored<'a, ()>;
+}
+
 /// The decisions this process has recorded, the oldest dropped past its budget.
 struct Decisions {
     /// The id the last decision recorded was given.
@@ -205,6 +215,7 @@ pub struct InProcess(
     Mutex<Lru<String, Sri>>,
     Mutex<Lru<(Sri, String, String), Signature>>,
     Mutex<Lru<(String, String), Timestamp>>,
+    Mutex<std::collections::HashMap<String, (u64, [u8; 32])>>,
 );
 
 impl InProcess {
@@ -226,6 +237,7 @@ impl InProcess {
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
+            Mutex::default(),
         )
     }
 
@@ -491,6 +503,30 @@ impl Analyses for InProcess {
     }
 }
 
+impl Trees for InProcess {
+    fn checksum_tree<'a>(&'a self, database: &'a str) -> Stored<'a, Option<(u64, [u8; 32])>> {
+        let kept = self
+            .10
+            .lock()
+            .expect("tree store lock")
+            .get(database)
+            .copied();
+        Box::pin(async move { Ok(kept) })
+    }
+
+    fn keep_checksum_tree<'a>(
+        &'a self,
+        database: &'a str,
+        tree: (u64, [u8; 32]),
+    ) -> Stored<'a, ()> {
+        let mut kept = self.10.lock().expect("tree store lock");
+        if kept.get(database).is_none_or(|(size, _)| *size < tree.0) {
+            kept.insert(database.to_owned(), tree);
+        }
+        Box::pin(async { Ok(()) })
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
@@ -576,6 +612,15 @@ pub(crate) mod tests {
             broken()
         }
         fn first_seen<'a>(&'a self, _: &'a str, _: &'a str) -> Stored<'a, Timestamp> {
+            broken()
+        }
+    }
+
+    impl Trees for Broken {
+        fn checksum_tree<'a>(&'a self, _: &'a str) -> Stored<'a, Option<(u64, [u8; 32])>> {
+            broken()
+        }
+        fn keep_checksum_tree<'a>(&'a self, _: &'a str, _: (u64, [u8; 32])) -> Stored<'a, ()> {
             broken()
         }
     }

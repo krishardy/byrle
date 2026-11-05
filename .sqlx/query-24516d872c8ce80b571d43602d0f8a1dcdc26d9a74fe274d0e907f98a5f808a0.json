@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT size, root FROM checksum_tree WHERE database = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "size",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "root",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "24516d872c8ce80b571d43602d0f8a1dcdc26d9a74fe274d0e907f98a5f808a0"
+}

@@ -416,7 +416,70 @@ impl Analyses for PgAnalyses {
     }
 }
 
+impl crate::analysis::store::Trees for PgAnalyses {
+    fn checksum_tree<'a>(&'a self, database: &'a str) -> Stored<'a, Option<(u64, [u8; 32])>> {
+        Box::pin(self.read_checksum_tree(database))
+    }
+
+    fn keep_checksum_tree<'a>(
+        &'a self,
+        database: &'a str,
+        tree: (u64, [u8; 32]),
+    ) -> Stored<'a, ()> {
+        Box::pin(self.write_checksum_tree(database, tree))
+    }
+}
+
 impl PgAnalyses {
+    async fn read_checksum_tree(
+        &self,
+        database: &str,
+    ) -> Result<Option<(u64, [u8; 32])>, AnalysisError> {
+        let row = sqlx::query!(
+            "SELECT size, root FROM checksum_tree WHERE database = $1",
+            database
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        let unreadable = |what: &str| {
+            let why = format!("checksum_tree for {database}: {what}");
+            AnalysisError::Backend(sqlx::Error::Decode(why.into()))
+        };
+        row.map(|row| {
+            let size = u64::try_from(row.size).map_err(|_| unreadable("a negative size"))?;
+            let root = crate::util::unhex(&row.root)
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                .ok_or_else(|| unreadable("a root that is not 32 bytes of hex"))?;
+            Ok((size, root))
+        })
+        .transpose()
+    }
+
+    /// A smaller tree than the one kept leaves it: the tree only grows.
+    async fn write_checksum_tree(
+        &self,
+        database: &str,
+        (size, root): (u64, [u8; 32]),
+    ) -> Result<(), AnalysisError> {
+        let size = i64::try_from(size).unwrap_or(i64::MAX);
+        sqlx::query!(
+            r#"
+            INSERT INTO checksum_tree (database, size, root) VALUES ($1, $2, $3)
+            ON CONFLICT (database) DO UPDATE SET size = EXCLUDED.size, root = EXCLUDED.root,
+                kept = now()
+            WHERE checksum_tree.size < EXCLUDED.size
+            "#,
+            database,
+            size,
+            crate::util::hex(&root),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        Ok(())
+    }
+
     /// The no-op update makes the row come back whether this call wrote it or another did.
     async fn write_first_seen(
         &self,

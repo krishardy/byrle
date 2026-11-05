@@ -623,6 +623,16 @@ impl Proxy {
 
     pub fn with_analyser(mut self, analyser: Option<Arc<Analyser>>) -> Self {
         self.config_mut().analyser = analyser;
+        self.kept()
+    }
+
+    /// The clients, keeping what must outlast a restart in the analyser's store.
+    fn kept(mut self) -> Self {
+        if let Some(store) = self.analyses() {
+            let trees: Arc<dyn crate::analysis::store::Trees> = store;
+            let clients = self.config.clients.clone().keeping(&trees);
+            self.config_mut().clients = clients;
+        }
         self
     }
 
@@ -651,7 +661,7 @@ impl Proxy {
         let config = self.config_mut();
         config.clients = clients;
         config.origins = origins;
-        self
+        self.kept()
     }
 
     /// The configuration, for a builder to change. Builders run before the proxy serves, so
@@ -8768,6 +8778,31 @@ mod tests {
             crate::ecosystem::go::note::SUM_GOLANG_ORG,
         )
         .unwrap()
+    }
+
+    /// The checksum database's tree a Go request proves is kept in the analyser's store.
+    #[tokio::test]
+    async fn the_checksum_database_s_tree_is_kept_in_the_analyser_s_store() {
+        use crate::analysis::store::Trees as _;
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        let upstream = module_proxy(go_mod, None).await;
+        let store = Arc::new(crate::analysis::store::InProcess::new(8));
+        let (spool, _) =
+            crate::spool::Spool::open(&crate::util::test_support::tempdir("sumdb-kept"), 1 << 20)
+                .expect("opens");
+        let analyser = Arc::new(Analyser::new(
+            crate::service::Connection::default(),
+            Arc::new(spool),
+            store.clone(),
+            2,
+            8,
+        ));
+        let proxy = go_proxy(&upstream, quote_sumdb().await).with_analyser(Some(analyser));
+        let base = serve(proxy.router()).await;
+        let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let name = crate::ecosystem::go::sumdb::testing::NAME;
+        assert!(store.checksum_tree(name).await.unwrap().is_some());
     }
 
     /// go reads `go.mod` for versions it never builds, so it is checked against

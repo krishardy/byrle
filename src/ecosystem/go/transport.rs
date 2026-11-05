@@ -278,6 +278,10 @@ impl Fetch for Client {
         Box::pin(Client::metadata(self, key))
     }
 
+    fn keeping(&self, store: &Arc<dyn crate::analysis::store::Trees>) {
+        self.sumdb.keeping_trees(store.clone());
+    }
+
     /// The list carries no times, and is not asked again for them.
     fn full<'a>(
         &'a self,

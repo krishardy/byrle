@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO checksum_tree (database, size, root) VALUES ($1, $2, $3)\n            ON CONFLICT (database) DO UPDATE SET size = EXCLUDED.size, root = EXCLUDED.root,\n                kept = now()\n            WHERE checksum_tree.size < EXCLUDED.size\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Int8",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f112d6ea232db618121fb7833546e96ba2e46d9ee2d1d8e22dc8e524609640f5"
+}

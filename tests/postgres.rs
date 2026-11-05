@@ -1196,6 +1196,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "artifact_signature",
         "artifact_source",
         "artifact_virustotal",
+        "checksum_tree",
         "exploited_cve",
         "failure_count",
         "intel_ingestion",
@@ -2023,6 +2024,36 @@ async fn a_claim_s_digest_is_kept_under_the_claim() {
     store.put_claimed(claim, &sri(2)).await.expect("replaces");
     assert_eq!(store.claimed(claim).await.expect("answers"), Some(sri(2)));
     assert_eq!(store.claimed("h1:other=").await.expect("answers"), None);
+}
+
+/// A checksum database's tree is kept, replaced only by a larger one, and read back.
+#[tokio::test]
+async fn a_checksum_tree_is_kept_and_only_grows() {
+    use byrle::analysis::store::Trees as _;
+    let intel = skip_without_database!("t_checksum_tree");
+    let store = analyses(&intel);
+    assert_eq!(store.checksum_tree("sum.test").await.expect("reads"), None);
+    store
+        .keep_checksum_tree("sum.test", (300, [3; 32]))
+        .await
+        .expect("writes");
+    store
+        .keep_checksum_tree("sum.test", (200, [2; 32]))
+        .await
+        .expect("writes");
+    assert_eq!(
+        store.checksum_tree("sum.test").await.expect("reads"),
+        Some((300, [3; 32])),
+        "a smaller tree leaves the larger"
+    );
+    store
+        .keep_checksum_tree("sum.test", (400, [4; 32]))
+        .await
+        .expect("writes");
+    assert_eq!(
+        store.checksum_tree("sum.test").await.expect("reads"),
+        Some((400, [4; 32]))
+    );
 }
 
 /// A file's first sighting is recorded once: a second call, or one for the same file in

@@ -58,6 +58,10 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
         Box::pin(async { Ok(None) })
     }
 
+    /// Keep what must outlast a restart in `store`: Go's checksum database tree. Nothing for
+    /// others.
+    fn keeping(&self, _store: &std::sync::Arc<dyn crate::analysis::store::Trees>) {}
+
     /// Where the file at `url` is served from after the repository's redirects, for one whose
     /// redirects say whose a file is. `Ok(None)` for others. Errors when it cannot be asked.
     fn located<'a>(&'a self, _url: &'a str) -> BoxFuture<'a, Result<Option<String>, String>> {
@@ -304,6 +308,12 @@ impl Clients {
         client: std::sync::Arc<dyn Fetch>,
     ) -> Self {
         self.0.insert(repository.into(), client);
+        self
+    }
+
+    /// The same, each client keeping what must outlast a restart in `store`.
+    pub fn keeping(self, store: &std::sync::Arc<dyn crate::analysis::store::Trees>) -> Self {
+        self.0.values().for_each(|client| client.keeping(store));
         self
     }
 

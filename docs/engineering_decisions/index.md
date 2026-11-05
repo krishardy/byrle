@@ -145,3 +145,4 @@ Implemented means it is in the code, and the file names where.
 | 0131 | [A detector command that exits non-zero is not run, and a rule that could not run fires `error`](0131-detector-run-failures.md) | Implemented 2026-11-04 |  |
 | 0132 | [`policy diff` and `policy check` compare the top-level settings directly](0132-settings-compared-directly.md) | Implemented 2026-11-04 |  |
 | 0133 | [A client for each upstream service, sending only the headers it declares](0133-a-client-for-each-service.md) | Implemented 2026-11-05 |  |
+| 0134 | [The checksum database's tree is kept past a restart, and a tile once its proof passes](0134-checksum-tree-kept.md) | Implemented 2026-11-05 |  |
