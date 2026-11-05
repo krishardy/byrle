@@ -322,9 +322,6 @@ pub struct LoggedIn {
 )]
 pub async fn login(State(site): State<Arc<Site>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    if site.foreign(&parts.headers) {
-        return refused(StatusCode::FORBIDDEN, "a login from another site");
-    }
     let credentials = axum::body::to_bytes(body, MAX_BODY)
         .await
         .ok()
@@ -392,9 +389,6 @@ pub async fn login(State(site): State<Arc<Site>>, request: Request) -> Response 
 )]
 pub async fn logout(State(site): State<Arc<Site>>, request: Request<Body>) -> Response {
     let (parts, _) = request.into_parts();
-    if site.foreign(&parts.headers) {
-        return refused(StatusCode::FORBIDDEN, "a logout from another site");
-    }
     let (caller, id) = match site.caller(&parts).await {
         Ok(found) => found,
         Err(denied) => return denied.into_response(),

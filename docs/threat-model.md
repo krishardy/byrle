@@ -112,7 +112,7 @@ The console is on when `BYRLE_CONSOLE_URL` is set, and needs the database
 | Who a request is from | the address of the peer, or the last `X-Forwarded-For` entry when the request carries `BYRLE_RP_KEY`, which nginx sets and a client cannot ([fronting-tls](fronting-tls.md)) |
 | Sessions and tokens | stored as their SHA-256, never as themselves; a session ends at logout, after `BYRLE_SESSION_HOURS`, or when its account is disabled |
 | The session cookie | `HttpOnly; Secure; SameSite=Strict`, under the console's path |
-| A request from another site | a `POST` with another `Origin` is 403; a request with the session cookie that changes something needs its CSRF token, as `X-Byrle-CSRF` or a form's `csrf` |
+| A request from another site | a console request other than `GET` or `HEAD` with another `Origin` is 403, whatever its credential (`routes::guarded`); a request with the session cookie that changes something needs its CSRF token, as `X-Byrle-CSRF` or a form's `csrf` |
 | Pages | `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'`; text from registries and logs, such as a username someone tried, is escaped |
 | Permissions | every route is in one table with its guard; a test checks each that needs a permission is 401 without credentials and 403 to an account without the role |
 | `GET api/v1/health` | answers without credentials, naming components, never addresses or errors; its checks run at most once per 5 s however often it is asked |

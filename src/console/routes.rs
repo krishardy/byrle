@@ -395,9 +395,18 @@ async fn command(parts: &Parts, body: axum::body::Body) -> Vec<u8> {
 
 /// Answer `request` on a route of `kind` guarded by `guard`.
 ///
+/// A request other than GET or HEAD from another site's page is 403, whatever its credential.
 /// A page's form is read first, as it carries the CSRF token. An API caller is admitted from
 /// its headers, and its body read only then.
 async fn guarded(kind: Kind, guard: Guard, site: Arc<Site>, request: Request) -> Response {
+    let reads = matches!(*request.method(), Method::GET | Method::HEAD);
+    if !reads && site.foreign(request.headers()) {
+        let why = "a request from another site";
+        return match kind {
+            Kind::Page => super::pages::refusal(&site, axum::http::StatusCode::FORBIDDEN, why),
+            Kind::Api => api::refused(axum::http::StatusCode::FORBIDDEN, why),
+        };
+    }
     match guard {
         Guard::Public(handler) | Guard::Authenticated(handler) => handler(site, request).await,
         Guard::Needs(permission, handler) => {
@@ -491,8 +500,8 @@ mod tests {
         );
     }
 
-    /// Stage 4.9's exit: each route needing a permission is 401 with no credential, 403 to a
-    /// non-admin by session or token, 200 to an admin. One needing a caller is 401 without.
+    /// Each route needing a permission is 401 with no credential, 403 to a non-admin, 200 to an
+    /// admin; one needing a caller is 401 without; any but a GET is 403 from another site.
     #[tokio::test]
     async fn every_route_that_needs_a_permission_refuses_an_account_without_it() {
         let store = store().await;
@@ -545,6 +554,14 @@ mod tests {
                     assert_eq!(status(request()).await, 401, "{url}");
                 }
                 Guard::Public(_) => {}
+            }
+            let elsewhere = request()
+                .bearer_auth("byrle_alice")
+                .header("origin", "https://elsewhere.example");
+            let foreign = status(elsewhere).await;
+            match route.method == Method::GET {
+                true => assert_ne!(foreign, 403, "{url}: a read from another site is answered"),
+                false => assert_eq!(foreign, 403, "{url}: a change from another site is not"),
             }
         }
         let other = client.get(format!("{base}/admin/api/v1/nothing"));

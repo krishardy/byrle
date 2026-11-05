@@ -201,7 +201,7 @@ fn login_form(site: &Site, why: Option<&str>) -> Markup {
 }
 
 /// A page saying `why`, with `status`.
-fn refusal(site: &Site, status: StatusCode, why: &str) -> Response {
+pub(super) fn refusal(site: &Site, status: StatusCode, why: &str) -> Response {
     sent(
         status,
         layout(
@@ -292,9 +292,6 @@ struct Credentials {
 /// `POST login`, from the form: 303 home with the session cookie, or the form again.
 pub async fn login(site: Arc<Site>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    if site.foreign(&parts.headers) {
-        return refusal(&site, StatusCode::FORBIDDEN, "a login from another site");
-    }
     let credentials = axum::body::to_bytes(body, super::api::MAX_BODY)
         .await
         .ok()
@@ -342,9 +339,6 @@ pub async fn login(site: Arc<Site>, request: Request) -> Response {
 /// `POST logout`, from the form with the session's CSRF token: 303 to the login form.
 pub async fn logout(site: Arc<Site>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    if site.foreign(&parts.headers) {
-        return refusal(&site, StatusCode::FORBIDDEN, "a logout from another site");
-    }
     #[derive(Deserialize)]
     struct Sent {
         csrf: Option<String>,
