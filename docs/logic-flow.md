@@ -155,7 +155,7 @@ timeout. No production client sets a redirect policy, so each follows up to 10 r
 | B1c | the artifact, for analysis | `analysis/run.rs` `Analyser::fetch` | the upstream URL the client's request maps to | spooled, `BYRLE_MAX_ARTIFACT_BYTES`, default 1 GiB |
 | B2 | `https://sum.golang.org` lookup and tiles | `ecosystem/go/sumdb.rs` `Client::get` | module and version | whole, no limit; note signature and tree proofs checked (`note.rs`, `tlog.rs`) |
 | B3 | npm and PyPI attestation documents | `Analyser::attestation_document` | `provenance.attestation_url` from the metadata, kept only on a served origin (`attestation_url`) | whole, no limit; verified against `sigstore-verify`'s built-in trust root |
-| B4 | source archive | `analysis/run/sourcing.rs` `Analyser::archive` | the metadata's repository, `source.rs` `Repo::archive_url`, under `BYRLE_SOURCE_ARCHIVES`, default `https://codeload.github.com`; `off` fetches nothing | spooled; tree read up to 512 MiB |
+| B4 | source archive | `analysis/run/sourcing.rs` `Analyser::archive` | the metadata's repository, `source.rs` `Repo::archive_url`, under `BYRLE_SOURCE_ARCHIVES`, default `https://codeload.github.com`; `off` fetches nothing | spooled; tree read up to 512 MiB and 200,000 members |
 | B5 | VirusTotal API v3: file lookup, upload URL, upload, analysis | `analysis/virustotal.rs` | the artifact's sha256; the large-file upload URL is VirusTotal's answer | whole, no limit; `x-apikey` on each request |
 | B6 | `crates.io/api/v1/crates/<name>/versions` | `ecosystem/cargo/trustpub.rs` `TrustPub::page` | crate name; `meta.next_page`, up to 20 pages | whole, no limit |
 | B7 | keys.openpgp.org, keyserver.ubuntu.com | `ecosystem/maven/keys.rs` `KeyServers::copy` | the `.asc`'s issuer | whole, no limit |

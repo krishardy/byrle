@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use super::{Analyser, InFlight};
 use crate::analysis::ReadError;
-use crate::analysis::source::{self, Layout, MAX_SOURCE_BYTES, Repo, Sourced, Tree};
+use crate::analysis::source::{self, CEILING, Layout, Repo, Sourced, Tree};
 use crate::identity::Ecosystem;
 use crate::integrity::Sri;
 use crate::record::PackageRecord;
@@ -314,8 +314,8 @@ async fn tree_of(spooled: Spooled, layout: Layout) -> Option<Result<Tree, String
     let read = tokio::task::spawn_blocking(move || {
         let file = std::io::BufReader::new(spooled.reader()?);
         Ok(match layout {
-            Layout::Tar => source::tree(&mut { file }, MAX_SOURCE_BYTES),
-            Layout::Wheel => source::wheel_tree(file, MAX_SOURCE_BYTES),
+            Layout::Tar => source::tree(&mut { file }, CEILING),
+            Layout::Wheel => source::wheel_tree(file, CEILING),
         })
     })
     .await

@@ -77,7 +77,7 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 | A URL the metadata names | fetched only on an origin the proxy serves: the upstream, the default registry, or `BYRLE_ARTIFACT_ORIGINS`; attestations too | [enforcement-tiers](engineering_decisions/0019-enforcement-tiers.md) |
 | A package name and version a detector is run on | no shell; one argument each; a value starting with `-` is refused. The program gets `PATH`, `HOME`, `SOCKS` and the forward proxies, nothing else, a directory of its own, 300 s and 16 MiB of output | [detectors](engineering_decisions/0092-detectors.md) |
 | A repository and reference the metadata names | fetched only from `BYRLE_SOURCE_ARCHIVES`, `https://codeload.github.com` by default, as `/{owner}/{repo}/tar.gz/{ref}`; owner and repository are GitHub's name characters, `gitHead` 40 hex characters, and a tag has no `..`, `//` or characters outside `A-Z a-z 0-9 . _ - @ / +`. `off` fetches nothing | `analysis::source` |
-| A source archive | spooled under `BYRLE_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less; each member is hashed as it streams | `analysis::source::MAX_SOURCE_BYTES` |
+| A source archive | spooled under `BYRLE_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less and number 200,000 or fewer, and a tar decompresses to 512 MiB plus 4 KiB per member; each member is hashed as it streams | `analysis::source::CEILING` |
 
 - **What reaches the registry.** Of the client's headers, only `Accept`,
   `Accept-Encoding`, `If-None-Match` and `If-Modified-Since` are sent upstream

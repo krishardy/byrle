@@ -90,6 +90,8 @@ pub enum ReadError {
     NothingToRead,
     /// A member larger than [`MAX_MEMBER_BYTES`], which a decompression bomb is.
     TooLarge { member: String, limit: usize },
+    /// An archive of more members than `limit`.
+    TooMany { limit: usize },
 }
 
 impl std::fmt::Display for ReadError {
@@ -100,6 +102,7 @@ impl std::fmt::Display for ReadError {
             Self::TooLarge { member, limit } => {
                 write!(f, "`{member}` is larger than the {limit}-byte ceiling")
             }
+            Self::TooMany { limit } => write!(f, "the archive holds more than {limit} members"),
         }
     }
 }
@@ -1447,7 +1450,8 @@ mod tests {
     fn a_tar_continued_in_a_second_gzip_member_is_read_whole() {
         let archive = [gzip(&tar(&QUIET, false)), gzip(&tar(&LOUD, true))].concat();
         assert_eq!(shape(&archive), (loud(), vec![Anomaly::GzipMembers(2)]));
-        let tree = crate::analysis::source::tree(&mut &*archive, 1 << 20).expect("reads");
+        let tree = crate::analysis::source::tree(&mut &*archive, crate::analysis::source::CEILING)
+            .expect("reads");
         assert!(
             tree.files.contains_key("setup.py"),
             "{:?}",
