@@ -206,7 +206,8 @@ fn site<L: Fn(&str) -> Option<OsString>>(
     Ok(Some(
         crate::console::Site::new(console, accounts, login, events)
             .with_usage(usage)
-            .with_logs(audit_log, event_log),
+            .with_logs(audit_log, event_log)
+            .with_max_diff_versions(environment.max_diff_versions()?),
     ))
 }
 
@@ -800,7 +801,11 @@ mod tests {
             panic!("an unreadable audit log path stops the console");
         };
         assert_eq!(e.var, env::AUDIT_LOG.name);
-        for bad in [(env::ARGON2_PASSES, "0"), (env::SESSION_HOURS, "0")] {
+        for bad in [
+            (env::ARGON2_PASSES, "0"),
+            (env::SESSION_HOURS, "0"),
+            (env::MAX_DIFF_VERSIONS, "-1"),
+        ] {
             let accounts: Arc<dyn crate::account::Accounts> =
                 Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
             let Err(StartupError::Env(e)) =

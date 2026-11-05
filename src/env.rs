@@ -117,6 +117,9 @@ pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1 << 30;
 /// §5.5's ceiling on how far ahead a package entry may be dated.
 pub const DEFAULT_EXPIRY_CEILING_DAYS: i64 = 90;
 
+/// Default for [`MAX_DIFF_VERSIONS`].
+pub const DEFAULT_MAX_DIFF_VERSIONS: usize = 10_000;
+
 /// The default number of days an audit log file is kept.
 pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 365;
 
@@ -484,6 +487,12 @@ pub const EXPIRY_CEILING_DAYS: Var = runtime(
     &["how many days ahead a `packages` entry may be dated"],
 )
 .with_default(Default::Number(DEFAULT_EXPIRY_CEILING_DAYS as u64));
+pub const MAX_DIFF_VERSIONS: Var = runtime(
+    "BYRLE_MAX_DIFF_VERSIONS",
+    "",
+    &["package versions a remote `policy diff` may send"],
+)
+.with_default(Default::Number(DEFAULT_MAX_DIFF_VERSIONS as u64));
 pub const MAX_CONCURRENT_METADATA: Var = runtime(
     "BYRLE_MAX_CONCURRENT_METADATA",
     "",
@@ -785,7 +794,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 96] = [
+pub const ALL: [Var; 97] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -833,6 +842,7 @@ pub const ALL: [Var; 96] = [
     LOG_RETENTION_DAYS,
     DECISION_RETENTION_DAYS,
     EXPIRY_CEILING_DAYS,
+    MAX_DIFF_VERSIONS,
     MAX_CONCURRENT_METADATA,
     SPOOL_DIR,
     MAX_ARTIFACT_BYTES,
@@ -1315,6 +1325,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn allocator_purge_delay_ms(&self) -> Result<usize, EnvError> {
         self.count(ALLOCATOR_PURGE_DELAY_MS, DEFAULT_ALLOCATOR_PURGE_DELAY_MS)
+    }
+
+    pub fn max_diff_versions(&self) -> Result<usize, EnvError> {
+        self.count(MAX_DIFF_VERSIONS, DEFAULT_MAX_DIFF_VERSIONS)
     }
 
     pub fn max_concurrent_metadata(&self) -> Result<usize, EnvError> {
@@ -1827,6 +1841,7 @@ mod tests {
             env.max_concurrent_metadata().unwrap(),
             DEFAULT_MAX_CONCURRENT_METADATA
         );
+        assert_eq!(env.max_diff_versions().unwrap(), DEFAULT_MAX_DIFF_VERSIONS);
         assert_eq!(env.spool_dir().unwrap(), crate::spool::default_dir());
         assert_eq!(
             env.max_concurrent_analyses().unwrap(),
@@ -1927,6 +1942,7 @@ mod tests {
             (MAX_VERIFIED, "20"),
             (CLAIM_RETRY_AFTER, "5"),
             (MAX_CONCURRENT_METADATA, "2"),
+            (MAX_DIFF_VERSIONS, "7"),
             (SPOOL_DIR, "/var/spool/byrle"),
             (MAX_ARTIFACT_BYTES, "4096"),
             (MAX_CONCURRENT_ANALYSES, "3"),
@@ -1982,6 +1998,7 @@ mod tests {
         assert_eq!(env.max_verified().unwrap(), 20);
         assert_eq!(env.claim_retry_after().unwrap(), 5);
         assert_eq!(env.max_concurrent_metadata().unwrap(), 2);
+        assert_eq!(env.max_diff_versions().unwrap(), 7);
         assert_eq!(env.spool_dir().unwrap(), PathBuf::from("/var/spool/byrle"));
         assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
         assert_eq!(env.max_concurrent_analyses().unwrap(), 3);
@@ -2056,6 +2073,7 @@ mod tests {
             (MAX_METADATA_BYTES, "-1"),
             (MAX_VERIFIED, "1e6"),
             (MAX_CONCURRENT_METADATA, "eight"),
+            (MAX_DIFF_VERSIONS, "many"),
             (EXPIRY_CEILING_DAYS, "-5"),
             (LOG_RETENTION_DAYS, "0"),
             (DECISION_RETENTION_DAYS, "0"),
@@ -2070,7 +2088,7 @@ mod tests {
             (MAX_TRAFFIC_CLIENTS, "0"),
             (PROVENANCE_HISTORY, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 17] = [
+        let cases: [(Result<(), EnvError>, &str); 18] = [
             (
                 env.max_records().map(drop),
                 "BYRLE_MAX_RECORDS: `5O000` is not a whole number",
@@ -2086,6 +2104,10 @@ mod tests {
             (
                 env.max_concurrent_metadata().map(drop),
                 "BYRLE_MAX_CONCURRENT_METADATA: `eight` is not a whole number",
+            ),
+            (
+                env.max_diff_versions().map(drop),
+                "BYRLE_MAX_DIFF_VERSIONS: `many` is not a whole number",
             ),
             (
                 env.expiry_ceiling_days().map(drop),

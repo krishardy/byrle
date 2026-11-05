@@ -20,6 +20,7 @@ analysis store, audit log and upstreams. Without it they run locally, as before.
 | Who | `packages.read`, a new permission, held by `admin` and by `reader`, a new role holding every `*.read` permission and no `*.write` |
 | What a route returns | what the command printed on the deployment, `{"stdout", "stderr", "code"}`, which the client prints and exits with; `artifact export`'s JSON Lines in `stdout` too |
 | What the client sends | the command's arguments; a candidate policy and a lockfile as a `POST` body. `policy diff` takes the candidate alone: the policy in force is the deployment's |
+| How much a `policy diff` asks | at most `BYRLE_MAX_DIFF_VERSIONS` package versions sent, 10,000 unless set; more is 400. One runs at a time; another sent meanwhile is 429. Added 2026-11-05 for the security review: each version sent is a registry fetch, one after another |
 
 ## Why
 

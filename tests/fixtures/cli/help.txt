@@ -103,6 +103,7 @@ Proxy configuration, all through the environment:
   BYRLE_LOG_RETENTION_DAYS          days a rotated audit or account event log file is kept (default 365)
   BYRLE_DECISION_RETENTION_DAYS     days an artifact decision is kept in the analysis store (default 365)
   BYRLE_EXPIRY_CEILING_DAYS         how many days ahead a `packages` entry may be dated (default 90)
+  BYRLE_MAX_DIFF_VERSIONS           package versions a remote `policy diff` may send (default 10000)
   BYRLE_MAX_CONCURRENT_METADATA     metadata documents decoded at once (default 8)
   BYRLE_SPOOL_DIR                   directory an artifact is written to while it is
                                     analysed. Locked; spool files left in it are removed

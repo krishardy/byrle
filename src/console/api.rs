@@ -75,6 +75,11 @@ impl Refused {
         Self(StatusCode::BAD_REQUEST, why)
     }
 
+    /// 429, saying `why`.
+    pub fn busy(why: &str) -> Self {
+        Self(StatusCode::TOO_MANY_REQUESTS, why.to_owned())
+    }
+
     /// 503, saying `why`.
     pub fn unavailable(why: &str) -> Self {
         Self(StatusCode::SERVICE_UNAVAILABLE, why.to_owned())

@@ -72,6 +72,7 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 | An artifact spooled for analysis | 1 GiB; one over it is stored as unreadable, which `install_scripts: block` refuses | `BYRLE_MAX_ARTIFACT_BYTES` |
 | An analysis job | 600 s | `analysis::run::DEADLINE` |
 | Concurrent work | 8 metadata documents and 8 analyses at once | `BYRLE_MAX_CONCURRENT_METADATA`, `BYRLE_MAX_CONCURRENT_ANALYSES` |
+| A remote `policy diff` | 10,000 package versions sent; one diff at a time, and another sent meanwhile is 429 | `BYRLE_MAX_DIFF_VERSIONS` |
 | An upstream that stops sending | 10 s to connect, 30 s between reads | `http::client_builder` |
 | A URL the metadata names | fetched only on an origin the proxy serves: the upstream, the default registry, or `BYRLE_ARTIFACT_ORIGINS`; attestations too | [enforcement-tiers](engineering_decisions/0019-enforcement-tiers.md) |
 | A package name and version a detector is run on | no shell; one argument each; a value starting with `-` is refused. The program gets `PATH`, `HOME`, `SOCKS` and the forward proxies, nothing else, a directory of its own, 300 s and 16 MiB of output | [detectors](engineering_decisions/0092-detectors.md) |

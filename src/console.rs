@@ -134,6 +134,10 @@ pub struct Site {
     oidc: Option<oidc::Provider>,
     /// [`env::EXPIRY_CEILING_DAYS`], which a remote `policy check` is judged with.
     expiry_ceiling_days: i64,
+    /// [`env::MAX_DIFF_VERSIONS`]: the most package versions a remote `policy diff` sends.
+    max_diff_versions: usize,
+    /// Held while a remote `policy diff` runs, so one runs at a time.
+    pub(crate) diffing: tokio::sync::Mutex<()>,
 }
 
 impl Site {
@@ -161,6 +165,8 @@ impl Site {
             checked: std::sync::Mutex::default(),
             oidc: None,
             expiry_ceiling_days: env::DEFAULT_EXPIRY_CEILING_DAYS,
+            max_diff_versions: env::DEFAULT_MAX_DIFF_VERSIONS,
+            diffing: tokio::sync::Mutex::new(()),
             console,
         }
     }
@@ -174,6 +180,17 @@ impl Site {
     /// The expiry ceiling a remote `policy check` is judged with.
     pub fn expiry_ceiling_days(&self) -> i64 {
         self.expiry_ceiling_days
+    }
+
+    /// Refuse a remote `policy diff` sending more than `versions` package versions.
+    pub fn with_max_diff_versions(mut self, versions: usize) -> Self {
+        self.max_diff_versions = versions;
+        self
+    }
+
+    /// The most package versions a remote `policy diff` may send.
+    pub fn max_diff_versions(&self) -> usize {
+        self.max_diff_versions
     }
 
     /// The audit log the proxy writes, which a remote `policy diff` compares over.
