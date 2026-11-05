@@ -93,6 +93,17 @@ pub fn canonical_name(name: &str) -> String {
     name.to_owned()
 }
 
+/// Hosts that serve a repository whatever its path's case: see docs/go-plan.md, Advisories.
+const CASE_BLIND_HOSTS: [&str; 1] = ["github.com/"];
+
+/// `path` in lower case, when its host serves it in any case and it is not already: an
+/// advisory names the case its module's `go.mod` writes, and a client may ask another.
+pub fn intel_alias(path: &str) -> Option<String> {
+    let blind = CASE_BLIND_HOSTS.iter().any(|host| path.starts_with(host));
+    let lower = path.to_ascii_lowercase();
+    (blind && lower != path).then_some(lower)
+}
+
 /// The file name the proxy gives a version's zip.
 pub fn filename(version: &str) -> String {
     format!("{version}.zip")

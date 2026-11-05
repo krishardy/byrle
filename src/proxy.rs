@@ -4651,10 +4651,7 @@ async fn intel_for(
         return Ok(None);
     };
     let ecosystem = key.ecosystem();
-    let why = match store
-        .package(ecosystem.as_str(), &key.registry_name())
-        .await
-    {
+    let why = match package_intel(store, key).await {
         Ok(Some(found)) => match snapshot_named(proxy, store, &found.snapshot).await {
             Ok(Some(snapshot)) => {
                 let gaps = snapshot.uncovered(ecosystem.as_str());
@@ -4678,6 +4675,28 @@ async fn intel_for(
         "intel store cannot answer; answering 503 rather than serving unchecked"
     );
     Err(NotReady::Unanswered)
+}
+
+/// What `store` holds against `key`, under its registry name and the other name its
+/// ecosystem says intel may list it under, from one snapshot: a second read from another
+/// snapshot is not merged, as one taken while a load replaced the first.
+async fn package_intel(
+    store: &dyn Intel,
+    key: &PackageKey,
+) -> Result<Option<PackageIntel>, crate::intel::store::IntelError> {
+    let (ecosystem, name) = (key.ecosystem(), key.registry_name());
+    let mut found = store.package(ecosystem.as_str(), &name).await?;
+    let Some(alias) = (crate::ecosystem::of(ecosystem).intel_alias)(&name) else {
+        return Ok(found);
+    };
+    let also = store.package(ecosystem.as_str(), &alias).await?;
+    if let (Some(found), Some(also)) = (found.as_mut(), also)
+        && found.snapshot == also.snapshot
+    {
+        found.records.extend(also.records);
+        found.ranges.extend(also.ranges);
+    }
+    Ok(found)
 }
 
 /// Where a resolution line is written, the account it names and the repository it was read from.
@@ -8088,6 +8107,130 @@ mod tests {
             .unwrap();
         assert_eq!(sha1.status(), 502);
         assert!(sha1.text().await.unwrap().contains("over 64 bytes"));
+    }
+
+    /// An intel store holding one malware record for each name, from the snapshot it names.
+    struct Named(Vec<(&'static str, &'static str)>);
+
+    impl Intel for Named {
+        fn lookup<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Vec<crate::intel::store::Record>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn snapshot(&self) -> crate::intel::store::Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn package<'a>(
+            &'a self,
+            _: &'a str,
+            name: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Option<PackageIntel>> {
+            if self
+                .0
+                .iter()
+                .any(|(held, snapshot)| *held == name && *snapshot == "fails")
+            {
+                let failed = crate::intel::store::IntelError::Backend(sqlx::Error::PoolClosed);
+                return Box::pin(async move { Err(failed) });
+            }
+            let found = self
+                .0
+                .iter()
+                .find(|(held, _)| *held == name)
+                .map(|(held, snapshot)| PackageIntel {
+                    snapshot: (*snapshot).to_owned(),
+                    records: vec![(
+                        None,
+                        crate::intel::store::Record {
+                            advisory_id: format!("MAL-{held}"),
+                            aliases: Vec::new(),
+                            source: "osv".to_owned(),
+                            cvss: None,
+                            band: None,
+                            cvss_source: None,
+                            exploited: false,
+                            malware: true,
+                            informational: None,
+                            cached: None,
+                        },
+                    )],
+                    ranges: Vec::new(),
+                    exploitation_loaded: false,
+                });
+            Box::pin(async move { Ok(found) })
+        }
+    }
+
+    /// A Go module on GitHub asked in another case is looked up under its lower-case path
+    /// too, from the same snapshot; another ecosystem's name, or another host's, is not.
+    #[tokio::test]
+    async fn a_go_module_asked_in_another_case_finds_its_lower_case_intel() {
+        let ids = |found: Option<PackageIntel>| -> Vec<String> {
+            found
+                .map(|found| {
+                    found
+                        .records
+                        .into_iter()
+                        .map(|(_, r)| r.advisory_id)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let go = |path: &str| PackageKey::from_registry_name(Ecosystem::Go, path).unwrap();
+        let store = Named(vec![
+            ("github.com/Evil/Pkg", "s1"),
+            ("github.com/evil/pkg", "s1"),
+        ]);
+        let found = package_intel(&store, &go("github.com/Evil/Pkg"))
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(found),
+            ["MAL-github.com/Evil/Pkg", "MAL-github.com/evil/pkg"]
+        );
+        let only_lower = Named(vec![
+            ("github.com/Evil/Pkg", "s1"),
+            ("github.com/evil/pkg", "s2"),
+        ]);
+        let found = package_intel(&only_lower, &go("github.com/Evil/Pkg"))
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(found),
+            ["MAL-github.com/Evil/Pkg"],
+            "another snapshot is not merged"
+        );
+        let elsewhere = Named(vec![
+            ("example.com/Evil/Pkg", "s1"),
+            ("example.com/evil/pkg", "s1"),
+        ]);
+        let found = package_intel(&elsewhere, &go("example.com/Evil/Pkg"))
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(found),
+            ["MAL-example.com/Evil/Pkg"],
+            "another host's paths keep their case"
+        );
+        assert_eq!(
+            crate::ecosystem::go::paths::intel_alias("github.com/evil/pkg"),
+            None
+        );
+        let failing = Named(vec![
+            ("github.com/Evil/Pkg", "s1"),
+            ("github.com/evil/pkg", "fails"),
+        ]);
+        assert!(
+            package_intel(&failing, &go("github.com/Evil/Pkg"))
+                .await
+                .is_err()
+        );
     }
 
     /// An intel store that has loaded nothing, so no package can be decided.

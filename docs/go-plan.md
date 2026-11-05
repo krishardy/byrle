@@ -52,6 +52,15 @@ withdrawn. Ranges are `SEMVER` (14,730) and `ECOSYSTEM` (145).
 them. The other 191 unscored records name modules, and `max_cvss` refuses an unscored
 advisory, as with 105 RustSec records ([advisory-kinds](engineering_decisions/0109-advisory-kinds.md)).
 
+A module path keeps its case: it is case-sensitive, and an advisory names the case its
+`go.mod` writes. GitHub serves a repository in any case, `github.com/Sirupsen/Logrus`
+answered 200 on 2026-11-05, and proxy.golang.org serves `github.com/sirupsen/logrus`,
+`github.com/!sirupsen/logrus` and `github.com/!sirupsen/!logrus` alike, so a client can ask
+for a GitHub module in a case its advisories do not name. `intel_for` looks up a
+`github.com/` path in lower case as well (`go::paths::intel_alias`), and merges the records
+both names find in one snapshot. Another host's paths are looked up as written: two paths
+differing in case may be two modules there.
+
 ## The adapter, checked again
 
 Go's column of [cargo-plan](cargo-plan.md)'s table, with what was measured since:

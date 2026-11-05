@@ -274,7 +274,7 @@ A block starts no scan, source comparison or detector run (`Deciding::blocks`).
 | D1 | Buffer | `buffer_to_limit`, `unchecked_document` | over `BYRLE_MAX_METADATA_BYTES`: 502, and forwarded unread in observe mode; no audit line |
 | D2 | Decode and read | `http::decode_for_parsing`, the row's `read`, `unchecked_document` | undecodable, or an npm packument that does not normalize, or a PyPI index that does not parse: 502, and forwarded unchanged in observe mode; not read by the row: forwarded unchanged |
 | D3 | Dates, when a cooldown is in use | `dated_versions` | |
-| D4 | Intel | `intel_for` | store error: 503; a gap: 503 for npm, filtered without intel for PyPI, cargo, Go and Maven (`UncoveredMetadata`) |
+| D4 | Intel | `intel_for`, under the registry name and `Registry::intel_alias`'s, a GitHub Go path in lower case | store error: 503; a gap: 503 for npm, filtered without intel for PyPI, cargo, Go and Maven (`UncoveredMetadata`) |
 | D5 | Each version through S1 to S4 | `policy_refused_versions` | metadata facts and advisory signals only; observe mode removes none |
 | D6 | Go `@latest` naming a refused version | `names_refused` | 404 |
 | D7 | Rewrite | npm `rewrite.rs` `rewrite_packument`; PyPI `rewrite.rs` `rewrite_index`; cargo, Go, Maven `inspect.rs` | npm and PyPI also remove a version with a file on an origin the proxy does not serve, when `refuse_unservable`, and repoint artifact URLs; npm removes a version that did not normalize, in observe mode too, and every tag naming a version removed; cargo, Go and Maven only remove refused versions. npm or PyPI that cannot be filtered or repointed: 502, and forwarded unchanged in observe mode |

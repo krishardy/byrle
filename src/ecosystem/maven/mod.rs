@@ -62,6 +62,7 @@ pub const REGISTRY: Registry = Registry {
     versions: VersionOrder::Maven,
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
+    intel_alias: |_| None,
     published_name: None,
     upstream: crate::env::UPSTREAM_MAVEN,
     upstream_url,

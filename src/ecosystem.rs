@@ -537,6 +537,9 @@ pub struct Registry {
     /// A name as a policy selector compares it, prefix or exact.
     pub canonical_name: fn(&str) -> String,
 
+    /// Another name intel may list a registry name's records under; `None` for most.
+    pub intel_alias: fn(&str) -> Option<String>,
+
     /// Whether the registry could publish a registry name; `None` when `split_name` checks it.
     pub published_name: Option<fn(&str) -> bool>,
 

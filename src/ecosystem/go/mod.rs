@@ -61,6 +61,7 @@ pub const REGISTRY: Registry = Registry {
     versions: VersionOrder::Go,
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
+    intel_alias: paths::intel_alias,
     published_name: None,
     upstream: crate::env::UPSTREAM_GO,
     upstream_url,
