@@ -2,7 +2,8 @@
 
 - **Number:** 0133
 - **Status:** Implemented 2026-11-05, for findings 25 and 39 of the security review:
-  `src/service.rs`, each service's `Declared`, and `scripts/make/clients.py`.
+  `src/service.rs`, each service's `Declared`, `scripts/make/clients.py`, and
+  `Deciding::dated`'s `unservable`.
 - **Related:** [upstream-ca-bundle](0081-upstream-ca-bundle.md),
   [virustotal](0104-virustotal.md)
 
@@ -82,7 +83,11 @@ they follow, which is all a reqwest client holds per service.
 `reqwest::ClientBuilder` and `reqwest::get(` outside `src/service.rs` and `src/tls.rs`,
 except in tests, so a request cannot bypass the declaration.
 
-## Not decided here
+## The HEAD for a file's date
 
-The proxy's HEAD for a file's `Last-Modified` (`proxy::head_last_modified`) is still sent
-before the unservable check. That is the other half of finding 39.
+Before 2026-11-05 `Deciding::dated` sent a HEAD for a file's `Last-Modified` to the URL the
+metadata named, wherever it was. The unservable check came after, so a publisher could name
+a host and have the proxy ask it. `dated` is now given whether `fetch_plan` found the file
+on an origin the proxy does not serve, and asks nothing then: the file is dated by its first
+sighting, as one whose host sends no date is. An origin `BYRLE_ALLOW_DIRECT_ORIGINS` lists
+is still asked, as the operator named it.

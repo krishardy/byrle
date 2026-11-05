@@ -1600,7 +1600,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     let (record, claiming) = deciding.checked(record, claim).await;
     let pending = matches!(claiming, Some(Claiming::Pending(_)));
     let (fetch, unservable) = deciding.fetch_plan(&record, pending);
-    let dated = deciding.dated(&record).await;
+    let dated = deciding.dated(&record, unservable.is_some()).await;
     let sourced = deciding.sourced(&fetch).await;
     let scanned = deciding.scanned(&fetch).await;
     let detected = deciding.detected(&record).await;
@@ -2338,8 +2338,9 @@ impl<'a> Deciding<'a> {
     }
 
     /// For a record whose document carried no publish time: the full document, and the
-    /// publish times from it or from the file host's `Last-Modified`.
-    async fn dated(&self, record: &PackageRecord) -> Dated {
+    /// publish times from it or from the file host's `Last-Modified`, unless the file is
+    /// `unservable`, on an origin the proxy does not serve, which is not asked.
+    async fn dated(&self, record: &PackageRecord, unservable: bool) -> Dated {
         if record.published_at.is_some() {
             return Dated::default();
         }
@@ -2354,6 +2355,7 @@ impl<'a> Deciding<'a> {
         };
         let mut times = times;
         if !has(&times)
+            && !unservable
             && let Some(host) = dated_by_host(self.proxy, record, self.request.path).await
         {
             times.get_or_insert_default().extend(host);
@@ -4407,8 +4409,8 @@ impl Proxy {
                 account: None,
             },
         );
-        let (fetch, _) = deciding.fetch_plan(record, false);
-        let dated = deciding.dated(record).await;
+        let (fetch, unservable) = deciding.fetch_plan(record, false);
+        let dated = deciding.dated(record, unservable.is_some()).await;
         let analysed = deciding
             .analysed(record, &fetch, dated.times.as_ref())
             .await;
@@ -5912,6 +5914,38 @@ mod tests {
         assert!(
             matches!(step, ArtifactStep::Fetch(_)),
             "dated 2020 by the file host"
+        );
+    }
+
+    /// A file on an origin the proxy does not serve is not asked for its `Last-Modified`.
+    #[tokio::test]
+    async fn a_file_on_an_origin_not_served_is_not_asked_for_its_date() {
+        let (host, asked) =
+            crate::util::test_support::recorded(vec![crate::util::test_support::Answer::Status(
+                200,
+            )])
+            .await;
+        let packument = format!(
+            r#"{{"name":"widget","time":{{"modified":"2020-01-01T00:00:00Z"}},"versions":{{"1.0.0":{{"version":"1.0.0","dist":{{"tarball":"http://{host}/widget/-/widget-1.0.0.tgz","integrity":"sha512-{}"}}}}}}}}"#,
+            "A".repeat(86) + "=="
+        );
+        let registry = serve(Router::new().route(
+            "/widget",
+            get(move || {
+                let packument = packument.clone();
+                async move { ([(header::CONTENT_TYPE, "application/json")], packument) }
+            }),
+        ))
+        .await;
+        let proxy = offline(
+            None,
+            Some("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n"),
+        )
+        .with_upstream(Ecosystem::Npm, &registry);
+        pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "the file's host is not asked"
         );
     }
 
