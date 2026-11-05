@@ -65,7 +65,7 @@ pub const REGISTRY: Registry = Registry {
     published_name: None,
     upstream: crate::env::UPSTREAM_MAVEN,
     upstream_url,
-    read: inspect::read,
+    read: |reading| Ok(inspect::read(reading)),
     reader: |filename| {
         filename
             .ends_with(".jar")

@@ -1143,24 +1143,35 @@ enum DocumentStep {
     },
 }
 
-/// The 502 for the metadata document at `path`, which the proxy could not read because of
-/// `why`. `None` in observe mode, where it is forwarded with the artifact URLs the upstream
-/// wrote. Logged as UNINSPECTED either way.
-fn unread_document(proxy: &Proxy, path: &str, why: &str) -> Option<Response> {
+/// The 502 for the metadata document at `path`, which the proxy could not read, filter or
+/// rewrite because of `why`. `None` in observe mode, where it is forwarded as the upstream
+/// wrote it. Logged as UNINSPECTED either way.
+fn unchecked_document(proxy: &Proxy, path: &str, why: &str) -> Option<Response> {
     proxy.uninspected.fetch_add(1, Ordering::Relaxed);
     let url_path = crate::http::url_path(path);
     if proxy.config.mode == Mode::Observe {
-        warn!(url.path = %url_path, url.query = crate::http::url_query(path), byrle.reason = %why, "UNINSPECTED: metadata document not read, forwarded in observe mode");
+        warn!(url.path = %url_path, url.query = crate::http::url_query(path), byrle.reason = %why, "UNINSPECTED: metadata document not checked, forwarded in observe mode");
         return None;
     }
-    warn!(url.path = %url_path, url.query = crate::http::url_query(path), byrle.reason = %why, "UNINSPECTED: metadata document not read, refused");
+    warn!(url.path = %url_path, url.query = crate::http::url_query(path), byrle.reason = %why, "UNINSPECTED: metadata document not checked, refused");
     Some(
         (
             StatusCode::BAD_GATEWAY,
-            format!("byrle: the upstream's document at {url_path} was not read, as {why}\n"),
+            format!("byrle: the upstream's document at {url_path} is not served, as {why}\n"),
         )
             .into_response(),
     )
+}
+
+/// [`unchecked_document`] as a step: the 502, or the upstream's body forwarded.
+fn unchecked_step(proxy: &Proxy, path: &str, why: &str) -> DocumentStep {
+    match unchecked_document(proxy, path, why) {
+        Some(refused) => DocumentStep::Answer(refused),
+        None => DocumentStep::Forward {
+            body: None,
+            refused: Refused::default(),
+        },
+    }
 }
 
 /// Decode, read, filter by policy and rewrite a metadata document. Its refusals are
@@ -1180,15 +1191,7 @@ async fn filtered_document(
     let decoded = match decode_for_parsing(body, content_encoding, proxy.config.max_metadata_bytes)
     {
         Ok(decoded) => decoded,
-        Err(e) => {
-            return match unread_document(proxy, path, &format!("it could not be decoded: {e}")) {
-                Some(refused) => DocumentStep::Answer(refused),
-                None => DocumentStep::Forward {
-                    body: None,
-                    refused: Refused::default(),
-                },
-            };
-        }
+        Err(e) => return unchecked_step(proxy, path, &format!("it could not be decoded: {e}")),
     };
 
     let at = negotiation.repository;
@@ -1207,11 +1210,15 @@ async fn filtered_document(
         parse_started,
         path,
     });
-    let Some(read) = read else {
-        return DocumentStep::Forward {
-            body: None,
-            refused: Refused::default(),
-        };
+    let read = match read {
+        Ok(Some(read)) => read,
+        Ok(None) => {
+            return DocumentStep::Forward {
+                body: None,
+                refused: Refused::default(),
+            };
+        }
+        Err(why) => return unchecked_step(proxy, path, &why),
     };
     report_undated(proxy, read.as_ref(), path);
     let dated = dated_versions(proxy, at, read.metadata(), path).await;
@@ -1264,7 +1271,7 @@ async fn filtered_document(
         .then_some(negotiation.rewrite_base.as_deref())
         .flatten();
 
-    let body = read.rewrite(&ecosystem::Rewriting {
+    let rewritten = read.rewrite(&ecosystem::Rewriting {
         decoded: &decoded,
         base,
         origins: &proxy.config.origins,
@@ -1273,9 +1280,12 @@ async fn filtered_document(
         refuse_unservable: refuses_unservable(proxy),
         path,
     });
-    DocumentStep::Forward {
-        body,
-        refused: refused_by_policy,
+    match rewritten {
+        Ok(body) => DocumentStep::Forward {
+            body,
+            refused: refused_by_policy,
+        },
+        Err(why) => unchecked_step(proxy, path, &why),
     }
 }
 
@@ -3940,7 +3950,7 @@ impl Exchange<'_> {
                     "it is over {limit} bytes, the limit {} sets",
                     crate::env::MAX_METADATA_BYTES
                 );
-                if let Some(refused) = unread_document(self.proxy, &self.path, &why) {
+                if let Some(refused) = unchecked_document(self.proxy, &self.path, &why) {
                     return refused;
                 }
                 self.log_proxied(status, length.unwrap_or(0));
@@ -7077,20 +7087,12 @@ mod tests {
         ));
     }
 
-    /// A 200 the adapter does not read is forwarded as it came. One in an encoding this
-    /// cannot decode is refused, and forwarded in observe mode.
+    /// A 200 its row does not read is forwarded. One the proxy cannot decode, normalize or
+    /// point at itself is refused, and forwarded in observe mode.
     #[tokio::test]
-    async fn a_document_the_proxy_cannot_decode_is_refused_unless_observing() {
+    async fn a_document_the_proxy_cannot_check_is_refused_unless_observing() {
         let proxy = offline(None, None);
-        let junk = resolve(
-            &proxy,
-            "/npm/lodash",
-            npm::ABBREVIATED_ACCEPT,
-            b"<html>maintenance</html>",
-        )
-        .await;
-        assert!(matches!(junk, DocumentStep::Forward { body: None, .. }));
-
+        let observing = proxy.clone().with_mode(Mode::Observe);
         let (ecosystem, target) = crate::route::classify("/npm/lodash").expect("a routed path");
         let negotiation = negotiate(
             &proxy,
@@ -7099,30 +7101,54 @@ mod tests {
             &Method::GET,
             &client_headers("gzip"),
         );
-        let observing = proxy.clone().with_mode(Mode::Observe);
-        let mut steps = Vec::new();
-        for proxy in [&proxy, &observing] {
-            let step = filtered_document(
-                proxy,
-                DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
-                &Bytes::from_static(b"\x1b[brotli bytes]"),
+        let unread = filtered_document(
+            &proxy,
+            DocumentKind::SimpleIndex(crate::route::IndexFormat::Json),
+            &Bytes::from_static(b"{}"),
+            None,
+            &negotiation,
+            "/npm/lodash",
+            None,
+            true,
+        )
+        .await;
+        assert!(matches!(unread, DocumentStep::Forward { body: None, .. }));
+        let escaped = br#"{"name":"lodash","versions":{"4.17.21":{"version":"4.17.21",
+            "dist":{"tarball":"https:\/\/registry.npmjs.org\/lodash\/-\/lodash-4.17.21.tgz",
+            "integrity":"sha512-AAAA"}}}}"#;
+        for (body, encoding, why) in [
+            (
+                &b"\x1b[brotli bytes]"[..],
                 Some("br"),
-                &negotiation,
-                "/npm/lodash",
-                None,
-                true,
-            )
-            .await;
-            steps.push(step);
+                "could not be decoded",
+            ),
+            (b"<html>maintenance</html>", None, "did not normalize"),
+            (escaped, None, "could not be rewritten"),
+        ] {
+            let mut steps = Vec::new();
+            for proxy in [&proxy, &observing] {
+                let step = filtered_document(
+                    proxy,
+                    DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
+                    &Bytes::from_static(body),
+                    encoding,
+                    &negotiation,
+                    "/npm/lodash",
+                    None,
+                    true,
+                )
+                .await;
+                steps.push(step);
+            }
+            let [DocumentStep::Answer(refused), observed] = <[_; 2]>::try_from(steps).ok().unwrap()
+            else {
+                panic!("a document that {why} is refused");
+            };
+            let (status, said) = read(refused).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert!(said.contains(why), "{said}");
+            assert!(matches!(observed, DocumentStep::Forward { body: None, .. }));
         }
-        let [DocumentStep::Answer(refused), observed] = <[_; 2]>::try_from(steps).ok().unwrap()
-        else {
-            panic!("an undecodable document is refused");
-        };
-        let (status, said) = read(refused).await;
-        assert_eq!(status, StatusCode::BAD_GATEWAY);
-        assert!(said.contains("could not be decoded"), "{said}");
-        assert!(matches!(observed, DocumentStep::Forward { body: None, .. }));
     }
 
     /// A rewritten body is this proxy's, so its length, encoding and entity tag describe

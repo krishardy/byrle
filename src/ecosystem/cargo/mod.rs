@@ -58,13 +58,13 @@ pub const REGISTRY: Registry = Registry {
     upstream_url,
     read: |reading| {
         let crate::route::DocumentKind::IndexLines = reading.kind else {
-            return None;
+            return Ok(None);
         };
-        Some(Box::new(read_index(
+        Ok(Some(Box::new(read_index(
             reading.decoded,
             reading.store,
             reading.path,
-        )))
+        ))))
     },
     reader: |filename| {
         filename.ends_with(".crate").then_some(

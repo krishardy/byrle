@@ -186,8 +186,9 @@ pub trait Document: Send + Sync {
     fn metadata(&self) -> Option<&PackageMetadata>;
 
     /// The body with refused versions removed and artifacts pointed at the proxy, or
-    /// `None` to forward it as it came.
-    fn rewrite(&self, rewriting: &Rewriting<'_>) -> Option<Vec<u8>>;
+    /// `None` to forward it as it came. `Err` says why a change it needed failed: forwarded,
+    /// it would offer refused versions, or artifacts fetched around the proxy.
+    fn rewrite(&self, rewriting: &Rewriting<'_>) -> Result<Option<Vec<u8>>, String>;
 
     /// Whether removing `refused` leaves a document that names one version naming none,
     /// answered 404 as an absent one is.
@@ -195,6 +196,9 @@ pub trait Document: Send + Sync {
         false
     }
 }
+
+/// A body read: `None` forwards it unread, and `Err` says why the row could not read it.
+pub type Read = Result<Option<Box<dyn Document>>, String>;
 
 /// What an adapter's [`Registry::read`] is given: a metadata body on its way to the client.
 pub struct Reading<'a> {
@@ -526,8 +530,8 @@ pub struct Registry {
     pub upstream_url: fn(&str, &str) -> String,
     /// The registry client for the upstream, with each decoded body bounded.
     pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
-    /// A metadata body read on its way to the client, or `None` to forward it unread.
-    pub read: fn(Reading<'_>) -> Option<Box<dyn Document>>,
+    /// A metadata body read on its way to the client.
+    pub read: fn(Reading<'_>) -> Read,
     /// What reads an artifact file for the code it runs on install; `None` if it runs none.
     pub reader: fn(&str) -> Option<crate::analysis::Reader>,
     /// How an artifact file is laid out, or `None` for one the source comparison does not read.
@@ -1290,8 +1294,8 @@ mod table {
         assert_eq!((files.len(), before), (1, 1));
     }
 
-    /// A row reads only its own kind of document, and one it can parse; anything else is
-    /// forwarded unread.
+    /// A row reads only its own kind of document; anything else is forwarded unread. One of
+    /// its kind that does not parse is an error.
     #[test]
     fn a_row_reads_only_its_own_kind_of_document() {
         use crate::record::DocumentDetail;
@@ -1315,11 +1319,6 @@ mod table {
                 b"{}",
             ),
             (
-                &pypi::REGISTRY,
-                DocumentKind::SimpleIndex(IndexFormat::Json),
-                b"not json",
-            ),
-            (
                 &cargo::REGISTRY,
                 DocumentKind::SimpleIndex(IndexFormat::Json),
                 b"{}",
@@ -1338,8 +1337,22 @@ mod table {
                 parse_started: std::time::Instant::now(),
                 path: "/x",
             });
-            assert!(read.is_none(), "{:?}", row.ecosystem);
+            assert!(matches!(read, Ok(None)), "{:?}", row.ecosystem);
         }
+        let unparsed = (pypi::REGISTRY.read)(Reading {
+            decoded: b"not json",
+            kind: DocumentKind::SimpleIndex(IndexFormat::Json),
+            page: "https://pypi.org/simple/x/",
+            store: crate::store::Keeping {
+                store: &store,
+                at: Repository::of(crate::identity::Ecosystem::PyPI),
+            },
+            origins: &origins,
+            encoded_bytes: 8,
+            parse_started: std::time::Instant::now(),
+            path: "/x",
+        });
+        assert!(unparsed.is_err_and(|why| why.contains("did not parse")));
     }
 
     /// Lines outside the adapters that name a row's ecosystem, per file, until a file's

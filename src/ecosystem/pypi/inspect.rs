@@ -24,24 +24,21 @@ const UNNAMED: &str = "";
 
 /// Parse a forwarded simple index and keep its records.
 ///
-/// `None` when it did not parse: the body is then forwarded as it arrived.
+/// `Err` says why it did not parse.
 pub fn read_index(
     decoded: &[u8],
     format: IndexFormat,
     page: &str,
     store: Keeping<'_>,
     path: &str,
-) -> Option<Index> {
+) -> Result<Index, String> {
     let read = match format {
         IndexFormat::Json => parse(UNNAMED, decoded),
         IndexFormat::Html => super::html::parse(UNNAMED, page, decoded),
     };
     let project = match read {
         Ok(project) => project,
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: simple index did not parse");
-            return None;
-        }
+        Err(e) => return Err(format!("the simple index did not parse: {e}")),
     };
 
     let metadata = match normalize(&project) {
@@ -78,7 +75,7 @@ pub fn read_index(
             None
         }
     };
-    Some(Index {
+    Ok(Index {
         project,
         format,
         metadata,
@@ -99,7 +96,10 @@ mod tests {
         std::sync::Mutex::new(crate::store::RecordStore::new(1000))
     }
 
-    fn read(store: &std::sync::Mutex<crate::store::RecordStore>, decoded: &[u8]) -> Option<Index> {
+    fn read(
+        store: &std::sync::Mutex<crate::store::RecordStore>,
+        decoded: &[u8],
+    ) -> Result<Index, String> {
         read_index(
             decoded,
             IndexFormat::Json,
@@ -154,13 +154,14 @@ mod tests {
     #[test]
     fn an_index_that_does_not_normalize_stores_nothing() {
         let store = store();
-        assert!(read(&store, b"not json").is_none());
+        let unparsed = read(&store, b"not json").err().unwrap_or_default();
+        assert!(unparsed.contains("did not parse"), "{unparsed}");
         assert!(
             read(
                 &store,
                 br#"{"name":"x","files":[{"filename":"notadistribution.txt","url":"https://e/a","hashes":{}}]}"#,
             )
-            .is_none()
+            .is_err()
         );
         let unreadable = read(
             &store,

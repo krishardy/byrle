@@ -79,7 +79,7 @@ pub const REGISTRY: Registry = Registry {
     upstream_url: paths::upstream_url,
     read: |reading| {
         let crate::route::DocumentKind::SimpleIndex(format) = reading.kind else {
-            return None;
+            return Ok(None);
         };
         let index = read_index(
             reading.decoded,
@@ -88,7 +88,7 @@ pub const REGISTRY: Registry = Registry {
             reading.store,
             reading.path,
         )?;
-        Some(Box::new(index))
+        Ok(Some(Box::new(index)))
     },
     reader: |filename| {
         (!filename.ends_with(".whl")).then_some(
@@ -164,7 +164,7 @@ impl crate::ecosystem::Document for Index {
         self.metadata.as_deref()
     }
 
-    fn rewrite(&self, r: &crate::ecosystem::Rewriting<'_>) -> Option<Vec<u8>> {
+    fn rewrite(&self, r: &crate::ecosystem::Rewriting<'_>) -> Result<Option<Vec<u8>>, String> {
         rewrite::rewrite_index(rewrite::Rewrite {
             decoded: r.decoded,
             format: self.format,

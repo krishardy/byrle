@@ -110,7 +110,7 @@ flowchart TD
     BODY -->|other, or not readable| PASS
     BODY -->|document| BUF{buffered under<br/>BYRLE_MAX_METADATA_BYTES?}
     BUF -->|over it, or undecodable,<br/>in observe mode| PASS
-    BUF -->|over it, or undecodable| D502
+    BUF -->|over it, or undecodable;<br/>npm or PyPI not read,<br/>filtered or repointed| D502
     BUF -->|body failed, or 30 s<br/>without a byte| D502[502]
     BUF -->|yes| DINTEL{intel store}
     DINTEL -->|cannot answer, or no stream<br/>covers npm| D503[503]
@@ -128,7 +128,7 @@ flowchart TD
 | 405 | proxy | an artifact or manifest asked with a method but GET or HEAD, in enforce mode; `Allow: GET, HEAD` |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
 | refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; under a cooldown, nothing dates the file, while `cooldown_unanswered` weighs the threshold; the metadata does not list the version; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
-| 502 | proxy | the upstream could not be reached, or stalled before answering; a metadata body failed, is over `BYRLE_MAX_METADATA_BYTES`, or cannot be decoded, in enforce mode; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
+| 502 | proxy | the upstream could not be reached, or stalled before answering; a metadata body failed; in enforce mode, a metadata body over `BYRLE_MAX_METADATA_BYTES` or undecodable, or an npm packument or PyPI index that does not normalize or parse, or cannot be filtered or have its artifact URLs pointed at the proxy; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` while a policy is set and intel has not loaded or has a gap |
 
 An artifact whose bytes do not match the digest has already been sent a 200. The last

@@ -66,7 +66,7 @@ log that spans a reload, pass both files: `byrle audit verify <log> --policy old
 --policy new.yaml`.
 
 A metadata document over `BYRLE_MAX_METADATA_BYTES`, 64 MiB by default, is answered 502
-and logged `UNINSPECTED: metadata document not read, refused`. Raise the variable and
+and logged `UNINSPECTED: metadata document not checked, refused`. Raise the variable and
 restart the proxy.
 
 `BYRLE_MODE=observe` serves everything the policy refuses, for the whole proxy. It is

@@ -64,7 +64,7 @@ pub const REGISTRY: Registry = Registry {
     published_name: None,
     upstream: crate::env::UPSTREAM_GO,
     upstream_url,
-    read: inspect::read,
+    read: |reading| Ok(inspect::read(reading)),
     reader: |_| None,
     layout: |_| None,
     source: |_| None,

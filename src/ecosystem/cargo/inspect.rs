@@ -57,9 +57,9 @@ impl Document for IndexFile {
 
     /// Downloads already come to the proxy through `config.json`'s `dl`, so only refused
     /// lines are removed. `None` when none is.
-    fn rewrite(&self, r: &Rewriting<'_>) -> Option<Vec<u8>> {
+    fn rewrite(&self, r: &Rewriting<'_>) -> Result<Option<Vec<u8>>, String> {
         if r.refused_by_policy.is_empty() {
-            return None;
+            return Ok(None);
         }
         let body = without_versions(r.decoded, r.refused_by_policy);
         warn!(
@@ -67,7 +67,7 @@ impl Document for IndexFile {
             byrle.package.removed_by_policy = r.refused_by_policy.len(),
             "REFUSED versions removed from the document so the resolver picks another"
         );
-        Some(body)
+        Ok(Some(body))
     }
 }
 
@@ -142,10 +142,10 @@ mod tests {
             refuse_unservable: true,
             path: "/cargo/it/oa/itoa",
         };
-        assert_eq!(file.rewrite(&rewriting), None);
+        assert_eq!(file.rewrite(&rewriting), Ok(None));
         let refused: HashSet<String> = ["1.0.18".to_owned()].into();
         rewriting.refused_by_policy = &refused;
-        let body = file.rewrite(&rewriting).expect("filtered");
+        let body = file.rewrite(&rewriting).unwrap().expect("filtered");
         assert_eq!(lines(&body).count(), 36);
     }
 }
