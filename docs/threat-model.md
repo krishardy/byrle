@@ -67,7 +67,7 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 | Input | Bound | Where |
 |---|---|---|
 | A request path | 400 for a `.` or `..` segment, `%2e` in any case, split on `/` or `\`, so the path asked upstream is the path classified | `route::rewritten_by_url_parser` |
-| A metadata document | 64 MiB, applied to the decoded size, so a compression bomb stops at the limit; one over it is forwarded unread and logged `UNINSPECTED` | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
+| A metadata document | 64 MiB, applied to the decoded size, so a compression bomb stops at the limit; one over it, or one that cannot be decoded, is answered 502 and logged `UNINSPECTED`, and forwarded unread in observe mode | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
 | An archive member read into memory | 4 MiB | `analysis::MAX_MEMBER_BYTES` |
 | An artifact spooled for analysis | 1 GiB; one over it is stored as unreadable, which `install_scripts: block` refuses | `BYRLE_MAX_ARTIFACT_BYTES` |
 | An analysis job | 600 s; a job past it stops reading its file on the blocking thread, as a source comparison and a signature check do | `analysis::run::DEADLINE`, `util::blocking::run` |
@@ -133,6 +133,7 @@ Each of these is a way for a package to be installed without byrle deciding on i
 | An artifact with no strong digest: an npm or PyPI file with SHA-1 only, a Go version sum.golang.org holds no record of, a Maven file with no sidecar | forwarded unverified and unanalysed, as `no_strong_digest` weighs 0 by default | `signal_weights: { no_strong_digest: 100 }` refuses it; each is logged at WARN |
 | A dropped attestation in a line with few attested versions before it | weighs under `risk_threshold` and is served: axios 0.30.4, of 2026-03-31, scores 50, and eslint-config-prettier's four of 2025-07-18, 50 to 62. Each was refused before the score | `signal_weights: { provenance_dropped: 100 }` refuses every drop alone, as before |
 | A weight lowered, or `risk_threshold` raised, in the policy | what it weighed under is served | `byrle policy diff` reports it as a loosening |
+| A metadata document over `BYRLE_MAX_METADATA_BYTES`, or undecodable, in observe mode | forwarded with the artifact URLs the upstream wrote: pnpm, yarn, bun and pip then fetch those artifacts from the origin. npm's default `replace-registry-host` sends its fetch to the proxy | logged `UNINSPECTED` and counted in `/-/byrle/health`; enforce mode answers 502 |
 | `BYRLE_MODE=observe` | what the policy refuses is served and logged | a startup warning and `byrle doctor`; never serves what cannot be assessed |
 | Break-glass installs | an install pointed at the registry while the proxy is down | [break-glass](break-glass.md); a lockfile the bypass changed must not be committed |
 | pnpm's lockfile | records no artifact URL, so it cannot evidence that the proxy was used | none in the lockfile |

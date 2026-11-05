@@ -269,8 +269,8 @@ A block starts no scan, source comparison or detector run (`Deciding::blocks`).
 
 | ID | Step | Code | Notes |
 |---|---|---|---|
-| D1 | Buffer | `buffer_to_limit` | over `BYRLE_MAX_METADATA_BYTES`: forwarded unread, no audit line |
-| D2 | Decode and read | `http::decode_for_parsing`, the row's `read` | undecodable or unread: forwarded unchanged |
+| D1 | Buffer | `buffer_to_limit`, `unread_document` | over `BYRLE_MAX_METADATA_BYTES`: 502, and forwarded unread in observe mode; no audit line |
+| D2 | Decode and read | `http::decode_for_parsing`, `unread_document`, the row's `read` | undecodable: 502, and forwarded unchanged in observe mode; not read by the row: forwarded unchanged |
 | D3 | Dates, when a cooldown is in use | `dated_versions` | |
 | D4 | Intel | `intel_for` | store error: 503; a gap: 503 for npm, filtered without intel for PyPI, cargo, Go and Maven (`UncoveredMetadata`) |
 | D5 | Each version through S1 to S4 | `policy_refused_versions` | metadata facts and advisory signals only; observe mode removes none |
@@ -316,6 +316,6 @@ Forwarded with no policy decision:
 | F1 | Any method to a metadata or `Other` path; a HEAD but a Maven artifact's; an artifact or manifest asked with another method in observe mode | `Exchange::artifact_fetch` |
 | F2 | A listed `Other` shape: npm `/-/` endpoints, PyPI `/simple/` and `.metadata`, Go `.info` and checksum database, Maven sidecars and `.asc` | each `classify_path` |
 | F3 | An unrecognised path in observe mode | `unrecognised` |
-| F4 | A document over the size limit, undecodable, or not read (D1, D2, R9) | `forward_document`, `filtered_document`, `negotiate` |
+| F4 | A document over the size limit or undecodable, in observe mode, or not read (D1, D2, R9) | `forward_document`, `filtered_document`, `negotiate` |
 | F5 | A non-2xx or 304 answer | `Exchange::respond`, `forward_artifact` |
 | F6 | No strong digest, while `no_strong_digest` weighs 0 by default; a manifest with no claim | `Deciding::answer`, `unclaimed` |

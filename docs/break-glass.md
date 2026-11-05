@@ -65,6 +65,10 @@ Each pinned audit line names the digest of the policy it was decided under. To r
 log that spans a reload, pass both files: `byrle audit verify <log> --policy old.yaml
 --policy new.yaml`.
 
+A metadata document over `BYRLE_MAX_METADATA_BYTES`, 64 MiB by default, is answered 502
+and logged `UNINSPECTED: metadata document not read, refused`. Raise the variable and
+restart the proxy.
+
 `BYRLE_MODE=observe` serves everything the policy refuses, for the whole proxy. It is
 read at startup, so switching to it needs a restart. It never serves what the proxy cannot
 assess: see [request-flow](request-flow.md).

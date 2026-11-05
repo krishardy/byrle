@@ -1143,6 +1143,26 @@ enum DocumentStep {
     },
 }
 
+/// The 502 for the metadata document at `path`, which the proxy could not read because of
+/// `why`. `None` in observe mode, where it is forwarded with the artifact URLs the upstream
+/// wrote. Logged as UNINSPECTED either way.
+fn unread_document(proxy: &Proxy, path: &str, why: &str) -> Option<Response> {
+    proxy.uninspected.fetch_add(1, Ordering::Relaxed);
+    let url_path = crate::http::url_path(path);
+    if proxy.config.mode == Mode::Observe {
+        warn!(url.path = %url_path, url.query = crate::http::url_query(path), byrle.reason = %why, "UNINSPECTED: metadata document not read, forwarded in observe mode");
+        return None;
+    }
+    warn!(url.path = %url_path, url.query = crate::http::url_query(path), byrle.reason = %why, "UNINSPECTED: metadata document not read, refused");
+    Some(
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("byrle: the upstream's document at {url_path} was not read, as {why}\n"),
+        )
+            .into_response(),
+    )
+}
+
 /// Decode, read, filter by policy and rewrite a metadata document. Its refusals are
 /// written to the audit log for `account` when `audited`, and not for a sidecar's document.
 #[allow(clippy::too_many_arguments)]
@@ -1161,11 +1181,12 @@ async fn filtered_document(
     {
         Ok(decoded) => decoded,
         Err(e) => {
-            proxy.uninspected.fetch_add(1, Ordering::Relaxed);
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: metadata body could not be decoded");
-            return DocumentStep::Forward {
-                body: None,
-                refused: Refused::default(),
+            return match unread_document(proxy, path, &format!("it could not be decoded: {e}")) {
+                Some(refused) => DocumentStep::Answer(refused),
+                None => DocumentStep::Forward {
+                    body: None,
+                    refused: Refused::default(),
+                },
             };
         }
     };
@@ -3900,7 +3921,7 @@ impl Exchange<'_> {
     }
 
     /// Read a metadata document, filter it by policy and rewrite it. One over
-    /// `max_metadata_bytes` is forwarded as it came.
+    /// `max_metadata_bytes` is refused, or forwarded as it came in observe mode.
     async fn forward_document(&self, document: DocumentKind, upstream: Upstream) -> Response {
         let Upstream {
             status,
@@ -3915,12 +3936,13 @@ impl Exchange<'_> {
         let body = match buffer_to_limit(body, limit).await {
             Buffered::Complete(body) => body,
             Buffered::Oversized { prefix, rest } => {
-                self.proxy.uninspected.fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
-                    byrle.metadata.limit = limit,
-                    "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
+                let why = format!(
+                    "it is over {limit} bytes, the limit {} sets",
+                    crate::env::MAX_METADATA_BYTES
                 );
+                if let Some(refused) = unread_document(self.proxy, &self.path, &why) {
+                    return refused;
+                }
                 self.log_proxied(status, length.unwrap_or(0));
                 let spliced = stream::iter(std::iter::once(Ok(prefix))).chain(rest);
                 return (forward_status, headers, Body::from_stream(spliced)).into_response();
@@ -5173,10 +5195,10 @@ mod tests {
             "version":"1.0.0","dist":{
             "tarball":"https://elsewhere.example/widget-1.0.0.tgz","integrity":"sha512-AAAA"}}}}"#;
 
-    /// A body past the limit is forwarded whole rather than truncated or refused. The
-    /// prefix already read has to be spliced back in front of the rest of the stream.
+    /// A body past the limit is refused. In observe mode it is forwarded whole, the prefix
+    /// already read spliced back in front of the rest of the stream.
     #[tokio::test]
-    async fn an_oversized_packument_is_forwarded_intact_without_being_parsed() {
+    async fn an_oversized_packument_is_refused_or_forwarded_intact_when_observing() {
         let body = fixture("lodash-4.17.21.abbrev.json");
         let (upstream, _) = upstream_serving(
             StatusCode::OK,
@@ -5189,7 +5211,20 @@ mod tests {
             .with_upstream(Ecosystem::Npm, upstream)
             .with_max_metadata_bytes(16);
         let base = serve(proxy.clone().router()).await;
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
+        assert_eq!(response.status(), 502);
+        let said = response.text().await.unwrap();
+        assert!(
+            said.contains(&format!(
+                "over 16 bytes, the limit {}",
+                crate::env::MAX_METADATA_BYTES
+            )),
+            "{said}"
+        );
+        assert_eq!(proxy.health().documents_uninspected, 1);
 
+        let proxy = proxy.with_mode(Mode::Observe);
+        let base = serve(proxy.clone().router()).await;
         let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), 200);
         assert_eq!(
@@ -5197,7 +5232,7 @@ mod tests {
             body.as_slice(),
             "the whole body has to arrive, including the prefix already buffered"
         );
-        assert_eq!(proxy.health().documents_uninspected, 1);
+        assert_eq!(proxy.health().documents_uninspected, 2);
     }
 
     /// Decision #4's pinned half, end to end. `npm ci` fetches an artifact by name
@@ -7042,10 +7077,10 @@ mod tests {
         ));
     }
 
-    /// A 200 carrying something unreadable, or in an encoding this cannot decode, is
-    /// forwarded rather than turned into a 502: it is our gap, not an upstream outage.
+    /// A 200 the adapter does not read is forwarded as it came. One in an encoding this
+    /// cannot decode is refused, and forwarded in observe mode.
     #[tokio::test]
-    async fn a_document_the_proxy_cannot_read_is_forwarded_as_it_came() {
+    async fn a_document_the_proxy_cannot_decode_is_refused_unless_observing() {
         let proxy = offline(None, None);
         let junk = resolve(
             &proxy,
@@ -7064,18 +7099,30 @@ mod tests {
             &Method::GET,
             &client_headers("gzip"),
         );
-        let brotli = filtered_document(
-            &proxy,
-            DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
-            &Bytes::from_static(b"\x1b[brotli bytes]"),
-            Some("br"),
-            &negotiation,
-            "/npm/lodash",
-            None,
-            true,
-        )
-        .await;
-        assert!(matches!(brotli, DocumentStep::Forward { body: None, .. }));
+        let observing = proxy.clone().with_mode(Mode::Observe);
+        let mut steps = Vec::new();
+        for proxy in [&proxy, &observing] {
+            let step = filtered_document(
+                proxy,
+                DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
+                &Bytes::from_static(b"\x1b[brotli bytes]"),
+                Some("br"),
+                &negotiation,
+                "/npm/lodash",
+                None,
+                true,
+            )
+            .await;
+            steps.push(step);
+        }
+        let [DocumentStep::Answer(refused), observed] = <[_; 2]>::try_from(steps).ok().unwrap()
+        else {
+            panic!("an undecodable document is refused");
+        };
+        let (status, said) = read(refused).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(said.contains("could not be decoded"), "{said}");
+        assert!(matches!(observed, DocumentStep::Forward { body: None, .. }));
     }
 
     /// A rewritten body is this proxy's, so its length, encoding and entity tag describe
