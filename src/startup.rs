@@ -121,6 +121,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .map_err(|e| StartupError::Unusable(format!("origin configuration: {e}")))?
         .with_max_concurrent_documents(max_concurrent)
         .with_max_traffic_clients(environment.max_traffic_clients()?)
+        .with_watch_max_versions(environment.watch_max_versions()?)
         .with_policy(policy)
         .with_audit_log(audit)
         .with_usage(usage)
@@ -1366,6 +1367,7 @@ mod tests {
             (vec![(env::SPOOL_DIR, &spool)], env::SOURCE_ARCHIVES),
             (vec![(env::SPOOL_DIR, &spool)], env::DETECTORS),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_TRAFFIC_CLIENTS),
+            (vec![(env::SPOOL_DIR, &spool)], env::WATCH_MAX_VERSIONS),
             (vec![(env::SPOOL_DIR, &spool)], env::WATCH_INTERVAL),
         ];
         if cfg!(debug_assertions) {

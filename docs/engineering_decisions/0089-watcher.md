@@ -22,7 +22,8 @@ which are thousands of versions an hour, most never installed here.
 | read | one metadata request per held package, through a metadata slot, so it never decodes more at once than client traffic may |
 | new versions | the versions the fresh document lists and the held copy did not. The first pass does not analyse a package's history |
 | refresh | the held copy is replaced, keeping the package's place in the eviction order. The watcher's reads never keep a package held; only client traffic does |
-| analyse | each new version's preferred file, the one a resolver takes first, goes through the same path as a client's request: the upstream it would be fetched from, its publish times, and `analysed`, which starts the job |
+| limit | the `BYRLE_WATCH_MAX_VERSIONS` highest new versions of the package in its ecosystem's version order, 4 by default. The others are counted in the pass's `byrle.watch.left` and analysed when a client asks |
+| analyse | each one's preferred file, the one a resolver takes first, goes through the same path as a client's request: the upstream it would be fetched from, its publish times, and `analysed`, which starts the job. The pass waits for that analysis to end before the next |
 
 A version starts nothing when its file is on an origin the proxy does not serve, when it
 publishes no strong digest, or when its bytes are already analysed. The watcher is off when
@@ -31,7 +32,11 @@ there is no analyser, and when `BYRLE_WATCH_INTERVAL` is 0.
 ## Cost
 
 One metadata request per held package per interval, 900 seconds by default, plus one
-artifact download for each new version. A proxy holding 500 packages makes about one
+artifact download for each new version, at most `BYRLE_WATCH_MAX_VERSIONS` per package.
+The watcher holds at most one of the `BYRLE_MAX_CONCURRENT_ANALYSES` slots. Before
+2026-11-05 it started every new version's analysis without waiting, and each queued for a
+slot ahead of clients' requests, the wait not counted by the deadline: 1,000 versions
+published between passes held clients at 503 until they were done. A proxy holding 500 packages makes about one
 request every 2 seconds. A pass runs one package at a time, and a pass that outlasts the
 interval delays the next rather than overlapping it.
 

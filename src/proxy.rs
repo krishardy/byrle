@@ -197,6 +197,8 @@ struct Config {
     mode: Mode,
     /// Established versions a version's provenance identity is compared with.
     provenance_history: usize,
+    /// See [`crate::env::WATCH_MAX_VERSIONS`].
+    watch_max_versions: usize,
     /// Seconds a client is told to wait while a file's claim is checked.
     claim_retry_after: u64,
     /// Origins the operator added, kept so a later upstream change can rebuild `origins`.
@@ -267,6 +269,7 @@ impl Proxy {
                 refuse_unservable: true,
                 mode: Mode::Enforce,
                 provenance_history: attestation::DEFAULT_HISTORY,
+                watch_max_versions: crate::env::DEFAULT_WATCH_MAX_VERSIONS,
                 claim_retry_after: crate::env::DEFAULT_CLAIM_RETRY_AFTER,
                 #[cfg(debug_assertions)]
                 defer_test: None,
@@ -355,6 +358,11 @@ impl Proxy {
 
     pub fn with_provenance_history(mut self, history: usize) -> Self {
         self.config_mut().provenance_history = history;
+        self
+    }
+
+    pub fn with_watch_max_versions(mut self, limit: usize) -> Self {
+        self.config_mut().watch_max_versions = limit.max(1);
         self
     }
 
@@ -4329,6 +4337,8 @@ pub struct Watched {
     pub new_versions: usize,
     /// Analyses started for those versions' preferred files.
     pub started: usize,
+    /// New versions past [`crate::env::WATCH_MAX_VERSIONS`] for their package, not analysed.
+    pub left: usize,
 }
 
 impl Proxy {
@@ -4360,12 +4370,15 @@ impl Proxy {
                 .expect("record store lock")
                 .refresh(at, metadata);
             watched.new_versions += new.len();
-            let files = new
-                .iter()
+            let (newest, left) = highest(at, &new, self.config.watch_max_versions);
+            watched.left += left;
+            let files = newest
+                .into_iter()
                 .filter_map(|r| r.artifact().map(|file| (r, file)));
             for (record, file) in files {
-                if self.watch_version(at, record, file).await {
+                if let Some(analysis) = self.watch_version(at, record, file).await {
                     watched.started += 1;
+                    let _ = analysis.await;
                 }
             }
         }
@@ -4373,25 +4386,22 @@ impl Proxy {
             byrle.watch.packages = watched.packages,
             byrle.watch.new_versions = watched.new_versions,
             byrle.watch.started = watched.started,
+            byrle.watch.left = watched.left,
             "watcher pass"
         );
         watched
     }
 
     /// Start analysing `record`'s preferred file, `artifact`, as a client's request would.
-    /// Returns whether an analysis started: not for a file on an origin the proxy does not
-    /// serve, with no strong digest, or already analysed.
+    /// Returns the analysis started: none for a file on an origin the proxy does not serve,
+    /// with no strong digest, or already analysed.
     async fn watch_version(
         &self,
         at: Repository,
         record: &PackageRecord,
         artifact: &crate::record::Artifact,
-    ) -> bool {
-        let Some(path) =
-            crate::origin::reachable_path(&artifact.url, self.config.origins.reachable())
-        else {
-            return false;
-        };
+    ) -> Option<tokio::task::JoinHandle<crate::analysis::run::Timings>> {
+        let path = crate::origin::reachable_path(&artifact.url, self.config.origins.reachable())?;
         let path = path.split('#').next().unwrap_or_default().to_owned();
         let narrowed = record.narrowed_to(&artifact.filename);
         let record = narrowed.as_ref().unwrap_or(record);
@@ -4447,10 +4457,24 @@ impl Proxy {
         }
         let (AnalysisState::Pending(job), Some(analyser)) = (analysed.state, &self.config.analyser)
         else {
-            return false;
+            return None;
         };
-        analyser.start(job).is_some()
+        analyser.start(job)
     }
+}
+
+/// The `limit` highest of `records` in `at`'s version order, and how many were left out.
+/// A version the order does not read sorts lowest.
+fn highest(
+    at: Repository,
+    records: &[PackageRecord],
+    limit: usize,
+) -> (Vec<&PackageRecord>, usize) {
+    let order = at.registry().versions;
+    let mut sorted: Vec<&PackageRecord> = records.iter().collect();
+    sorted.sort_by_cached_key(|record| order.parse(record.package.version()));
+    let left = sorted.len().saturating_sub(limit);
+    (sorted.split_off(left), left)
 }
 
 /// What a download waits on: the artifact's analysis, then the detectors named.
@@ -12504,6 +12528,58 @@ mod tests {
         (proxy, analyser)
     }
 
+    /// A pass analyses the highest new versions of a package, up to its limit, one at a time:
+    /// each is analysed when the pass returns. `highest` orders by version, not by text.
+    #[tokio::test]
+    async fn the_watcher_analyses_the_highest_new_versions_one_at_a_time() {
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let (proxy, analyser) = watching("watch-highest", published.clone()).await;
+        let proxy = proxy.with_watch_max_versions(1);
+        let made = |version: &str| {
+            crate::util::test_support::tarball(&[(
+                "package/package.json",
+                format!(r#"{{"name":"widget","version":"{version}"}}"#).as_bytes(),
+            )])
+        };
+        let (nine, ten) = (made("9.0.0"), made("10.0.0"));
+        {
+            let mut published = published.lock().unwrap();
+            published.push(("9.0.0", Published::Served(nine.clone())));
+            published.push(("10.0.0", Published::Served(ten.clone())));
+        }
+        let watched = proxy.watch().await;
+        assert_eq!(
+            (watched.new_versions, watched.started, watched.left),
+            (2, 1, 1)
+        );
+        let known = |bytes: &[u8]| {
+            let digest = Sri::parse(&sri_of(bytes)).expect("an SRI");
+            let analyser = analyser.clone();
+            async move { matches!(analyser.known(&digest).await, Known::Analysed(_)) }
+        };
+        assert!(
+            known(&ten).await,
+            "10.0.0, the highest, analysed before the pass returned"
+        );
+        assert!(!known(&nine).await, "9.0.0 is left for a client's request");
+        let packument = br#"{"name":"widget","versions":{
+            "2.0.0":{"version":"2.0.0","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-2.0.0.tgz"}},
+            "x":{"version":"x","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-x.tgz"}},
+            "10.0.0":{"version":"10.0.0","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-10.0.0.tgz"}}
+        }}"#;
+        let records = crate::ecosystem::npm::normalize_packument(
+            packument,
+            crate::record::DocumentDetail::Abbreviated,
+        )
+        .expect("normalises")
+        .records;
+        assert_eq!(records.len(), 3);
+        let npm = Repository::of(Ecosystem::Npm);
+        let (kept, left) = highest(npm, &records, 2);
+        let kept: Vec<&str> = kept.iter().map(|r| r.package.version()).collect();
+        assert_eq!((kept, left), (vec!["2.0.0", "10.0.0"], 1));
+    }
+
     /// A version published after the proxy read the package is analysed by the next pass.
     /// A held version, analysed bytes, an origin not served and no digest start nothing.
     #[tokio::test]
@@ -12522,7 +12598,8 @@ mod tests {
             Watched {
                 packages: 1,
                 new_versions: 1,
-                started: 1
+                started: 1,
+                left: 0
             },
             "1.0.0 was held, so only 2.0.0 is new, and `gone` is not read"
         );
@@ -12555,7 +12632,8 @@ mod tests {
             Watched {
                 packages: 1,
                 new_versions: 3,
-                started: 0
+                started: 0,
+                left: 0
             },
             "3.0.0's bytes are 2.0.0's, already analysed; 4.0.0 is on an origin the proxy does \
              not serve; 5.0.0 publishes no digest"

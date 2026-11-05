@@ -109,6 +109,7 @@ pub const DEFAULT_MAX_TRAFFIC_CLIENTS: usize = 256;
 
 /// Default seconds between the watcher's passes over the packages the proxy has served.
 pub const DEFAULT_WATCH_INTERVAL_SECONDS: u64 = 900;
+pub const DEFAULT_WATCH_MAX_VERSIONS: usize = 4;
 pub const DEFAULT_ALLOCATOR_PURGE_DELAY_MS: usize = 0;
 
 /// Default ceiling on one artifact written to the spool.
@@ -535,6 +536,15 @@ pub const WATCH_INTERVAL: Var = runtime(
     ],
 )
 .with_default(Default::Number(DEFAULT_WATCH_INTERVAL_SECONDS));
+pub const WATCH_MAX_VERSIONS: Var = runtime(
+    "BYRLE_WATCH_MAX_VERSIONS",
+    "",
+    &[
+        "new versions of one package the watcher analyses in one pass, the highest",
+        "in version order; a client's request analyses any other",
+    ],
+)
+.with_default(Default::Number(DEFAULT_WATCH_MAX_VERSIONS as u64));
 pub const ALLOCATOR_PURGE_DELAY_MS: Var = runtime(
     "BYRLE_ALLOCATOR_PURGE_DELAY_MS",
     "",
@@ -799,7 +809,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 98] = [
+pub const ALL: [Var; 99] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -854,6 +864,7 @@ pub const ALL: [Var; 98] = [
     MAX_CONCURRENT_ANALYSES,
     MAX_TRAFFIC_CLIENTS,
     WATCH_INTERVAL,
+    WATCH_MAX_VERSIONS,
     ALLOCATOR_PURGE_DELAY_MS,
     SOURCE_ARCHIVES,
     DETECTORS,
@@ -1404,6 +1415,11 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.count(MAX_CONCURRENT_ANALYSES, DEFAULT_MAX_CONCURRENT_ANALYSES)
     }
 
+    /// At least one: a watcher analysing none would be off, which an interval of 0 says.
+    pub fn watch_max_versions(&self) -> Result<usize, EnvError> {
+        self.above_zero(WATCH_MAX_VERSIONS, DEFAULT_WATCH_MAX_VERSIONS)
+    }
+
     /// [`crate::spool::default_dir`] when unset.
     pub fn spool_dir(&self) -> Result<PathBuf, EnvError> {
         Ok(self
@@ -1863,6 +1879,10 @@ mod tests {
             DEFAULT_MAX_CONCURRENT_ANALYSES
         );
         assert_eq!(
+            env.watch_max_versions().unwrap(),
+            DEFAULT_WATCH_MAX_VERSIONS
+        );
+        assert_eq!(
             env.watch_interval().unwrap(),
             Some(std::time::Duration::from_secs(
                 DEFAULT_WATCH_INTERVAL_SECONDS
@@ -1962,6 +1982,7 @@ mod tests {
             (SPOOL_DIR, "/var/spool/byrle"),
             (MAX_ARTIFACT_BYTES, "4096"),
             (MAX_CONCURRENT_ANALYSES, "3"),
+            (WATCH_MAX_VERSIONS, "2"),
             (MAX_TRAFFIC_CLIENTS, "12"),
             (PROVENANCE_HISTORY, "9"),
             (DATABASE_URL, "postgres://db"),
@@ -2019,6 +2040,7 @@ mod tests {
         assert_eq!(env.spool_dir().unwrap(), PathBuf::from("/var/spool/byrle"));
         assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
         assert_eq!(env.max_concurrent_analyses().unwrap(), 3);
+        assert_eq!(env.watch_max_versions().unwrap(), 2);
         assert_eq!(env.max_traffic_clients().unwrap(), 12);
         assert_eq!(env.provenance_history().unwrap(), 9);
         assert_eq!(
