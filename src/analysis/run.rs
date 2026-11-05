@@ -475,8 +475,9 @@ fn log_attested(attestation: &Attestation, attested: &Attested, fetch_ms: u64, v
 /// What `reader` reads from `file`, the artifact fetched from `url`. `None` when it cannot
 /// be read.
 async fn read(url: &str, file: std::io::Result<std::fs::File>, reader: Reader) -> Option<Scripts> {
-    let read = tokio::task::spawn_blocking(move || {
-        Ok(Scripts::of(reader(&mut std::io::BufReader::new(file?))))
+    let read = crate::util::blocking::run(move |stop| {
+        let file = stop.reading(file?);
+        Ok(Scripts::of(reader(&mut std::io::BufReader::new(file))))
     })
     .await
     .map_err(std::io::Error::other)
@@ -776,6 +777,36 @@ pub(crate) mod tests {
             .expect("finishes");
         assert_eq!(analyser.known(&digest).await, Known::Unknown);
         assert_eq!(analyser.in_flight(), 0);
+    }
+
+    /// A reader that reads its file over and over stops once the job is past its deadline,
+    /// rather than holding its blocking thread.
+    #[tokio::test]
+    async fn a_reader_past_its_deadline_stops_reading() {
+        static SAID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
+        let digest = sri_of(&tarball);
+        let url = upstream(200, tarball).await;
+        let analyser = analyser("run-endless", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_deadline(Duration::from_millis(200));
+        let endless = Job {
+            reader: Some(|file| {
+                crate::util::blocking::testing::read_endlessly(file, &SAID);
+                Err(crate::analysis::ReadError::NothingToRead)
+            }),
+            ..job(&digest, &url)
+        };
+        let timings = analyser
+            .start(endless)
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert!(!timings.completed);
+        assert_eq!(
+            crate::util::blocking::testing::stopped(&SAID).await,
+            crate::util::blocking::STOPPED
+        );
+        assert_eq!(analyser.known(&digest).await, Known::Unknown);
     }
 
     /// The attestations document at each path, with its status.

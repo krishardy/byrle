@@ -70,7 +70,7 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 | A metadata document | 64 MiB, applied to the decoded size, so a compression bomb stops at the limit; one over it is forwarded unread and logged `UNINSPECTED` | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
 | An archive member read into memory | 4 MiB | `analysis::MAX_MEMBER_BYTES` |
 | An artifact spooled for analysis | 1 GiB; one over it is stored as unreadable, which `install_scripts: block` refuses | `BYRLE_MAX_ARTIFACT_BYTES` |
-| An analysis job | 600 s | `analysis::run::DEADLINE` |
+| An analysis job | 600 s; a job past it stops reading its file on the blocking thread, as a source comparison and a signature check do | `analysis::run::DEADLINE`, `util::blocking::run` |
 | Concurrent work | 8 metadata documents and 8 analyses at once | `BYRLE_MAX_CONCURRENT_METADATA`, `BYRLE_MAX_CONCURRENT_ANALYSES` |
 | A remote `policy diff` | 10,000 package versions sent; one diff at a time, and another sent meanwhile is 429 | `BYRLE_MAX_DIFF_VERSIONS` |
 | An upstream that stops sending | 10 s to connect, 30 s between reads | `http::client_builder` |

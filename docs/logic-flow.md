@@ -284,7 +284,7 @@ Started by A6 and by the watcher (E6), each a `tokio::spawn`, one per digest.
 
 | ID | Job | Code | Backends | Slots |
 |---|---|---|---|---|
-| J1 | Analysis: fetch, spool, digest, install scripts, attestation | `analysis/run.rs` `Analyser::start` | B1c, B3, B12, B11 | `BYRLE_MAX_CONCURRENT_ANALYSES`, default 8; 600 s deadline |
+| J1 | Analysis: fetch, spool, digest, install scripts, attestation | `analysis/run.rs` `Analyser::start` | B1c, B3, B12, B11 | `BYRLE_MAX_CONCURRENT_ANALYSES`, default 8; 600 s deadline, past which the file stops being read (`util/blocking.rs`) |
 | J2 | Claim: Go `h1:`, Maven signature | `analysis/run/claiming.rs` | B1, B2, B7 | shares J1's |
 | J3 | Source comparison | `analysis/run/sourcing.rs` | B4 | 2, unless `BYRLE_SOURCE_ARCHIVES=off` |
 | J4 | Detectors and publisher lookups | `analysis/run/detecting.rs` | B6, B7, B8 | 2 |
