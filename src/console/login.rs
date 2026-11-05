@@ -28,13 +28,17 @@ pub struct Limits {
 /// Passwords hashed at once, each on a blocking thread, off those answering requests.
 const HASHING: usize = 2;
 
-/// Accounts and addresses whose failures are kept; the least recently failed are dropped.
+/// Addresses whose failures are kept; the least recently failed are dropped.
 const TRACKED: usize = 10_000;
+
+/// The buckets account names are counted in, which nothing evicts; names in one share it.
+const ACCOUNT_BUCKETS: u64 = 1 << 16;
 
 /// What failures are counted against.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Key {
-    Account(String),
+    /// The bucket an account's name hashes to, under a key random to this process.
+    Account(u16),
     /// An IPv4 address, or an IPv6 address's /64, which one client usually holds whole.
     Address(IpAddr),
 }
@@ -48,27 +52,57 @@ impl Key {
     }
 }
 
+/// The failures counted: accounts' apart from addresses', so neither drops the other's.
+struct Failures {
+    accounts: std::collections::HashMap<u16, Vec<Instant>>,
+    addresses: Lru<IpAddr, Vec<Instant>>,
+}
+
+impl Failures {
+    fn get(&mut self, key: &Key) -> Option<&Vec<Instant>> {
+        match key {
+            Key::Account(bucket) => self.accounts.get(bucket),
+            Key::Address(address) => self.addresses.get(address),
+        }
+    }
+
+    fn insert(&mut self, key: Key, times: Vec<Instant>) {
+        match key {
+            Key::Account(bucket) => {
+                self.accounts.insert(bucket, times);
+            }
+            Key::Address(address) => self.addresses.insert(address, times),
+        }
+    }
+}
+
 /// Failed logins in the last window, by account and by address, in this process.
 pub struct Limiter {
     limits: Limits,
-    failures: Mutex<Lru<Key, Vec<Instant>>>,
+    /// Hashes an account's name to its bucket.
+    buckets: std::collections::hash_map::RandomState,
+    failures: Mutex<Failures>,
 }
 
 impl Limiter {
     pub fn new(limits: Limits) -> Self {
+        Self::tracking(limits, TRACKED)
+    }
+
+    /// The same, keeping the failures of at most `addresses` addresses.
+    fn tracking(limits: Limits, addresses: usize) -> Self {
         Self {
             limits,
-            failures: Mutex::new(Lru::new(TRACKED)),
+            buckets: std::collections::hash_map::RandomState::new(),
+            failures: Mutex::new(Failures {
+                accounts: std::collections::HashMap::new(),
+                addresses: Lru::new(addresses),
+            }),
         }
     }
 
     /// The failures against `key` within the window of `now`.
-    fn recent(
-        &self,
-        failures: &mut Lru<Key, Vec<Instant>>,
-        key: &Key,
-        now: Instant,
-    ) -> Vec<Instant> {
+    fn recent(&self, failures: &mut Failures, key: &Key, now: Instant) -> Vec<Instant> {
         failures
             .get(key)
             .map(|times| {
@@ -81,8 +115,14 @@ impl Limiter {
             .unwrap_or_default()
     }
 
+    fn account(&self, account: &str) -> Key {
+        use std::hash::BuildHasher;
+        let bucket = self.buckets.hash_one(account) % ACCOUNT_BUCKETS;
+        Key::Account(u16::try_from(bucket).expect("a bucket is under 2^16"))
+    }
+
     fn keys(&self, account: &str, address: Option<IpAddr>) -> Vec<(Key, usize)> {
-        std::iter::once((Key::Account(account.to_owned()), self.limits.per_account))
+        std::iter::once((self.account(account), self.limits.per_account))
             .chain(address.map(|address| (Key::address(address), self.limits.per_address)))
             .collect()
     }
@@ -96,18 +136,13 @@ impl Limiter {
     }
 
     /// Whether each of `keys` is under its limit at `now`.
-    fn under(
-        &self,
-        failures: &mut Lru<Key, Vec<Instant>>,
-        keys: &[(Key, usize)],
-        now: Instant,
-    ) -> bool {
+    fn under(&self, failures: &mut Failures, keys: &[(Key, usize)], now: Instant) -> bool {
         keys.iter()
             .all(|(key, limit)| self.recent(failures, key, now).len() < *limit)
     }
 
     /// Count a failure at `now` for each of `keys`.
-    fn count(&self, failures: &mut Lru<Key, Vec<Instant>>, keys: Vec<(Key, usize)>, now: Instant) {
+    fn count(&self, failures: &mut Failures, keys: Vec<(Key, usize)>, now: Instant) {
         for (key, _) in keys {
             let mut times = self.recent(failures, &key, now);
             times.push(now);
@@ -115,7 +150,7 @@ impl Limiter {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Lru<Key, Vec<Instant>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Failures> {
         self.failures.lock().expect("limiter lock")
     }
 
@@ -397,6 +432,27 @@ pub(crate) mod tests {
         );
         limiter.forgive("carol", None, start);
         assert!(limiter.admits("alice", None, start + limits().window));
+    }
+
+    /// An account's count outlasts failures from more addresses, under more names, than the
+    /// addresses kept: no failure evicts it.
+    #[test]
+    fn an_account_s_count_is_kept_through_a_flood_of_other_failures() {
+        let kept = 100;
+        let limiter = Limiter::tracking(limits(), kept);
+        let now = Instant::now();
+        for _ in 0..limits().per_account {
+            assert!(limiter.admits("alice", None, now));
+        }
+        for n in 0..2 * kept as u64 {
+            let from: IpAddr = std::net::Ipv6Addr::from(u128::from(n) << 64).into();
+            limiter.admits(&format!("user{n}"), Some(from), now);
+        }
+        assert!(
+            !limiter.admits("alice", None, now),
+            "alice is still limited"
+        );
+        assert!(limiter.lock().accounts.len() <= ACCOUNT_BUCKETS as usize);
     }
 
     /// An address is limited across accounts; an IPv6 address by its /64.

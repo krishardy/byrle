@@ -41,6 +41,14 @@ elsewhere; the salt comes from `getrandom` 0.3, which issues proxy tokens too.
 | `BYRLE_LOGIN_FAILURES_PER_ACCOUNT` | 5 | 1 or more |
 | `BYRLE_LOGIN_FAILURES_PER_ADDRESS` | 20 | 1 or more |
 
+Failures are counted in this process. An account's are counted in one of 65,536 buckets,
+chosen by hashing its name under a key random to the process, which nothing evicts: names
+sharing a bucket share its count. Addresses' are kept apart, for the 10,000 addresses that
+failed most recently. Before 2026-11-05 both shared those 10,000 entries, and failures from
+500 IPv6 /64s, 20 each, evicted an account's count. To push one account's bucket over its
+limit, an attacker who cannot see the key must land 5 failures in it within the window:
+about 327,000 failures, spread over 16,000 addresses at 20 each.
+
 `byrle account password` reads the first three, so the command line and the console make
 hashes alike. A value outside its range stops the proxy at startup, and the command with
 exit 2. Changing the Argon2 cost leaves earlier hashes working; a password is rehashed only
