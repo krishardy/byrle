@@ -349,7 +349,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_detector_runs_only_on_the_ecosystems_it_reads() {
         use crate::ecosystem::cargo::trustpub::TrustPub;
-        let trustpub = TrustPub::new(reqwest::Client::new(), "http://127.0.0.1:9", Duration::ZERO);
+        let trustpub = TrustPub::new(
+            crate::service::Connection::default(),
+            "http://127.0.0.1:9",
+            Duration::ZERO,
+        );
         let analyser = made("detect-reads", 1 << 20, Arc::new(InProcess::new(8)))
             .with_detectors(vec![Arc::new(trustpub)]);
         assert_eq!(
@@ -374,7 +378,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_download_awaits_only_an_awaited_detector_with_no_result() {
         use crate::ecosystem::cargo::trustpub::TrustPub;
-        let trustpub = TrustPub::new(reqwest::Client::new(), "http://127.0.0.1:9", Duration::ZERO);
+        let trustpub = TrustPub::new(
+            crate::service::Connection::default(),
+            "http://127.0.0.1:9",
+            Duration::ZERO,
+        );
         let analyser = made("detect-awaited", 1 << 20, Arc::new(InProcess::new(8)))
             .with_detectors(vec![Arc::new(trustpub), Fake::firing(&[])]);
         let cargo = Target {

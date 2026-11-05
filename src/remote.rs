@@ -108,10 +108,16 @@ impl Sent {
     }
 }
 
+/// The headers a deployment is sent, besides the token: a `POST`'s type.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the deployment's API",
+    headers: &["content-type"],
+};
+
 /// A deployment the commands ask, and the client that sends its token.
 pub struct Remote {
     base: String,
-    http: reqwest::Client,
+    http: crate::service::Service,
     /// The local inputs set, which a remote command does not read.
     ignored: Vec<&'static str>,
 }
@@ -142,7 +148,10 @@ impl Remote {
         };
         Ok(Some(Self {
             base: url.trim_end_matches('/').to_owned(),
-            http: crate::http::token_client(Some(token))?,
+            http: crate::service::Service::new(
+                SERVICE,
+                &crate::http::token_connection(Some(token))?,
+            ),
             ignored: [POLICY, DATABASE_URL]
                 .into_iter()
                 .filter(|var| environment.is_set(*var))
@@ -175,7 +184,7 @@ impl Remote {
     }
 
     /// The answer to `request`, sent to `url`, with a note for each local input not read.
-    async fn printed(&self, command: &str, url: &str, request: reqwest::RequestBuilder) -> Printed {
+    async fn printed(&self, command: &str, url: &str, request: crate::service::Asking) -> Printed {
         let mut printed = match request.send().await {
             Err(e) => Printed::stopped(command, &format!("{url} did not answer: {e}")),
             Ok(response) => {

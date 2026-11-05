@@ -64,36 +64,20 @@ fn redacted(url: &str) -> String {
     parsed.to_string()
 }
 
-/// Every client this build fetches with: the proxy's upstream client and the intel
-/// refresh's. `read_timeout` is [`READ_TIMEOUT`] in the binary; a test passes a short one.
-/// There is no total timeout: see [`READ_TIMEOUT`]. HTTP/2's window grows with the link:
-/// at hyper's default, scipy's 35 MB wheel came through a forward proxy at half curl's rate.
-pub fn client_builder(read_timeout: Duration) -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
-        .user_agent(concat!("byrle/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(read_timeout)
-        .http2_adaptive_window(true)
-}
-
-/// A client sending `token` on every request, as [`crate::account::gate::TOKEN_HEADER`].
+/// A connection sending `token` on every request, as [`crate::account::gate::TOKEN_HEADER`].
 /// Errors when the token is no value a header can carry.
-pub fn token_client(token: Option<String>) -> Result<reqwest::Client, String> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(token) = token {
-        let mut value = reqwest::header::HeaderValue::from_str(&token).map_err(|_| {
-            format!(
-                "{} is not a value an HTTP header can carry",
-                crate::env::TOKEN
-            )
-        })?;
-        value.set_sensitive(true);
-        headers.insert(crate::account::gate::TOKEN_HEADER, value);
-    }
-    Ok(client_builder(READ_TIMEOUT)
-        .default_headers(headers)
-        .build()
-        .expect("a client with no TLS settings of its own builds"))
+pub fn token_connection(token: Option<String>) -> Result<crate::service::Connection, String> {
+    let connection = crate::service::Connection::default();
+    let Some(token) = token else {
+        return Ok(connection);
+    };
+    let value = reqwest::header::HeaderValue::from_str(&token).map_err(|_| {
+        format!(
+            "{} is not a value an HTTP header can carry",
+            crate::env::TOKEN
+        )
+    })?;
+    Ok(connection.carrying(crate::account::gate::TOKEN_HEADER, value))
 }
 
 /// Whether `url` is `https`, or `http` to loopback, where nothing between can read it.

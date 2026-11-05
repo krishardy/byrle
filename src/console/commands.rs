@@ -438,7 +438,7 @@ pub(crate) mod tests {
     /// A proxy with a policy, asking an npm registry that does not answer.
     fn policed() -> Proxy {
         let policy = crate::policy::Policy::parse("version: 1\ncooldown_days: 7\n").unwrap();
-        Proxy::new(reqwest::Client::new())
+        Proxy::new(crate::service::Connection::default())
             .with_upstream(
                 crate::identity::Ecosystem::Npm,
                 crate::util::test_support::NO_UPSTREAM,
@@ -817,7 +817,7 @@ pub(crate) mod tests {
             "{garbled:?}"
         );
 
-        let unpoliced = console_beside(Proxy::new(reqwest::Client::new())).await;
+        let unpoliced = console_beside(Proxy::new(crate::service::Connection::default())).await;
         let none = asking(&unpoliced, "carol")
             .post(
                 "policy diff",
@@ -950,7 +950,7 @@ pub(crate) mod tests {
         );
         let twice = exported(&alone, &parts("/x?since=2026-01-01&since=2026-01-02")).await;
         assert!(matches!(twice, Err(Refused(status, _)) if status == 400));
-        let url = console_beside(Proxy::new(reqwest::Client::new())).await;
+        let url = console_beside(Proxy::new(crate::service::Connection::default())).await;
         let printed = asking(&url, "alice")
             .get("explain", crate::console::routes::EXPLAIN_PATH, &[])
             .await;

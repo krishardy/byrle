@@ -119,9 +119,9 @@ pub fn report(
     out
 }
 
-/// The client a refresh fetches every stream with: [`crate::http::client_builder`].
-pub fn http_client(read_timeout: Duration) -> reqwest::Result<reqwest::Client> {
-    crate::http::client_builder(read_timeout).build()
+/// The clients a refresh fetches every stream with, waiting `read_timeout` per read.
+pub fn hosts(read_timeout: Duration) -> super::fetch::Hosts {
+    super::fetch::Hosts::new(&crate::service::Connection::timing_out(read_timeout))
 }
 
 /// Whether `failure` on attempt `attempt`, counted from 1, is followed by another.
@@ -298,8 +298,8 @@ mod tests {
     #[tokio::test]
     async fn a_stalled_body_times_out() {
         let addr = crate::util::test_support::stalling_server().await;
-        let client = http_client(Duration::from_millis(100)).expect("a client");
-        let response = client
+        let response = hosts(Duration::from_millis(100))
+            .bundles
             .get(format!("http://{addr}/all.zip"))
             .send()
             .await

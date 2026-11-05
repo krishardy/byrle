@@ -182,7 +182,10 @@ pub struct Proxy {
 /// What the builders set. Nothing here changes once the proxy is serving.
 #[derive(Clone)]
 struct Config {
-    client: reqwest::Client,
+    /// How each upstream service's client connects.
+    connection: crate::service::Connection,
+    /// The client requests are forwarded with.
+    upstream: crate::service::Service,
     /// Fetches the metadata a client never asked for. See [`lookup_or_fetch`].
     clients: Clients,
     /// Which origins this proxy serves, and which it permits a client to fetch directly.
@@ -230,7 +233,7 @@ struct Config {
 
 impl Proxy {
     /// A proxy for each ecosystem's public registry. `with_upstream` points one elsewhere.
-    pub fn new(client: reqwest::Client) -> Self {
+    pub fn new(connection: crate::service::Connection) -> Self {
         let proxy = Self {
             config: Arc::new(Config {
                 origins: OriginPolicy::new(
@@ -242,11 +245,12 @@ impl Proxy {
                 served_origins: Vec::new(),
                 allowed_direct: Vec::new(),
                 clients: Clients::new(
-                    client.clone(),
+                    connection.clone(),
                     &Upstreams::defaults(),
                     DEFAULT_MAX_METADATA_BYTES,
                 ),
-                client,
+                upstream: crate::service::Service::new(UPSTREAM, &connection),
+                connection,
                 upstreams: Upstreams::defaults(),
                 policy: None,
                 audit: None,
@@ -629,7 +633,7 @@ impl Proxy {
     /// does not matter.
     fn rebuilt(mut self) -> Self {
         let clients = Clients::new(
-            self.config.client.clone(),
+            self.config.connection.clone(),
             &self.config.upstreams,
             self.config.max_metadata_bytes,
         );
@@ -1442,13 +1446,19 @@ fn report_uninspected(
     }
 }
 
-/// The only client headers a registry is sent. Any other stops at the proxy.
-const FORWARDED: [header::HeaderName; 4] = [
-    header::ACCEPT,
-    header::ACCEPT_ENCODING,
-    header::IF_NONE_MATCH,
-    header::IF_MODIFIED_SINCE,
+/// The only client headers a registry is sent, which the negotiation also sets.
+const FORWARDED: [&str; 4] = [
+    "accept",
+    "accept-encoding",
+    "if-none-match",
+    "if-modified-since",
 ];
+
+/// The headers a request is forwarded upstream with: [`FORWARDED`].
+const UPSTREAM: crate::service::Declared = crate::service::Declared {
+    name: "the upstream registries",
+    headers: &FORWARDED,
+};
 
 /// The headers sent upstream: the client's in [`FORWARDED`], less those the negotiation
 /// replaces, with the encoding, `Accept` and `If-None-Match` the negotiation needs.
@@ -1467,7 +1477,7 @@ fn asked_for(mut headers: HeaderMap, artifact: &ArtifactFetch) -> HeaderMap {
 fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -> HeaderMap {
     let mut outbound = HeaderMap::new();
     for (name, value) in client {
-        if !FORWARDED.contains(name) {
+        if !FORWARDED.contains(&name.as_str()) {
             continue;
         }
         if negotiation.read_metadata && name == header::ACCEPT_ENCODING {
@@ -3347,7 +3357,7 @@ async fn sidecar_document(
     path: &str,
 ) -> Option<(Bytes, Option<String>, Option<String>)> {
     let url = upstream_url(proxy, repository, document_path, None);
-    let fetched = match proxy.config.client.get(&url).send().await {
+    let fetched = match proxy.config.upstream.get(&url).send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
             warn!(url.path = %crate::http::url_path(path), http.response.status_code = response.status().as_u16(), "the sidecar's document was refused upstream; the sidecar is forwarded");
@@ -3770,7 +3780,7 @@ impl Exchange<'_> {
         let response = self
             .proxy
             .config
-            .client
+            .upstream
             .request(self.method.clone(), &url)
             .headers(asked_for(
                 upstream_headers(headers, &self.negotiation, &self.path),
@@ -4274,7 +4284,7 @@ async fn dated_by_host(
 /// The `Last-Modified` a HEAD of `url` answers, for the request at `path`.
 /// Returns `None` when the host refuses the HEAD, cannot be asked, or sends no date.
 async fn head_last_modified(proxy: &Proxy, url: &str, path: &str) -> Option<jiff::Timestamp> {
-    let response = match proxy.config.client.head(url).send().await {
+    let response = match proxy.config.upstream.head(url).send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
             warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), http.response.status_code = response.status().as_u16(), "no publish time: the file host refused a HEAD");
@@ -4879,7 +4889,7 @@ mod tests {
     ) -> (String, Recorder) {
         let (upstream, seen) = upstream_serving(status, content_type, content_encoding, body).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
@@ -4895,7 +4905,7 @@ mod tests {
         body: Vec<u8>,
     ) -> (String, Recorder) {
         let (upstream, seen) = upstream_serving(status, content_type, None, body).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream.clone())
             .with_upstream(Ecosystem::PyPI, upstream);
         let base = serve(proxy.router()).await;
@@ -4979,7 +4989,7 @@ mod tests {
     /// ecosystem. Passing npm for every request made a `pypi/...` entry unreachable.
     #[test]
     fn a_refusal_takes_the_status_configured_for_its_own_ecosystem() {
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org")
             .with_refusal_status(
                 crate::refusal::RefusalStatus::parse("default=403,pypi/pip=451,npm/pnpm=404")
@@ -5056,7 +5066,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("429:1:metadata").unwrap()))
                 .router(),
@@ -5089,7 +5099,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("503:none:all").unwrap()))
                 .router(),
@@ -5113,7 +5123,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("503:1:all:0").unwrap()))
                 .router(),
@@ -5168,7 +5178,7 @@ mod tests {
         let (upstream, seen) =
             upstream_revalidating("\"abc\"", fixture("lodash-4.17.21.abbrev.json")).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
@@ -5219,7 +5229,7 @@ mod tests {
             body.clone(),
         )
         .await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_max_metadata_bytes(16);
         let base = serve(proxy.clone().router()).await;
@@ -5259,7 +5269,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
@@ -5344,7 +5354,7 @@ mod tests {
             fixture(packument),
         )
         .await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_intel(intel)
             .with_refuse_unservable(false)
@@ -5393,7 +5403,7 @@ mod tests {
         path: &str,
         accept_encoding: &str,
     ) -> Negotiation {
-        let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
+        let proxy = Proxy::new(crate::service::Connection::default()).with_policy(yaml.map(policy));
         let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
         negotiate(
             &proxy,
@@ -5466,7 +5476,7 @@ mod tests {
         path: &str,
         client: &[(header::HeaderName, &'static str)],
     ) -> HeaderMap {
-        let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
+        let proxy = Proxy::new(crate::service::Connection::default()).with_policy(yaml.map(policy));
         let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
@@ -5687,7 +5697,7 @@ mod tests {
     /// A tag this proxy issued reaches upstream as the upstream's own tag.
     #[test]
     fn a_tag_is_turned_back_only_at_the_address_that_issued_it() {
-        let proxy = Proxy::new(reqwest::Client::new());
+        let proxy = Proxy::new(crate::service::Connection::default());
         let (ecosystem, target) = crate::route::classify("/npm/lodash").expect("a routed path");
         for (issued_at, expected) in [
             ("http://proxy.test/npm", Some("W/\"abc123\"")),
@@ -5725,8 +5735,8 @@ mod tests {
                 "https://registry.example/npm",
             ),
         ] {
-            let proxy =
-                Proxy::new(reqwest::Client::new()).with_public_base(configured.map(str::to_owned));
+            let proxy = Proxy::new(crate::service::Connection::default())
+                .with_public_base(configured.map(str::to_owned));
             let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
             assert_eq!(negotiation.rewrite_base.as_deref(), Some(expected));
         }
@@ -6046,7 +6056,8 @@ mod tests {
     /// A limit of zero would deadlock every metadata request, so it is raised to one.
     #[tokio::test]
     async fn a_limit_of_zero_is_treated_as_one() {
-        let proxy = Proxy::new(reqwest::Client::new()).with_max_concurrent_documents(0);
+        let proxy =
+            Proxy::new(crate::service::Connection::default()).with_max_concurrent_documents(0);
         let slot = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             metadata_slot(&proxy, "/npm/lodash"),
@@ -6057,7 +6068,8 @@ mod tests {
     /// A slot taken at once is not reported; one waited for is.
     #[tokio::test]
     async fn only_a_wait_for_a_metadata_slot_is_logged() {
-        let proxy = Proxy::new(reqwest::Client::new()).with_max_concurrent_documents(1);
+        let proxy =
+            Proxy::new(crate::service::Connection::default()).with_max_concurrent_documents(1);
         let (_guard, buf) = capture(tracing::Level::DEBUG);
         let held = metadata_slot(&proxy, "/npm/first").await;
         assert_eq!(text(&buf), "", "nothing was waited for");
@@ -6123,7 +6135,7 @@ mod tests {
     /// A proxy with no upstream to reach. The origin check is off, so a 403 can only be the
     /// policy's.
     fn offline(intel: Option<Arc<dyn Intel>>, yaml: Option<&str>) -> Proxy {
-        Proxy::new(reqwest::Client::new())
+        Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
             .with_upstream(Ecosystem::PyPI, NO_UPSTREAM)
             .with_upstream(Ecosystem::Cargo, NO_UPSTREAM)
@@ -7268,7 +7280,7 @@ mod tests {
             }
         }));
         let upstream = serve(router).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_refuse_unservable(false)
             .with_policy(Some(policy("version: 1\ncooldown_days: 36500\n")));
@@ -7331,7 +7343,7 @@ mod tests {
             }
         }));
         let upstream = serve(router).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_refuse_unservable(false)
             .with_policy(Some(policy("version: 1\ncooldown_days: 7\n")));
@@ -8117,8 +8129,11 @@ mod tests {
         ] {
             let sidecars = maven_repository(jar.clone(), b"<project/>".to_vec(), true).await;
             let files = maven_repository(served.clone(), b"<project/>".to_vec(), false).await;
-            let client =
-                crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+            let client = crate::ecosystem::maven::Client::new(
+                crate::service::Connection::default(),
+                &sidecars,
+                1 << 20,
+            );
             let analyser = Arc::new(crate::analysis::run::tests::analyser(
                 label,
                 1 << 20,
@@ -8174,8 +8189,11 @@ mod tests {
         ] {
             let sidecars = maven_repository(jar.clone(), b"<project/>".to_vec(), true).await;
             let files = maven_repository(jar.clone(), b"<project/>".to_vec(), false).await;
-            let client =
-                crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+            let client = crate::ecosystem::maven::Client::new(
+                crate::service::Connection::default(),
+                &sidecars,
+                1 << 20,
+            );
             let analyser = Arc::new(crate::analysis::run::tests::analyser(
                 label,
                 1 << 20,
@@ -8238,8 +8256,11 @@ mod tests {
 
         let sidecars = maven_repository(b"jar".to_vec(), pom.clone(), true).await;
         let other = maven_repository(b"jar".to_vec(), b"<project/>".to_vec(), false).await;
-        let client =
-            crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+        let client = crate::ecosystem::maven::Client::new(
+            crate::service::Connection::default(),
+            &sidecars,
+            1 << 20,
+        );
         let changed = serve(
             offline(None, Some(NO_POLICY))
                 .with_upstream(Ecosystem::Maven, &other)
@@ -8660,8 +8681,12 @@ mod tests {
 
     /// An offline proxy whose Go upstream is `upstream`, asking `sumdb` for claims.
     fn go_proxy(upstream: &str, sumdb: crate::ecosystem::go::sumdb::Client) -> Proxy {
-        let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), upstream, 1 << 20)
-            .with_sumdb(sumdb);
+        let go = crate::ecosystem::go::Client::new(
+            crate::service::Connection::default(),
+            upstream,
+            1 << 20,
+        )
+        .with_sumdb(sumdb);
         offline(None, Some(NO_POLICY))
             .with_upstream(Ecosystem::Go, upstream)
             .with_client(Ecosystem::Go, Arc::new(go))
@@ -8680,7 +8705,7 @@ mod tests {
     async fn unreachable_sumdb() -> crate::ecosystem::go::sumdb::Client {
         let closed = crate::util::test_support::closing_server().await;
         crate::ecosystem::go::sumdb::Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{closed}"),
             crate::ecosystem::go::note::SUM_GOLANG_ORG,
         )
@@ -8740,8 +8765,12 @@ mod tests {
         let small = go_proxy(&upstream, quote_sumdb().await)
             .with_max_metadata_bytes(8)
             .with_client(Ecosystem::Go, {
-                let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 8)
-                    .with_sumdb(quote_sumdb().await);
+                let go = crate::ecosystem::go::Client::new(
+                    crate::service::Connection::default(),
+                    &upstream,
+                    8,
+                )
+                .with_sumdb(quote_sumdb().await);
                 Arc::new(go)
             });
         let base = serve(small.router()).await;
@@ -8846,9 +8875,12 @@ mod tests {
             .with_upstream(Ecosystem::Go, &upstream)
             .with_audit_log(Some(log))
             .with_client(Ecosystem::Go, {
-                let go =
-                    crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
-                        .with_sumdb(unreachable_sumdb().await);
+                let go = crate::ecosystem::go::Client::new(
+                    crate::service::Connection::default(),
+                    &upstream,
+                    1 << 20,
+                )
+                .with_sumdb(unreachable_sumdb().await);
                 Arc::new(go)
             });
         let ArtifactStep::Answer(response) = pinned(&proxy, QUOTE_ZIP).await else {
@@ -8980,9 +9012,13 @@ mod tests {
             ),
         );
         let upstream = crate::proxy::testing::serve(router).await;
-        let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
-            .with_sumdb(sumdb)
-            .with_index(&index);
+        let go = crate::ecosystem::go::Client::new(
+            crate::service::Connection::default(),
+            &upstream,
+            1 << 20,
+        )
+        .with_sumdb(sumdb)
+        .with_index(&index);
         let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
             .with_upstream(Ecosystem::Go, &upstream)
             .with_client(Ecosystem::Go, Arc::new(go));
@@ -9026,8 +9062,12 @@ mod tests {
             axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
         );
         let upstream = crate::proxy::testing::serve(router).await;
-        let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
-            .with_sumdb(sumdb_without_quote().await);
+        let go = crate::ecosystem::go::Client::new(
+            crate::service::Connection::default(),
+            &upstream,
+            1 << 20,
+        )
+        .with_sumdb(sumdb_without_quote().await);
         let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
             .with_upstream(Ecosystem::Go, &upstream)
             .with_client(Ecosystem::Go, Arc::new(go));
@@ -9085,8 +9125,12 @@ mod tests {
                     }),
                 );
             let upstream = crate::proxy::testing::serve(router).await;
-            let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
-                .with_sumdb(sumdb_without_quote().await);
+            let go = crate::ecosystem::go::Client::new(
+                crate::service::Connection::default(),
+                &upstream,
+                1 << 20,
+            )
+            .with_sumdb(sumdb_without_quote().await);
             let proxy = offline(
                 None,
                 Some(&format!("version: 1\ncooldown_days: {cooldown}\n")),
@@ -9365,7 +9409,7 @@ mod tests {
     #[tokio::test]
     async fn a_snapshot_is_read_once_for_its_digest() {
         let store = refreshed("s1", "s1");
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
             .with_intel(Some(store.clone()))
             .with_policy(Some(policy("version: 1\n")));
@@ -9384,7 +9428,7 @@ mod tests {
     async fn readiness_depends_on_the_store_only_when_a_policy_is_set() {
         use crate::intel::store::testing::FixedIntel;
         let proxy = |intel: Option<Arc<dyn Intel>>, with_policy: bool| {
-            let proxy = Proxy::new(reqwest::Client::new())
+            let proxy = Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
                 .with_intel(intel);
             if with_policy {
@@ -9478,7 +9522,7 @@ mod tests {
         let addr = crate::util::test_support::closing_server().await;
 
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
                 .router(),
         )
@@ -9499,7 +9543,7 @@ mod tests {
     async fn the_only_4xx_this_proxy_produces_is_a_policy_refusal() {
         let addr = crate::util::test_support::closing_server().await;
         let dead = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
                 .router(),
         )
@@ -9525,7 +9569,7 @@ mod tests {
         )
         .await;
         let live = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
@@ -9595,7 +9639,7 @@ mod tests {
             }),
         );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -9667,7 +9711,7 @@ mod tests {
             }),
         );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -9761,7 +9805,7 @@ mod tests {
     async fn registry_with(integrity: &str, tarball: Vec<u8>) -> String {
         let upstream = serve(widget_registry(integrity, tarball)).await;
         serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
@@ -9829,7 +9873,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_mode(mode)
             .with_audit_log(audit)
@@ -10031,7 +10075,11 @@ mod tests {
     /// Without a gate, health says no token is required.
     #[test]
     fn a_proxy_without_a_gate_requires_no_token() {
-        assert!(!Proxy::new(reqwest::Client::new()).health().tokens_required);
+        assert!(
+            !Proxy::new(crate::service::Connection::default())
+                .health()
+                .tokens_required
+        );
     }
 
     /// Under [`crate::env::PROXY_URL`]'s path, the artifact URL a packument is given serves the
@@ -10041,7 +10089,7 @@ mod tests {
         let tarball: Vec<u8> = (0..5_000u32).map(|i| (i % 251) as u8).collect();
         let upstream = serve(widget_registry(&sri_of(&tarball), tarball.clone())).await;
         let base = serve_at(|base| {
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_public_base(Some(format!("{base}/registry/")))
                 .router()
@@ -10210,7 +10258,7 @@ mod tests {
                 let upstream =
                     serve(widget_registry_answering(&sri_of(&honest), body, status)).await;
                 let base = serve(
-                    Proxy::new(reqwest::Client::new())
+                    Proxy::new(crate::service::Connection::default())
                         .with_upstream(Ecosystem::Npm, upstream)
                         .router(),
                 )
@@ -10256,7 +10304,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
@@ -10299,7 +10347,7 @@ mod tests {
         let (upstream, _) =
             upstream_serving(StatusCode::OK, "text/html", None, b"<html></html>".to_vec()).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::PyPI, upstream)
                 .router(),
         )
@@ -10329,7 +10377,7 @@ mod tests {
         }])
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
                 .router(),
         )
@@ -10376,9 +10424,7 @@ mod tests {
     #[tokio::test]
     async fn a_stalled_upstream_ends_the_request_it_holds() {
         let stalled = crate::util::test_support::stalling_server().await;
-        let client = crate::http::client_builder(std::time::Duration::from_millis(100))
-            .build()
-            .expect("a client");
+        let client = crate::service::Connection::timing_out(std::time::Duration::from_millis(100));
         let base = serve(
             Proxy::new(client)
                 .with_upstream(Ecosystem::Npm, format!("http://{stalled}"))
@@ -10411,7 +10457,7 @@ mod tests {
             }),
         );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -10454,7 +10500,7 @@ mod tests {
             (weighs_no_digest(), StatusCode::FORBIDDEN),
         ] {
             let base = serve(
-                Proxy::new(reqwest::Client::new())
+                Proxy::new(crate::service::Connection::default())
                     .with_upstream(Ecosystem::Npm, &upstream)
                     .with_policy(policy)
                     .router(),
@@ -10522,7 +10568,7 @@ mod tests {
             }),
         );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -10578,7 +10624,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_max_concurrent_documents(1)
                 .router(),
@@ -10616,7 +10662,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, &upstream)
                 .with_upstream(Ecosystem::PyPI, &upstream)
                 .with_upstream(Ecosystem::Cargo, &upstream)
@@ -10675,7 +10721,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_mode(Mode::Observe)
                 .router(),
@@ -10755,7 +10801,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_mode(Mode::Observe)
                 .with_upstream(Ecosystem::Npm, &upstream)
                 .with_upstream(Ecosystem::Go, &upstream)
@@ -10797,7 +10843,7 @@ mod tests {
         )
         .await;
         let proxy = |mode| {
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_mode(mode)
                 .with_upstream(Ecosystem::Npm, &upstream)
                 .with_upstream(Ecosystem::Go, &upstream)
@@ -10866,12 +10912,12 @@ mod tests {
     #[test]
     fn the_builders_give_the_same_origins_in_either_order() {
         let origins = |proxy: &Proxy| proxy.origin_policy().reachable().as_slice().to_vec();
-        let policy_first = Proxy::new(reqwest::Client::new())
+        let policy_first = Proxy::new(crate::service::Connection::default())
             .with_origin_policy(["https://cdn.example"], ["https://direct.example"])
             .expect("valid origins")
             .with_upstream(Ecosystem::Npm, "https://npm.mirror.example/")
             .with_upstream(Ecosystem::PyPI, "https://pypi.mirror.example/simple");
-        let upstreams_first = Proxy::new(reqwest::Client::new())
+        let upstreams_first = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, "https://npm.mirror.example/")
             .with_upstream(Ecosystem::PyPI, "https://pypi.mirror.example/simple")
             .with_origin_policy(["https://cdn.example"], ["https://direct.example"])
@@ -10904,12 +10950,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "upstream is not a usable origin")]
     fn an_upstream_with_no_host_is_refused() {
-        let _ = Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, "not a url");
+        let _ = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, "not a url");
     }
 
     #[test]
     fn the_upstream_base_drops_a_trailing_slash() {
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org/");
         assert_eq!(
             proxy.upstreams().get(Ecosystem::Npm),
@@ -10927,7 +10974,8 @@ mod tests {
              cargo=https://index.crates.io golang=https://proxy.golang.org \
              maven=https://repo1.maven.org/maven2 gradle-plugins=https://plugins.gradle.org/m2"
         );
-        let both = Proxy::new(reqwest::Client::new()).with_upstreams(proxy.upstreams().clone());
+        let both = Proxy::new(crate::service::Connection::default())
+            .with_upstreams(proxy.upstreams().clone());
         assert_eq!(both.upstreams(), proxy.upstreams());
     }
 
@@ -10936,7 +10984,7 @@ mod tests {
         use crate::route::IndexFormat;
 
         fn proxy() -> Proxy {
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org")
         }
 
@@ -11277,14 +11325,14 @@ mod tests {
         let (spool, _) = Spool::open(&crate::util::test_support::tempdir("analyse-404"), 1 << 20)
             .expect("opens");
         let analyser = Arc::new(Analyser::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             Arc::new(spool),
             Arc::new(crate::analysis::store::InProcess::new(8)),
             2,
             8,
         ));
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .with_analyser(Some(analyser.clone()))
                 .router(),
@@ -11714,7 +11762,7 @@ mod tests {
         let (spool, _) =
             Spool::open(&crate::util::test_support::tempdir(label), 1 << 20).expect("opens");
         let analyser = Arc::new(Analyser::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             Arc::new(spool),
             store,
             2,
@@ -12109,7 +12157,7 @@ mod tests {
                 get(|| async { (StatusCode::NOT_FOUND, "gone") }),
             );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -12280,7 +12328,8 @@ mod tests {
             fixture("lodash-4.17.21.abbrev.json"),
         )
         .await;
-        let proxy = Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, upstream);
+        let proxy = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, upstream);
         let base = serve(proxy.clone().router()).await;
         let client = reqwest::Client::new();
         client
@@ -12392,13 +12441,13 @@ mod tests {
             crate::spool::Spool::open(&crate::util::test_support::tempdir(label), 1 << 20)
                 .expect("opens");
         let analyser = Arc::new(Analyser::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             Arc::new(spool),
             Arc::new(crate::analysis::store::InProcess::new(8)),
             2,
             8,
         ));
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, serve(router).await)
             .with_analyser(Some(analyser.clone()));
         let first = Published::Served(crate::util::test_support::tarball(&[(
@@ -12478,8 +12527,8 @@ mod tests {
              not serve; 5.0.0 publishes no digest"
         );
 
-        let unanalysed =
-            Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, NO_UPSTREAM);
+        let unanalysed = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, NO_UPSTREAM);
         assert_eq!(
             unanalysed.watch().await,
             Watched::default(),
@@ -12699,7 +12748,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(ALLOW_ALL)))
                 .with_audit_log(Some(log))
@@ -12783,7 +12832,7 @@ mod tests {
 
         let short = scripted(vec![Answer::cut_short()]).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, format!("http://{short}"))
                 .with_policy(Some(policy(ALLOW_ALL)))
                 .with_audit_log(Some(log))
@@ -12839,7 +12888,7 @@ mod tests {
         tampered[25_000] ^= 0xFF;
         let upstream = serve(widget_registry(&sri_of(&honest), tampered)).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(ALLOW_ALL)))
                 .with_audit_log(Some(log.clone()))
@@ -12850,7 +12899,7 @@ mod tests {
         assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
 
         let short = scripted(vec![Answer::cut_short()]).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, format!("http://{short}"))
             .with_refuse_unservable(false)
             .with_policy(Some(policy(ALLOW_ALL)))
@@ -12912,7 +12961,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let analyser = Arc::new(crate::analysis::run::tests::analyser(label, 1 << 20, store));
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_analyser(Some(analyser.clone()))
             .with_policy(Some(policy(ALLOW_ALL)));
@@ -12930,7 +12979,7 @@ mod tests {
         let upstream = serve(widget_registry(&digest, tampered)).await;
         let kept = Arc::new(crate::usage::tests::Kept::default());
         let usage = Batched::new("usage rows", kept.clone());
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_policy(Some(policy(ALLOW_ALL)))
             .with_usage(Some(usage.clone()));
@@ -13417,7 +13466,7 @@ mod tests {
                 .expect("opens");
         let analyser = Arc::new(
             Analyser::new(
-                reqwest::Client::new(),
+                crate::service::Connection::default(),
                 Arc::new(spool),
                 Arc::new(crate::analysis::store::InProcess::new(8)),
                 2,
@@ -13425,11 +13474,11 @@ mod tests {
             )
             .with_sources(Some(upstream.clone()))
             .with_detectors(detectors)
-            .with_virustotal(virustotal.map(|settings| (settings, reqwest::Client::new()))),
+            .with_virustotal(virustotal),
         );
         let path =
             crate::util::test_support::tempdir(&format!("{label}-audit")).join("audit.jsonl");
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_analyser(Some(analyser.clone()))
             .with_policy(Some(policy(yaml)))
@@ -13759,7 +13808,7 @@ mod tests {
             }));
             let dir = crate::util::test_support::tempdir("signals-full");
             let path = dir.join("audit.jsonl");
-            let proxy = Proxy::new(reqwest::Client::new())
+            let proxy = Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .with_policy(Some(policy(yaml)))
                 .with_audit_log(Some(Arc::new(
@@ -14097,7 +14146,7 @@ mod tests {
     async fn metadata_fetched_that_does_not_read_is_logged() {
         use crate::util::test_support::{Answer, scripted};
         let upstream = scripted(vec![Answer::body("not json")]).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, format!("http://{upstream}"))
             .with_policy(Some(policy(ALLOW_ALL)));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();

@@ -17,6 +17,12 @@ use super::paths::{METADATA, directory};
 use super::signer::FileSigner;
 use super::wire::{parse, record};
 
+/// The headers the Maven repository is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the Maven repository",
+    headers: &[],
+};
+
 /// Claims kept, one per file: a file published to Central is never replaced.
 pub const MAX_CLAIMS: usize = 8192;
 
@@ -37,7 +43,7 @@ enum Pom {
 /// Fetches metadata and sidecars from one Maven repository.
 #[derive(Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     repository: String,
     max_bytes: usize,
     /// Each file's claim, by its URL.
@@ -65,17 +71,17 @@ impl std::fmt::Debug for Client {
 impl Client {
     /// `repository` is a base URL such as `https://repo1.maven.org/maven2`. A trailing
     /// slash is trimmed.
-    pub fn new(http: reqwest::Client, repository: &str, max_bytes: usize) -> Self {
+    pub fn new(connection: crate::service::Connection, repository: &str, max_bytes: usize) -> Self {
         Self {
             repository: repository.trim_end_matches('/').to_owned(),
             max_bytes,
             claims: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
             times: Arc::new(Mutex::new(Lru::new(MAX_TIMES))),
-            keys: KeyServers::new(http.clone()),
+            keys: KeyServers::new(connection.clone()),
             signatures: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
             hashed_redirects: false,
             located: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
         }
     }
 
@@ -545,8 +551,12 @@ pub(crate) mod tests {
             )
             .route(&format!("{dir}/lib-1.0.pom.sha1"), get(|| async { SHA1 }));
         let base = crate::proxy::testing::serve(router).await;
-        let client = Client::new(reqwest::Client::new(), &format!("{base}/m2"), 1 << 20)
-            .claiming_from_redirects();
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("{base}/m2"),
+            1 << 20,
+        )
+        .claiming_from_redirects();
         let key = PackageKey::from_registry_name(Ecosystem::Maven, "org.example:lib").unwrap();
         for _ in 0..2 {
             let Claimed::Known(claim) = client.claim(&key, "1.0", "lib-1.0.jar").await.unwrap()
@@ -568,7 +578,7 @@ pub(crate) mod tests {
         );
         let closed = crate::util::test_support::closing_server().await;
         let unasked = Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{closed}/m2"),
             1 << 20,
         )
@@ -587,7 +597,11 @@ pub(crate) mod tests {
     async fn an_artifact_s_metadata_is_fetched_at_its_group_path() {
         let fixture = String::from_utf8(super::super::fixture("commons-lang3.xml")).unwrap();
         let (addr, requests) = recorded(vec![Answer::body(fixture)]).await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}/"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}/"),
+            1 << 20,
+        );
         let metadata = Fetch::metadata(&client, &lang3()).await.expect("fetched");
         let metadata = metadata.expect("read");
         assert_eq!(metadata.records.len(), 27);
@@ -609,7 +623,11 @@ pub(crate) mod tests {
         let plugins = String::from_utf8(super::super::fixture("plugins.xml")).unwrap();
         for (body, said) in [(plugins, "names no versions"), ("<a>".to_owned(), "")] {
             let addr = scripted(vec![Answer::body(body)]).await;
-            let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+            let client = Client::new(
+                crate::service::Connection::default(),
+                &format!("http://{addr}"),
+                1 << 20,
+            );
             let error = client
                 .metadata(&lang3())
                 .await
@@ -632,7 +650,11 @@ pub(crate) mod tests {
             Answer::body(format!("{SHA1}  commons-lang3-3.17.0.jar\n")),
         ])
         .await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         for _ in 0..2 {
             let Claimed::Known(claim) =
                 Fetch::claim(&client, &lang3(), "3.17.0", "commons-lang3-3.17.0.jar")
@@ -679,7 +701,11 @@ pub(crate) mod tests {
             (vec![Answer::Status(404)], None),
         ] {
             let addr = scripted(answers).await;
-            let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+            let client = Client::new(
+                crate::service::Connection::default(),
+                &format!("http://{addr}"),
+                1 << 20,
+            );
             let claimed = client.claim(&lang3(), "3.17.0", "x.jar").await.unwrap();
             let found = match claimed {
                 Claimed::Known(claim) => Some(claim.artifact),
@@ -699,11 +725,15 @@ pub(crate) mod tests {
             (Answer::cut_short(), ".sha512 request failed"),
         ] {
             let addr = scripted(vec![answer]).await;
-            let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+            let client = Client::new(
+                crate::service::Connection::default(),
+                &format!("http://{addr}"),
+                1 << 20,
+            );
             let error = client.claim(&lang3(), "3.17.0", "x.jar").await.unwrap_err();
             assert!(error.starts_with(expected), "{error}");
         }
-        let client = Client::new(reqwest::Client::new(), "http://r.example", 1);
+        let client = Client::new(crate::service::Connection::default(), "http://r.example", 1);
         assert!(format!("{client:?}").contains("http://r.example"));
     }
 
@@ -736,7 +766,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_version_is_dated_by_its_pom() {
         let base = poms(&[("3.17.0", "Wed, 21 Aug 2024 14:04:19 GMT")]).await;
-        let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
+        let client = Client::new(crate::service::Connection::default(), &base, 1 << 20);
         let record = Fetch::version(&client, &lang3(), "3.17.0", None)
             .await
             .unwrap()
@@ -746,7 +776,7 @@ pub(crate) mod tests {
         assert_eq!(record.artifacts[0].filename, "commons-lang3-3.17.0.jar");
         assert!(client.version(&lang3(), "9.9.9").await.unwrap().is_none());
         let undated = Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &poms(&[("1", "not a date")]).await,
             1,
         );
@@ -763,7 +793,7 @@ pub(crate) mod tests {
             ("3.1", "Sun, 13 Nov 2011 00:00:00 GMT"),
         ])
         .await;
-        let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
+        let client = Client::new(crate::service::Connection::default(), &base, 1 << 20);
         let read = parse(
             b"<metadata><groupId>org.apache.commons</groupId><artifactId>commons-lang3</artifactId>\
               <versioning><versions><version>3.0</version><version>3.1</version>\
@@ -780,18 +810,30 @@ pub(crate) mod tests {
         assert_eq!(times["3.1"], "2011-11-13T00:00:00Z".parse().unwrap());
         assert!(!times.contains_key("3.2"));
         let addr = scripted(vec![Answer::Status(404)]).await;
-        let missing = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let missing = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         assert!(missing.dated(&metadata).await.unwrap().is_empty());
-        let error = Client::new(reqwest::Client::new(), "http://127.0.0.1:9", 1)
-            .dated(&metadata)
-            .await
-            .unwrap_err();
+        let error = Client::new(
+            crate::service::Connection::default(),
+            "http://127.0.0.1:9",
+            1,
+        )
+        .dated(&metadata)
+        .await
+        .unwrap_err();
         assert!(error.starts_with(".pom request failed"), "{error}");
         let addr = scripted(vec![Answer::Status(500)]).await;
-        let error = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1)
-            .version(&lang3(), "3.0")
-            .await
-            .unwrap_err();
+        let error = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1,
+        )
+        .version(&lang3(), "3.0")
+        .await
+        .unwrap_err();
         assert_eq!(error, ".pom answered 500 Internal Server Error");
         let times = Arc::clone(&client.times);
         assert_eq!(times.lock().unwrap().len(), 2, "both times kept");
@@ -801,7 +843,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_signature_is_read_once_and_a_failure_says_which() {
         let (addr, requests) = recorded(vec![Answer::Status(404)]).await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         let url = client.file_url(&lang3(), "3.17.0", "commons-lang3-3.17.0.jar");
         for _ in 0..2 {
             assert_eq!(client.signature(&url).await.unwrap(), None);
@@ -813,7 +859,11 @@ pub(crate) mod tests {
             (Answer::cut_short(), ".asc request failed"),
         ] {
             let addr = scripted(vec![answer]).await;
-            let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+            let client = Client::new(
+                crate::service::Connection::default(),
+                &format!("http://{addr}"),
+                1 << 20,
+            );
             let error = client
                 .signature(&format!("http://{addr}/x.jar"))
                 .await
@@ -822,7 +872,11 @@ pub(crate) mod tests {
         }
         let limit = crate::http::MAX_SIDECAR_BYTES;
         let addr = scripted(vec![Answer::Chunked(vec![b'a'; 4 * limit])]).await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         let kept = client.signature(&format!("http://{addr}/x.jar")).await;
         let kept = kept.unwrap().expect("it is there");
         assert_eq!(kept.len(), limit + 1, "read one byte past the limit");
@@ -840,7 +894,11 @@ pub(crate) mod tests {
             Answer::Status(404),
         ])
         .await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         assert!(
             client
                 .earlier(&lang3(), "3.17.0", 64)
@@ -849,14 +907,22 @@ pub(crate) mod tests {
                 .is_empty()
         );
         let addr = scripted(vec![Answer::Status(404)]).await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         assert!(client.earlier(&lang3(), "3.17.0", 64).await.is_err());
         let addr = scripted(vec![
             Answer::Typed("text/xml", super::super::fixture("commons-lang3.xml")),
             Answer::Status(500),
         ])
         .await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         assert!(client.earlier(&lang3(), "3.17.0", 64).await.is_err());
     }
 
@@ -881,7 +947,11 @@ pub(crate) mod tests {
             ),
         ] {
             let addr = scripted(vec![answer]).await;
-            let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), max_bytes);
+            let client = Client::new(
+                crate::service::Connection::default(),
+                &format!("http://{addr}"),
+                max_bytes,
+            );
             let error = client.metadata(&lang3()).await.expect_err("fails");
             assert!(error.starts_with(expected), "{error}");
         }

@@ -327,7 +327,7 @@ mod tests {
         let store = Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
         let site = site(
             store,
-            Some(served(Proxy::new(reqwest::Client::new())).await),
+            Some(served(Proxy::new(crate::service::Connection::default())).await),
         )
         .await;
         let checked = check(&site).await;
@@ -353,7 +353,7 @@ mod tests {
     async fn each_component_reports_why_it_is_not_up() {
         let policy = Arc::new(crate::policy::Policy::parse("version: 1").unwrap());
         let empty = Arc::new(crate::intel::store::testing::FixedIntel(Ok(None)));
-        let unready = Proxy::new(reqwest::Client::new())
+        let unready = Proxy::new(crate::service::Connection::default())
             .with_policy(Some(policy))
             .with_intel(Some(empty));
         let store: Arc<dyn Accounts> = Arc::new(Failing {
@@ -377,7 +377,7 @@ mod tests {
         );
 
         let gone = (
-            Proxy::new(reqwest::Client::new()),
+            Proxy::new(crate::service::Connection::default()),
             "http://127.0.0.1:9".to_owned(),
         );
         let down = check(&site(store.clone(), Some(gone)).await).await;
@@ -539,7 +539,7 @@ mod tests {
     async fn health_names_what_is_not_up_and_status_says_why() {
         let store = Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
         let gone = (
-            Proxy::new(reqwest::Client::new()),
+            Proxy::new(crate::service::Connection::default()),
             "http://127.0.0.1:9".to_owned(),
         );
         let site = Arc::new(site(store.clone(), Some(gone)).await);
@@ -596,7 +596,7 @@ mod tests {
     async fn site_up(store: Arc<crate::account::InMemory>) -> Site {
         site(
             store,
-            Some(served(Proxy::new(reqwest::Client::new())).await),
+            Some(served(Proxy::new(crate::service::Connection::default())).await),
         )
         .await
     }

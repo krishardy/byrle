@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 
-use super::{Kept, http_client};
+use super::{Kept, hosts};
 use crate::env::{self, Env};
 use crate::http::READ_TIMEOUT;
 use crate::intel::fetch::Notice;
@@ -53,7 +53,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
     };
 
     let mut read = fetch::read_streams(
-        &setup.http,
+        &setup.hosts,
         stream::all(),
         (&setup.urls, setup.github_token.as_deref()),
         notice,
@@ -126,7 +126,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
 struct Setup {
     limit: usize,
     kept: Option<SnapshotDir>,
-    http: reqwest::Client,
+    hosts: crate::intel::fetch::Hosts,
     github_token: Option<String>,
     /// [`crate::env::STREAM_URLS`]: a mirror for each stream named.
     urls: std::collections::BTreeMap<String, String>,
@@ -158,14 +158,14 @@ impl Setup {
             .map(SnapshotDir::open)
             .transpose()
             .map_err(|e| stop(1, format!("{}: {e}", env::SNAPSHOT_DIR)))?;
-        let http = http_client(READ_TIMEOUT).map_err(|e| stop(1, format!("{e}")))?;
+        let hosts = hosts(READ_TIMEOUT);
         let github_token = environment
             .github_token()
             .map_err(|e| stop(2, e.to_string()))?;
         Ok(Self {
             limit,
             kept,
-            http,
+            hosts,
             github_token,
             urls,
         })

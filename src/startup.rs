@@ -64,7 +64,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let listen = environment.listen()?;
     let console = crate::console::Console::from_env(environment, &listen)?;
     let upstreams = environment.upstreams()?;
-    let client = upstream_client(environment, reqwest::redirect::Policy::default())?;
+    let connection = connection(environment)?;
     let max_metadata_bytes = environment.max_metadata_bytes()?;
     let max_records = environment.max_records()?;
     let max_verified = environment.max_verified()?;
@@ -93,22 +93,18 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let spool = open_spool(environment)?;
 
     let analyser = Analyser::new(
-        client.clone(),
+        connection.clone(),
         spool.clone(),
         analyses,
         environment.max_concurrent_analyses()?,
         max_verified,
     )
     .with_sources(environment.source_archives()?)
-    .with_detectors(detectors(environment, &client, &upstreams).await?)
-    .with_virustotal(
-        virustotal(environment)?
-            .as_ref()
-            .map(|(s, c)| (s, c.clone())),
-    );
+    .with_detectors(detectors(environment, &connection, &upstreams).await?)
+    .with_virustotal(virustotal(environment)?.as_ref());
     analyser.forget_decisions_daily(environment.decision_retention_days()?);
 
-    let proxy = Proxy::new(client.clone())
+    let proxy = Proxy::new(connection.clone())
         .with_upstreams(upstreams)
         .with_intel(intel)
         .with_spool(Some(spool))
@@ -137,8 +133,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     #[cfg(debug_assertions)]
     let proxy = proxy.with_defer_test(defer_test);
     let oidc = environment.oidc()?;
-    let provider =
-        oidc.map(|settings| crate::console::oidc::Provider::new(settings, client.clone()));
+    let provider = oidc.map(|settings| crate::console::oidc::Provider::new(settings, &connection));
     let console = beside(console, &proxy, environment, (&listen, provider));
 
     let watch = environment.watch_interval()?;
@@ -162,7 +157,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
 /// Errors when a setting does not parse.
 fn virustotal<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
-) -> Result<Option<(crate::analysis::virustotal::Settings, reqwest::Client)>, StartupError> {
+) -> Result<Option<crate::analysis::virustotal::Settings>, StartupError> {
     let settings = environment.virustotal()?;
     match &settings {
         Some(settings) => info!(
@@ -174,11 +169,7 @@ fn virustotal<L: Fn(&str) -> Option<OsString>>(
         ),
         None => info!(byrle.config.variable = %env::VIRUSTOTAL_API_KEY, "virustotal off"),
     }
-    let Some(settings) = settings else {
-        return Ok(None);
-    };
-    let redirects = crate::analysis::virustotal::redirects();
-    upstream_client(environment, redirects).map(|http| Some((settings, http)))
+    Ok(settings)
 }
 
 /// The console as it runs, against the account and usage `stores`, writing logins to
@@ -269,16 +260,15 @@ fn gate<L: Fn(&str) -> Option<OsString>>(
     Ok(Some(crate::account::gate::Gate::new(accounts)))
 }
 
-/// A client for one upstream service, following `redirects`, trusting [`env::CA_BUNDLE`]'s
-/// roots too when it is set, or only them with [`env::CA_BUNDLE_EXCLUSIVE`].
+/// How each upstream service's client connects, trusting [`env::CA_BUNDLE`]'s roots too
+/// when it is set, or only them with [`env::CA_BUNDLE_EXCLUSIVE`].
 /// Errors when a bundle is named and does not load.
-fn upstream_client<L: Fn(&str) -> Option<OsString>>(
+fn connection<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
-    redirects: reqwest::redirect::Policy,
-) -> Result<reqwest::Client, StartupError> {
-    let builder = crate::http::client_builder(crate::http::READ_TIMEOUT).redirect(redirects);
+) -> Result<crate::service::Connection, StartupError> {
+    let connection = crate::service::Connection::default();
     let Some(path) = environment.ca_bundle()? else {
-        return Ok(builder.build().expect("the TLS backend initialises"));
+        return Ok(connection);
     };
     let exclusive = environment.ca_bundle_exclusive()?;
     let mode = if exclusive {
@@ -297,7 +287,8 @@ fn upstream_client<L: Fn(&str) -> Option<OsString>>(
     if exclusive {
         info!("public roots are NOT trusted for the upstream connection");
     }
-    tls::build(tls::apply(builder, certificates, mode), &path)
+    connection
+        .trusting(certificates, mode, &path)
         .map_err(|e| StartupError::Unusable(e.to_string()))
 }
 
@@ -454,7 +445,7 @@ async fn warn_enforcement(store: Option<&dyn Intel>) {
 /// one does not parse or does not print a version.
 async fn detectors<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
-    client: &reqwest::Client,
+    client: &crate::service::Connection,
     upstreams: &crate::ecosystem::Upstreams,
 ) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
     let mut configured = publishers(environment, client, upstreams)?;
@@ -475,7 +466,7 @@ async fn detectors<L: Fn(&str) -> Option<OsString>>(
 /// Each registry's detector asking its API who published a version, logged on or off.
 fn publishers<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
-    client: &reqwest::Client,
+    client: &crate::service::Connection,
     upstreams: &crate::ecosystem::Upstreams,
 ) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
     let (setting, interval) = environment.crates_api()?;
@@ -769,7 +760,7 @@ mod tests {
                 .is_none()
         );
         let running = site(&with(&vars), console(), Some((accounts.clone(), kept()))).unwrap();
-        let proxy = Proxy::new(reqwest::Client::new());
+        let proxy = Proxy::new(crate::service::Connection::default());
         let running =
             beside(running, &proxy, &with(&vars), ("0.0.0.0:8080", None)).expect("a console");
         assert_eq!(running.console.mount.to_string(), "/admin/");
@@ -1032,9 +1023,9 @@ mod tests {
         assert!(log.contains("watcher off"), "{log}");
     }
 
-    /// VirusTotal's own client follows no redirect, so its key is not sent where one points.
+    /// VirusTotal's client follows no redirect to another origin, so its key stays on its own.
     #[tokio::test]
-    async fn virustotal_s_client_follows_no_redirect() {
+    async fn virustotal_s_key_follows_no_redirect_elsewhere() {
         use crate::util::test_support::{Answer, recorded};
         let (elsewhere, asked) = recorded(vec![Answer::body("{}")]).await;
         let to = format!("http://{elsewhere}/files/x");
@@ -1049,8 +1040,9 @@ mod tests {
         });
         let base = crate::proxy::testing::serve(redirect).await;
         let environment = with(&[(env::VIRUSTOTAL_API_KEY, "k"), (env::VIRUSTOTAL_URL, &base)]);
-        let (settings, http) = virustotal(&environment).unwrap().expect("on");
-        let client = crate::analysis::virustotal::Client::new(http, &settings);
+        let settings = virustotal(&environment).unwrap().expect("on");
+        let connection = connection(&environment).unwrap();
+        let client = crate::analysis::virustotal::Client::new(&connection, &settings);
         let answer = client.lookup("x").await.unwrap_err().to_string();
         assert_eq!(answer, "VirusTotal: answered 307");
         assert!(
@@ -1183,7 +1175,7 @@ mod tests {
         let dir = crate::util::test_support::tempdir("startup-reload");
         let path = dir.join("policy.yaml");
         let file = path.to_str().unwrap();
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_policy(Some(Arc::new(Policy::parse(DENY).unwrap())));
 
         std::fs::write(&path, ALLOW).unwrap();
@@ -1235,7 +1227,7 @@ mod tests {
         let dir = crate::util::test_support::tempdir("startup-hangup");
         let path = dir.join("policy.yaml");
         std::fs::write(&path, ALLOW).unwrap();
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_policy(Some(Arc::new(Policy::parse(DENY).unwrap())));
         tokio::spawn(reload_on_hangup(
             proxy.clone(),
@@ -1464,7 +1456,7 @@ mod tests {
         let dir = crate::util::test_support::tempdir("startup-reload-each");
         let path = dir.join("policy.yaml");
         std::fs::write(&path, ALLOW).unwrap();
-        let proxy = Proxy::new(reqwest::Client::new());
+        let proxy = Proxy::new(crate::service::Connection::default());
         let environment = with(&[(env::POLICY, path.to_str().unwrap())]);
         reload_each(proxy.clone(), environment, futures_util::stream::iter([()])).await;
         assert_eq!(digest(&proxy), Some(crate::policy::digest_of(ALLOW)));

@@ -7,19 +7,25 @@ use crate::identity::PackageKey;
 use super::paths::index_path;
 use super::wire::normalize;
 
+/// The headers the cargo index is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the cargo index",
+    headers: &["accept-encoding"],
+};
+
 /// Fetches index files from one sparse index.
 #[derive(Debug, Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     index: String,
     max_bytes: usize,
 }
 
 impl Client {
     /// `index` is a base URL such as `https://index.crates.io`. A trailing slash is trimmed.
-    pub fn new(http: reqwest::Client, index: &str, max_bytes: usize) -> Self {
+    pub fn new(connection: crate::service::Connection, index: &str, max_bytes: usize) -> Self {
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             index: index.trim_end_matches('/').to_owned(),
             max_bytes,
         }
@@ -80,7 +86,7 @@ mod tests {
     async fn client(answers: Vec<Answer>, max_bytes: usize) -> Client {
         let addr = scripted(answers).await;
         Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{addr}/"),
             max_bytes,
         )
@@ -90,7 +96,11 @@ mod tests {
     #[tokio::test]
     async fn a_crate_s_index_file_is_fetched_from_its_index_path() {
         let (addr, requests) = recorded(vec![Answer::body(super::super::fixture())]).await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         let metadata = Fetch::metadata(&client, &itoa()).await.expect("fetched");
         assert_eq!(metadata.expect("read").records.len(), 37);
         let request = String::from_utf8(requests.lock().unwrap()[0].clone()).unwrap();
@@ -113,10 +123,18 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await });
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         let metadata = client.metadata(&itoa()).await.expect("fetched");
         assert_eq!(metadata.expect("read").records.len(), 37);
-        let small = Client::new(reqwest::Client::new(), &format!("http://{addr}"), sent);
+        let small = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            sent,
+        );
         let error = small
             .metadata(&itoa())
             .await

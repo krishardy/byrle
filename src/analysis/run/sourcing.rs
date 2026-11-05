@@ -242,7 +242,7 @@ impl Analyser {
             return Some(cached);
         }
         let response = self
-            .client
+            .archives
             .get(url)
             .send()
             .await

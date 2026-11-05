@@ -161,7 +161,7 @@ mod tests {
 
     fn policed() -> Proxy {
         let policy = crate::policy::Policy::parse("version: 1\ncooldown_days: 7\n").unwrap();
-        Proxy::new(reqwest::Client::new()).with_policy(Some(Arc::new(policy)))
+        Proxy::new(crate::service::Connection::default()).with_policy(Some(Arc::new(policy)))
     }
 
     /// The proxy's health, the policy as `explain --policy` prints it, and the settings.
@@ -191,7 +191,11 @@ mod tests {
 
     #[tokio::test]
     async fn no_policy_is_null_and_no_proxy_or_intel_is_503() {
-        let (status, body) = read(Some(Proxy::new(reqwest::Client::new())), vec![]).await;
+        let (status, body) = read(
+            Some(Proxy::new(crate::service::Connection::default())),
+            vec![],
+        )
+        .await;
         assert_eq!((status, &body["policy"]), (200, &serde_json::Value::Null));
         let (status, body) = read(None, vec![]).await;
         assert_eq!(

@@ -73,10 +73,32 @@ pub struct Attestation {
     pub bundle: fn(&[u8]) -> Result<Bundle, String>,
 }
 
+/// The headers an artifact's host is sent for the analysis's own fetch: none.
+pub const ARTIFACTS: crate::service::Declared = crate::service::Declared {
+    name: "artifact hosts",
+    headers: &[],
+};
+
+/// The headers an attestation document's host is sent: none.
+pub const ATTESTATIONS: crate::service::Declared = crate::service::Declared {
+    name: "attestation hosts",
+    headers: &[],
+};
+
+/// The headers a source archive's host is sent: none.
+pub const ARCHIVES: crate::service::Declared = crate::service::Declared {
+    name: "source archives",
+    headers: &[],
+};
+
 /// Runs analyses in the background, one per digest at a time.
 #[derive(Clone)]
 pub struct Analyser {
-    client: reqwest::Client,
+    /// How each service's client connects: VirusTotal's is made from it later.
+    connection: crate::service::Connection,
+    artifacts: crate::service::Service,
+    attestations: crate::service::Service,
+    archives: crate::service::Service,
     spool: Arc<Spool>,
     store: Arc<dyn Analyses>,
     /// Bounds how many analyses run at once. A job waits for a slot; a request never does.
@@ -108,7 +130,7 @@ impl Analyser {
     }
 
     pub fn new(
-        client: reqwest::Client,
+        connection: crate::service::Connection,
         spool: Arc<Spool>,
         store: Arc<dyn Analyses>,
         max_concurrent: usize,
@@ -116,7 +138,10 @@ impl Analyser {
     ) -> Self {
         Self {
             recorder: recording::recorder(store.clone()),
-            client,
+            artifacts: crate::service::Service::new(ARTIFACTS, &connection),
+            attestations: crate::service::Service::new(ATTESTATIONS, &connection),
+            archives: crate::service::Service::new(ARCHIVES, &connection),
+            connection,
             spool,
             store,
             slots: Arc::new(Semaphore::new(max_concurrent.max(1))),
@@ -309,7 +334,7 @@ impl Analyser {
     ) -> Option<Result<bytes::Bytes, Attested>> {
         let url = &attestation.url;
         let response = self
-            .client
+            .attestations
             .get(url)
             .send()
             .await
@@ -381,7 +406,7 @@ impl Analyser {
     /// The upstream's 2xx answer for the artifact at `url`. `None` when there is none.
     async fn fetch(&self, url: &str) -> Option<reqwest::Response> {
         match self
-            .client
+            .artifacts
             .get(url)
             .send()
             .await
@@ -608,7 +633,13 @@ pub(crate) mod tests {
 
     pub(crate) fn analyser(label: &str, ceiling: u64, store: Arc<dyn Analyses>) -> Analyser {
         let (spool, _) = Spool::open(&tempdir(label), ceiling).expect("opens");
-        Analyser::new(reqwest::Client::new(), Arc::new(spool), store, 2, 16)
+        Analyser::new(
+            crate::service::Connection::default(),
+            Arc::new(spool),
+            store,
+            2,
+            16,
+        )
     }
 
     fn job(digest: &Sri, url: &str) -> Job {
@@ -862,7 +893,7 @@ pub(crate) mod tests {
         tokio::spawn(axum::serve(listener, router).into_future());
         let (spool, _) = Spool::open(&tempdir("run-phases"), 1 << 20).expect("opens");
         let one_slot = Analyser::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             Arc::new(spool),
             Arc::new(InProcess::new(8)),
             1,

@@ -45,9 +45,9 @@ pub(super) struct Scans {
 
 impl Analyser {
     /// Ask VirusTotal as `settings` say, through its own client. `None` leaves it off.
-    pub fn with_virustotal(mut self, scans: Option<(&Settings, reqwest::Client)>) -> Self {
-        self.scans = scans.map(|(settings, http)| Scans {
-            client: Arc::new(Client::new(http, settings)),
+    pub fn with_virustotal(mut self, settings: Option<&Settings>) -> Self {
+        self.scans = settings.map(|settings| Scans {
+            client: Arc::new(Client::new(&self.connection, settings)),
             mode: settings.mode,
             uploads_from: settings.uploads_from.clone(),
             per_minute: settings.per_minute,
@@ -313,7 +313,7 @@ mod tests {
         let mut settings = settings(base.to_owned());
         settings.mode = mode;
         settings.uploads_from = vec![format!("{base}/")];
-        analyser(label, 1 << 20, store).with_virustotal(Some((&settings, reqwest::Client::new())))
+        analyser(label, 1 << 20, store).with_virustotal(Some(&settings))
     }
 
     fn job(base: &str, bytes: &[u8]) -> ScanJob {
@@ -528,7 +528,7 @@ mod tests {
             None
         );
         let small = analyser("vt-small", 4, Arc::new(InProcess::new(8)))
-            .with_virustotal(Some((&settings(base.clone()), reqwest::Client::new())));
+            .with_virustotal(Some(&settings(base.clone())));
         assert_eq!(
             run(&small, job(&base, BYTES), None).await,
             None,

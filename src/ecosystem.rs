@@ -267,12 +267,19 @@ pub struct Clients(BTreeMap<Repository, std::sync::Arc<dyn Fetch>>);
 
 impl Clients {
     /// A client for each upstream. `max_bytes` bounds each decoded body.
-    pub fn new(http: reqwest::Client, upstreams: &Upstreams, max_bytes: usize) -> Self {
+    pub fn new(
+        connection: crate::service::Connection,
+        upstreams: &Upstreams,
+        max_bytes: usize,
+    ) -> Self {
         Self(
             upstreams
                 .iter()
                 .map(|(repository, base)| {
-                    (repository, repository.client(http.clone(), base, max_bytes))
+                    (
+                        repository,
+                        repository.client(connection.clone(), base, max_bytes),
+                    )
                 })
                 .collect(),
         )
@@ -283,7 +290,7 @@ impl Clients {
         environment: &Env<L>,
     ) -> Result<Self, EnvError> {
         Ok(Self::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &environment.upstreams()?,
             environment.max_metadata_bytes()?,
         ))
@@ -457,7 +464,7 @@ impl Setup {
 
 /// Makes a [`Registry::publishers`] detector for a repository, `None` when its API is not asked.
 pub type Publishers = fn(
-    &reqwest::Client,
+    &crate::service::Connection,
     Repository,
     &str,
     &crate::env::ApiSetting,
@@ -529,7 +536,7 @@ pub struct Registry {
     /// Where a request path goes, given the upstream base.
     pub upstream_url: fn(&str, &str) -> String,
     /// The registry client for the upstream, with each decoded body bounded.
-    pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
+    pub client: fn(crate::service::Connection, &str, usize) -> std::sync::Arc<dyn Fetch>,
     /// A metadata body read on its way to the client.
     pub read: fn(Reading<'_>) -> Read,
     /// What reads an artifact file for the code it runs on install; `None` if it runs none.
@@ -584,7 +591,7 @@ pub struct Also {
     /// The variable naming its upstream.
     pub upstream: Var,
     /// The registry client for its upstream, with each decoded body bounded.
-    pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
+    pub client: fn(crate::service::Connection, &str, usize) -> std::sync::Arc<dyn Fetch>,
     /// Where a redirect to says a file is the row's own repository's: the portal's to Central.
     pub own_at: &'static [&'static str],
 }
@@ -672,7 +679,7 @@ impl Repository {
     /// The registry client for `upstream`, with each decoded body bounded.
     fn client(
         self,
-        http: reqwest::Client,
+        http: crate::service::Connection,
         upstream: &str,
         max_bytes: usize,
     ) -> std::sync::Arc<dyn Fetch> {
@@ -973,7 +980,7 @@ mod table {
     async fn only_a_repository_whose_redirects_say_whose_a_file_is_is_asked_where_it_is() {
         let nowhere = crate::util::test_support::NO_UPSTREAM;
         let upstreams = Upstreams::defaults().with(Ecosystem::Npm, nowhere);
-        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
+        let clients = Clients::new(crate::service::Connection::default(), &upstreams, 1024);
         let npm = Repository::of(Ecosystem::Npm);
         assert_eq!(
             clients.located(npm, &format!("{nowhere}/x")).await,
@@ -991,7 +998,7 @@ mod table {
         let upstreams = Upstreams::defaults()
             .with(Ecosystem::Maven, &format!("http://{central}/maven2"))
             .with(plugins, &format!("http://{portal}/m2"));
-        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
+        let clients = Clients::new(crate::service::Connection::default(), &upstreams, 1024);
         let key = PackageKey::from_registry_name(Ecosystem::Maven, "a.b:c").unwrap();
         assert!(clients.metadata(plugins, &key).await.is_err());
         assert_eq!(from_portal.lock().unwrap().len(), 1);
@@ -1172,7 +1179,7 @@ mod table {
         let upstreams = Upstreams::defaults()
             .with(Ecosystem::Npm, nowhere)
             .with(Ecosystem::PyPI, nowhere);
-        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
+        let clients = Clients::new(crate::service::Connection::default(), &upstreams, 1024);
         let idna = "pkg:pypi/idna".parse().expect("a purl");
         let at = |ecosystem| Repository::of(ecosystem);
         assert_eq!(

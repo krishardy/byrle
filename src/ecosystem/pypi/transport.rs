@@ -8,10 +8,16 @@ use super::{MAX_INDEX_BYTES, SIMPLE_JSON};
 use crate::ecosystem::Fetched;
 use crate::identity::PackageKey;
 
+/// The headers the PyPI index is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the PyPI index",
+    headers: &["accept", "accept-encoding"],
+};
+
 /// Fetches project indexes from one simple index.
 #[derive(Debug, Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     index: String,
     max_bytes: usize,
 }
@@ -62,10 +68,10 @@ impl From<crate::http::BodyError> for FetchError {
 impl Client {
     /// `index` is a base URL such as `https://pypi.org/simple`. A trailing slash is
     /// accepted and trimmed.
-    pub fn new(http: reqwest::Client, index: impl Into<String>) -> Self {
+    pub fn new(connection: crate::service::Connection, index: impl Into<String>) -> Self {
         let index = index.into();
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             index: index.trim_end_matches('/').to_owned(),
             max_bytes: MAX_INDEX_BYTES,
         }
@@ -165,7 +171,7 @@ mod tests {
     }
 
     fn client(base: &str) -> Client {
-        Client::new(reqwest::Client::new(), base)
+        Client::new(crate::service::Connection::default(), base)
     }
 
     /// The normalised name in the URL, the `Accept` header, the body and the records.

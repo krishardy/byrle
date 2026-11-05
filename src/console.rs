@@ -283,7 +283,7 @@ pub(crate) mod tests {
     /// A proxy that knows no advisories.
     pub fn proxy() -> crate::proxy::Proxy {
         let intel = Arc::new(crate::intel::store::testing::knowing_nothing());
-        crate::proxy::Proxy::new(reqwest::Client::new()).with_intel(Some(intel))
+        crate::proxy::Proxy::new(crate::service::Connection::default()).with_intel(Some(intel))
     }
 
     /// [`site`], asking the proxy served at `at` for its status.

@@ -16,13 +16,19 @@ use super::paths::{LIST, escape};
 use super::sumdb::{self, Answer};
 use super::wire::{Info, list, preferred, published, record};
 
+/// The headers the Go module proxy is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the Go module proxy",
+    headers: &[],
+};
+
 /// Claims kept, one per module version: a version sum.golang.org knows never changes.
 pub const MAX_CLAIMS: usize = 8192;
 
 /// Fetches version lists from one module proxy, and claims from sum.golang.org.
 #[derive(Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     proxy: String,
     max_bytes: usize,
     sumdb: Arc<sumdb::Client>,
@@ -32,6 +38,8 @@ pub struct Client {
     records: Arc<Mutex<Lru<(String, String), u64>>>,
     /// The checksum database's trees, which date a version by its record.
     heads: Arc<Heads>,
+    /// How the index's client connects, for [`Client::with_index`].
+    connection: crate::service::Connection,
 }
 
 impl std::fmt::Debug for Client {
@@ -44,17 +52,22 @@ impl std::fmt::Debug for Client {
 
 impl Client {
     /// `proxy` is a base URL such as `https://proxy.golang.org`. A trailing slash is trimmed.
-    pub fn new(http: reqwest::Client, proxy: &str, max_bytes: usize) -> Self {
-        let sumdb = sumdb::Client::new(http.clone(), sumdb::DEFAULT, super::note::SUM_GOLANG_ORG)
-            .expect("the go command's key parses");
+    pub fn new(connection: crate::service::Connection, proxy: &str, max_bytes: usize) -> Self {
+        let sumdb = sumdb::Client::new(
+            connection.clone(),
+            sumdb::DEFAULT,
+            super::note::SUM_GOLANG_ORG,
+        )
+        .expect("the go command's key parses");
         Self {
-            heads: Arc::new(Heads::new(http.clone(), heads::INDEX)),
-            http,
+            heads: Arc::new(Heads::new(connection.clone(), heads::INDEX)),
+            http: crate::service::Service::new(SERVICE, &connection),
             proxy: proxy.trim_end_matches('/').to_owned(),
             max_bytes,
             sumdb: Arc::new(sumdb),
             claims: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
             records: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
+            connection,
         }
     }
 
@@ -66,7 +79,7 @@ impl Client {
 
     /// The same, reading rows from the module index at `index`.
     pub fn with_index(mut self, index: &str) -> Self {
-        self.heads = Arc::new(Heads::new(self.http.clone(), index));
+        self.heads = Arc::new(Heads::new(self.connection.clone(), index));
         self
     }
 
@@ -316,7 +329,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_module_s_list_is_fetched_at_its_escaped_path() {
         let (addr, requests) = recorded(vec![Answer::body("v1.0.0\nv1.1.0\n")]).await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}/"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}/"),
+            1 << 20,
+        );
         let metadata = Fetch::metadata(&client, &toml()).await.expect("fetched");
         let metadata = metadata.expect("read");
         assert_eq!(metadata.records.len(), 2);
@@ -347,8 +364,12 @@ pub(crate) mod tests {
             quote_record(),
             "other.example/m v1.0.0 h1:x=\n".into(),
         ]);
-        let go = Client::new(reqwest::Client::new(), "http://127.0.0.1:9", 1 << 20)
-            .with_sumdb(client(db.clone()).await);
+        let go = Client::new(
+            crate::service::Connection::default(),
+            "http://127.0.0.1:9",
+            1 << 20,
+        )
+        .with_sumdb(client(db.clone()).await);
         let quote = PackageKey::from_registry_name(Ecosystem::Go, "rsc.io/quote").unwrap();
         let Claimed::Known(claim) = Fetch::claim(&go, &quote, "v1.5.2", "v1.5.2.zip")
             .await
@@ -422,7 +443,7 @@ pub(crate) mod tests {
             ("v4.0.0", "500"),
         ])
         .await;
-        let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
+        let client = Client::new(crate::service::Connection::default(), &base, 1 << 20);
         let record = Fetch::version(&client, &toml(), "v1.0.0", None)
             .await
             .unwrap()
@@ -445,10 +466,18 @@ pub(crate) mod tests {
             assert!(found.contains(error), "{version}: {found}");
         }
         let addr = scripted(vec![Answer::cut_short()]).await;
-        let cut = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let cut = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         assert!(cut.version(&toml(), "v1.0.0", None).await.is_err());
         let closed = crate::util::test_support::closing_server().await;
-        let closed = Client::new(reqwest::Client::new(), &format!("http://{closed}"), 1 << 20);
+        let closed = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{closed}"),
+            1 << 20,
+        );
         assert!(closed.version(&toml(), "v1.0.0", None).await.is_err());
     }
 
@@ -474,7 +503,7 @@ pub(crate) mod tests {
             axum::routing::get(|| async { r#"{"Version":"v0","Time":"2020-01-01T00:00:00Z"}"# }),
         );
         let base = crate::proxy::testing::serve(router).await;
-        let client = Client::new(reqwest::Client::new(), &base, 1 << 20)
+        let client = Client::new(crate::service::Connection::default(), &base, 1 << 20)
             .with_sumdb(sumdb)
             .with_index(&index);
         (client, published, db)
@@ -534,12 +563,13 @@ pub(crate) mod tests {
         .await;
         let closed = crate::util::test_support::closing_server().await;
         let sumdb = sumdb::Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{closed}"),
             super::super::note::SUM_GOLANG_ORG,
         )
         .unwrap();
-        let client = Client::new(reqwest::Client::new(), &base, 1 << 20).with_sumdb(sumdb);
+        let client =
+            Client::new(crate::service::Connection::default(), &base, 1 << 20).with_sumdb(sumdb);
         let (guard, log) = crate::util::test_support::capture(tracing::Level::WARN);
         let record = client
             .version(&toml(), "v1.0.0", Some(jiff::Timestamp::now()))
@@ -576,8 +606,8 @@ pub(crate) mod tests {
             ("v0.9.0", r#"{"Version":"v0.9.0","Time":"then"}"#),
         ])
         .await;
-        let client =
-            Client::new(reqwest::Client::new(), &base, 1 << 20).with_sumdb(sumdb_of_quote().await);
+        let client = Client::new(crate::service::Connection::default(), &base, 1 << 20)
+            .with_sumdb(sumdb_of_quote().await);
         let metadata = list(&toml(), b"v1.0.0\nv1.2.0\nv1.0.1\nv1.1.0\nv1.3.0\n", "x");
         let before: jiff::Timestamp = "2026-10-01T00:00:00Z".parse().unwrap();
         let (guard, log) = crate::util::test_support::capture(tracing::Level::WARN);
@@ -627,7 +657,11 @@ pub(crate) mod tests {
             ),
         ] {
             let addr = scripted(vec![answer]).await;
-            let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), max_bytes);
+            let client = Client::new(
+                crate::service::Connection::default(),
+                &format!("http://{addr}"),
+                max_bytes,
+            );
             let error = client.metadata(&toml()).await.expect_err("fails");
             assert!(error.starts_with(expected), "{error}");
         }

@@ -13,6 +13,12 @@ use tracing::warn;
 
 use super::sumdb::{self, Answer};
 
+/// The headers the Go module index is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the Go module index",
+    headers: &[],
+};
+
 /// The feed of every module version proxy.golang.org fetched, with when it first did.
 pub const INDEX: &str = "https://index.golang.org";
 
@@ -42,7 +48,7 @@ type Rows = BTreeMap<u64, Timestamp>;
 
 /// The checksum database's trees as this process saw them, and index entries as trees.
 pub struct Heads {
-    http: reqwest::Client,
+    http: crate::service::Service,
     index: String,
     /// Times rise as sizes do: the first row past a record is the earliest that holds it.
     rows: Mutex<Rows>,
@@ -63,9 +69,9 @@ struct Entry {
 
 impl Heads {
     /// Rows read from the index at `index`, such as [`INDEX`]. A trailing slash is trimmed.
-    pub fn new(http: reqwest::Client, index: &str) -> Self {
+    pub fn new(connection: crate::service::Connection, index: &str) -> Self {
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             index: index.trim_end_matches('/').to_owned(),
             rows: Mutex::new(Rows::new()),
             seeding: tokio::sync::Mutex::new(()),
@@ -386,7 +392,7 @@ mod tests {
     /// A tree seen within a minute of the newest row replaces it; one later is added.
     #[test]
     fn trees_seen_close_together_are_one_row() {
-        let heads = Heads::new(reqwest::Client::new(), INDEX);
+        let heads = Heads::new(crate::service::Connection::default(), INDEX);
         heads.saw(100, at("2026-10-29T10:00:00Z"));
         heads.saw(110, at("2026-10-29T10:00:30Z"));
         heads.saw(120, at("2026-10-29T10:02:00Z"));
@@ -407,7 +413,7 @@ mod tests {
     async fn a_record_is_dated_by_the_rows_around_it() {
         let published = every_ten_minutes(2000);
         let (index, base, db, sumdb) = serve(published.clone()).await;
-        let heads = Heads::new(reqwest::Client::new(), &format!("{base}/"));
+        let heads = Heads::new(crate::service::Connection::default(), &format!("{base}/"));
         heads.saw(2000, Timestamp::now());
         let before = Timestamp::now() - SignedDuration::from_hours(7 * 24);
         let claimed = Some(at("2020-01-01T00:00:00Z"));
@@ -449,7 +455,7 @@ mod tests {
         let claimed = Some(at("2020-01-01T00:00:00Z"));
         let before = now - SignedDuration::from_hours(24);
         let (guard, log) = capture(tracing::Level::WARN);
-        let heads = Heads::new(reqwest::Client::new(), &base);
+        let heads = Heads::new(crate::service::Connection::default(), &base);
         heads.saw(200, now);
         assert_eq!(
             heads.dated(&sumdb, 10, claimed, Some(before)).await,
@@ -462,7 +468,7 @@ mod tests {
         );
         assert_eq!(*index.asked.lock().unwrap(), 1, "resting");
 
-        let heads = Heads::new(reqwest::Client::new(), &base);
+        let heads = Heads::new(crate::service::Connection::default(), &base);
         heads.saw(100, now - SignedDuration::from_hours(30));
         heads.saw(200, now);
         assert_eq!(heads.dated(&sumdb, 150, claimed, None).await, Some(now));
@@ -499,9 +505,7 @@ mod tests {
             }
         });
         let (_index, _base, _db, sumdb) = serve(every_ten_minutes(20)).await;
-        let http = crate::http::client_builder(std::time::Duration::from_millis(100))
-            .build()
-            .unwrap();
+        let http = crate::service::Connection::timing_out(std::time::Duration::from_millis(100));
         let heads = Heads::new(http, &format!("http://{addr}"));
         let now = Timestamp::now();
         heads.saw(20, now);
@@ -525,7 +529,7 @@ mod tests {
         let mut published = vec![now - days(30); 20];
         published[5] = now - days(6) - SignedDuration::from_mins(30);
         let (index, base, _db, sumdb) = serve(published).await;
-        let heads = Heads::new(reqwest::Client::new(), &base);
+        let heads = Heads::new(crate::service::Connection::default(), &base);
         let claimed = Some(at("2020-01-01T00:00:00Z"));
         assert_eq!(heads.dated(&sumdb, 15, claimed, None).await, claimed);
         heads.saw(10, now - days(10));
@@ -548,7 +552,7 @@ mod tests {
     async fn an_entry_that_does_not_make_a_row_is_an_error() {
         let (_index, base, db, sumdb) = serve(every_ten_minutes(20)).await;
         *db.size.lock().unwrap() = 10;
-        let heads = Heads::new(reqwest::Client::new(), &base);
+        let heads = Heads::new(crate::service::Connection::default(), &base);
         let error = heads.point(&sumdb, Timestamp::now()).await.unwrap_err();
         assert!(error.contains("no record of example.com/m@v1"), "{error}");
 
@@ -561,16 +565,19 @@ mod tests {
                     .route("/index", axum::routing::get(move || async move { body })),
             )
             .await;
-            let heads = Heads::new(reqwest::Client::new(), &base);
+            let heads = Heads::new(crate::service::Connection::default(), &base);
             assert!(
                 heads.point(&sumdb, Timestamp::now()).await.is_err(),
                 "{body}"
             );
         }
         let closed = crate::util::test_support::closing_server().await;
-        let heads = Heads::new(reqwest::Client::new(), &format!("http://{closed}"));
+        let heads = Heads::new(
+            crate::service::Connection::default(),
+            &format!("http://{closed}"),
+        );
         assert!(heads.point(&sumdb, Timestamp::now()).await.is_err());
-        let heads = Heads::new(reqwest::Client::new(), &base);
+        let heads = Heads::new(crate::service::Connection::default(), &base);
         let error = heads
             .point(&sumdb, Timestamp::now() + SignedDuration::from_hours(2))
             .await
@@ -582,7 +589,7 @@ mod tests {
     #[tokio::test]
     async fn a_seed_is_read_once_for_requests_at_once() {
         let (index, base, _db, sumdb) = serve(every_ten_minutes(2000)).await;
-        let heads = Heads::new(reqwest::Client::new(), &base);
+        let heads = Heads::new(crate::service::Connection::default(), &base);
         let before = Timestamp::now() - SignedDuration::from_hours(24);
         tokio::join!(heads.seed(&sumdb, before), heads.seed(&sumdb, before));
         assert_eq!(*index.asked.lock().unwrap(), 1);
@@ -616,7 +623,7 @@ mod tests {
             ),
         );
         let base = crate::proxy::testing::serve(router).await;
-        let heads = Heads::new(reqwest::Client::new(), &base);
+        let heads = Heads::new(crate::service::Connection::default(), &base);
         let now = Timestamp::from_second(Timestamp::now().as_second()).unwrap();
         heads.saw(0, now - SignedDuration::from_hours(1 << 21));
         heads.saw(100, now);
@@ -633,12 +640,12 @@ mod tests {
         let (_index, base, _db, _sumdb) = serve(every_ten_minutes(20)).await;
         let closed = crate::util::test_support::closing_server().await;
         let silent = sumdb::Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{closed}"),
             crate::ecosystem::go::note::SUM_GOLANG_ORG,
         )
         .unwrap();
-        let heads = Heads::new(reqwest::Client::new(), &base);
+        let heads = Heads::new(crate::service::Connection::default(), &base);
         assert!(heads.point(&silent, Timestamp::now()).await.is_err());
 
         let (_index, _base, _db, sumdb) = serve(every_ten_minutes(20)).await;
@@ -647,7 +654,7 @@ mod tests {
             axum::Router::new().route("/index", axum::routing::get(move || async move { long })),
         )
         .await;
-        let error = Heads::new(reqwest::Client::new(), &base)
+        let error = Heads::new(crate::service::Connection::default(), &base)
             .point(&sumdb, Timestamp::now())
             .await
             .unwrap_err();
@@ -656,7 +663,10 @@ mod tests {
             crate::util::test_support::Answer::cut_short(),
         ])
         .await;
-        let heads = Heads::new(reqwest::Client::new(), &format!("http://{addr}"));
+        let heads = Heads::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+        );
         assert!(heads.point(&sumdb, Timestamp::now()).await.is_err());
     }
 
@@ -666,12 +676,12 @@ mod tests {
     #[ignore = "asks index.golang.org and sum.golang.org"]
     async fn index_golang_org_seeds_a_row_a_week_back() {
         let sumdb = sumdb::Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             sumdb::DEFAULT,
             crate::ecosystem::go::note::SUM_GOLANG_ORG,
         )
         .unwrap();
-        let heads = Heads::new(reqwest::Client::new(), INDEX);
+        let heads = Heads::new(crate::service::Connection::default(), INDEX);
         let before = Timestamp::now() - SignedDuration::from_hours(7 * 24);
         heads.seed(&sumdb, before).await;
         let (size, seen) = rows(&heads)[0];

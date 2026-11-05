@@ -9,6 +9,12 @@ use super::paths::escape;
 use super::tlog::{self, Fetching, HEIGHT, Hash, Tiles};
 use crate::util::lru::Lru;
 
+/// The headers the Go checksum database is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the Go checksum database",
+    headers: &[],
+};
+
 /// The checksum database the go command asks.
 pub const DEFAULT: &str = "https://sum.golang.org";
 
@@ -31,7 +37,7 @@ pub enum Answer {
 
 /// A client of one checksum database.
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     base: String,
     verifier: Verifier,
     /// The largest tree verified so far. Every later one has to extend it.
@@ -57,9 +63,13 @@ fn tile_path(level: u32, index: u64, width: u64) -> String {
 
 impl Client {
     /// A client of the database at `base`, whose tree heads `key` signs.
-    pub fn new(http: reqwest::Client, base: &str, key: &str) -> Result<Self, String> {
+    pub fn new(
+        connection: crate::service::Connection,
+        base: &str,
+        key: &str,
+    ) -> Result<Self, String> {
         Ok(Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             base: base.trim_end_matches('/').to_owned(),
             verifier: Verifier::parse(key)?,
             latest: tokio::sync::Mutex::new(None),
@@ -338,7 +348,7 @@ pub(crate) mod testing {
     pub(crate) async fn client(db: Arc<Database>) -> Client {
         let key = db.key();
         let base = serve(db).await;
-        Client::new(reqwest::Client::new(), &base, &key).unwrap()
+        Client::new(crate::service::Connection::default(), &base, &key).unwrap()
     }
 }
 
@@ -377,7 +387,8 @@ mod tests {
     async fn a_record_in_the_signed_tree_is_its_versions_h1_lines() {
         let db = database(70_000);
         let base = serve(db.clone()).await;
-        let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
+        let client =
+            Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
         assert_eq!(
             client.lookup("example.com/m", "v1234").await,
             Ok(known(1234, 70_000))
@@ -404,7 +415,8 @@ mod tests {
     async fn the_largest_tree_proved_is_the_one_kept() {
         let db = database(60_000);
         let base = serve(db.clone()).await;
-        let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
+        let client =
+            Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
         let kept = || async { client.latest.lock().await.map(|tree| tree.size) };
         client.lookup("example.com/m", "v1").await.unwrap();
         assert_eq!(kept().await, Some(60_000));
@@ -422,7 +434,8 @@ mod tests {
     async fn a_tree_that_does_not_extend_the_last_one_is_refused() {
         let db = database(60_000);
         let base = serve(db.clone()).await;
-        let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
+        let client =
+            Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
         assert_eq!(
             client.lookup("example.com/m", "v7").await,
             Ok(known(7, 60_000))
@@ -444,7 +457,8 @@ mod tests {
         let error = client.lookup("example.com/m", "v9").await.unwrap_err();
         assert!(error.contains("not in the signed tree"), "{error}");
 
-        let fresh = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
+        let fresh =
+            Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
         *db.root.lock().unwrap() = None;
         *db.size.lock().unwrap() = 300;
         fresh.lookup("example.com/m", "v1").await.unwrap();
@@ -467,7 +481,8 @@ mod tests {
         let db = database(1000);
         let base = serve(db.clone()).await;
         let other = Ed25519KeyPair::generate().unwrap();
-        let stranger = Client::new(reqwest::Client::new(), &base, &key(&other)).unwrap();
+        let stranger =
+            Client::new(crate::service::Connection::default(), &base, &key(&other)).unwrap();
         let error = stranger.lookup("example.com/m", "v1").await.unwrap_err();
         assert!(error.contains("no signature by sum.test"), "{error}");
 
@@ -482,7 +497,7 @@ mod tests {
         ] {
             let addr = crate::util::test_support::scripted(vec![answer]).await;
             let client = Client::new(
-                reqwest::Client::new(),
+                crate::service::Connection::default(),
                 &format!("http://{addr}"),
                 &key(&db.pair),
             )
@@ -497,7 +512,8 @@ mod tests {
     async fn a_proved_record_without_both_lines_is_an_error() {
         let db = database(1000);
         let base = serve(db.clone()).await;
-        let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
+        let client =
+            Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
         let error = client.lookup("example.com/m", "v01").await.unwrap_err();
         assert!(error.contains("no `example.com/m v01 ` line"), "{error}");
         let error = client.lookup("example.com/m", "v13").await.unwrap_err();
@@ -515,7 +531,8 @@ mod tests {
     async fn a_tile_that_fails_fails_the_lookup() {
         let db = database(70_000);
         let base = serve(db.clone()).await;
-        let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
+        let client =
+            Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
         *db.refused.lock().unwrap() = Some((0, 273, 112));
         let error = client.lookup("example.com/m", "v69999").await.unwrap_err();
         assert!(error.contains("answered 500"), "{error}");
@@ -535,7 +552,8 @@ mod tests {
     async fn full_tiles_are_kept_and_a_bad_tile_is_an_error() {
         let db = database(70_000);
         let base = serve(db.clone()).await;
-        let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
+        let client =
+            Client::new(crate::service::Connection::default(), &base, &key(&db.pair)).unwrap();
         client.lookup("example.com/m", "v100").await.unwrap();
         let asked = db.log.asked.lock().unwrap().len();
         client.lookup("example.com/m", "v101").await.unwrap();
@@ -548,7 +566,7 @@ mod tests {
             )])
             .await;
         let bad = Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{addr}"),
             &key(&db.pair),
         )
@@ -560,7 +578,7 @@ mod tests {
             )])
             .await;
         let gone = Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{addr}"),
             &key(&db.pair),
         )
@@ -574,7 +592,7 @@ mod tests {
     #[ignore = "asks sum.golang.org"]
     async fn sum_golang_org_proves_rsc_io_quote() {
         let client = Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             DEFAULT,
             crate::ecosystem::go::note::SUM_GOLANG_ORG,
         )
@@ -606,7 +624,7 @@ mod tests {
         assert_eq!(tile_path(0, 5, 256), "tile/8/0/005");
         assert_eq!(tile_path(2, 1_234_567, 17), "tile/8/2/x001/x234/567.p/17");
         assert_eq!(tile_path(1, 1000, 256), "tile/8/1/x001/000");
-        assert!(Client::new(reqwest::Client::new(), DEFAULT, "not a key").is_err());
+        assert!(Client::new(crate::service::Connection::default(), DEFAULT, "not a key").is_err());
         let _ = data(0);
     }
 }

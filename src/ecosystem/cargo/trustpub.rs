@@ -13,6 +13,12 @@ use crate::analysis::detector::{Detecting, Detection, Detector, Target};
 use crate::env::ApiSetting;
 use crate::identity::Ecosystem;
 
+/// The headers crates.io's API is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "crates.io's API",
+    headers: &["user-agent"],
+};
+
 /// crates.io's API, asked when cargo's upstream is crates.io's index.
 pub const API: &str = "https://crates.io";
 
@@ -29,7 +35,7 @@ const USER_AGENT: &str = concat!(
 /// The detector, when `setting` names an API, or leaves it unset and `upstream` is
 /// crates.io's index, which crates.io's API describes. Requests are `interval` apart.
 pub fn made(
-    http: &reqwest::Client,
+    http: &crate::service::Connection,
     _: crate::ecosystem::Repository,
     upstream: &str,
     setting: &ApiSetting,
@@ -95,7 +101,7 @@ fn identity(data: &serde_json::Value) -> String {
 
 /// Asks crates.io's API who published each version of a crate.
 pub struct TrustPub {
-    http: reqwest::Client,
+    http: crate::service::Service,
     api: String,
     interval: Duration,
     /// When the next request may start, an interval after the last one started.
@@ -104,9 +110,9 @@ pub struct TrustPub {
 
 impl TrustPub {
     /// Asks `api`, at most one request each `interval`.
-    pub fn new(http: reqwest::Client, api: &str, interval: Duration) -> Self {
+    pub fn new(connection: crate::service::Connection, api: &str, interval: Duration) -> Self {
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             api: api.trim_end_matches('/').to_owned(),
             interval,
             next: tokio::sync::Mutex::new(Instant::now()),
@@ -227,7 +233,7 @@ mod tests {
     /// a URL is asked whatever the upstream.
     #[test]
     fn crates_io_s_api_is_asked_only_for_crates_io_s_index() {
-        let http = reqwest::Client::new();
+        let http = crate::service::Connection::default();
         let made = |upstream: &str, setting: &ApiSetting| {
             let at = crate::ecosystem::Repository::of(Ecosystem::Cargo);
             made(&http, at, upstream, setting, Duration::ZERO).is_some()
@@ -276,7 +282,11 @@ mod tests {
     }
 
     fn asked(addr: std::net::SocketAddr, interval: Duration) -> TrustPub {
-        TrustPub::new(reqwest::Client::new(), &format!("http://{addr}/"), interval)
+        TrustPub::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}/"),
+            interval,
+        )
     }
 
     fn paths(requests: &Requests) -> Vec<String> {
@@ -408,7 +418,7 @@ mod tests {
 
     #[test]
     fn it_reads_cargo_only_and_names_itself() {
-        let detector = TrustPub::new(reqwest::Client::new(), API, Duration::ZERO);
+        let detector = TrustPub::new(crate::service::Connection::default(), API, Duration::ZERO);
         assert_eq!((detector.name(), detector.version()), (NAME, VERSION));
         assert!(detector.reads(crate::ecosystem::Repository::of(
             crate::identity::Ecosystem::Cargo

@@ -35,6 +35,7 @@ pub mod remote;
 pub mod reverse_proxy;
 pub mod rotation;
 pub mod route;
+pub mod service;
 pub mod signal;
 pub mod spool;
 pub mod startup;

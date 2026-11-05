@@ -51,7 +51,7 @@ async fn main() {
                 .filter(|(ecosystem, _, _)| ecosystem == "npm" || ecosystem == "pypi"),
         );
     }
-    let http = reqwest::Client::new();
+    let http = byrle::service::Connection::default();
     let registry = Client::new(http.clone(), "https://registry.npmjs.org");
     let index = PypiClient::new(http.clone(), byrle::ecosystem::pypi::INDEX);
     // A developer tool on the developer's own machine; Spool::open creates it 0700.

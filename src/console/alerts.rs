@@ -329,7 +329,8 @@ mod tests {
             proxy_mount: crate::mount::Mount::ROOT,
         };
         let store = crate::console::login::tests::store().await;
-        let proxy = crate::proxy::Proxy::new(reqwest::Client::new()).with_intel(intel);
+        let proxy =
+            crate::proxy::Proxy::new(crate::service::Connection::default()).with_intel(intel);
         let site = crate::console::tests::unread(console, store).with_proxy(
             proxy,
             Vec::new(),
