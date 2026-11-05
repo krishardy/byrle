@@ -337,6 +337,31 @@ pypi::sri gives      sha256-gTICrOTZMBo8AHQMcA4BL7nz+Mc93P4Cq1WKjfbxdf0=
 The last line round-trips through `integrity::Sri::parse` as `Algorithm::Sha256`, so the
 conversion reaches the verifier npm's digests already use.
 
+`real_indexes_are_served_without_skipping_anything` runs over a corpus on disk and is
+ignored by default. Each index is parsed, normalised, and filtered and repointed as the
+proxy serves it, refusing nothing and then its latest version. Fill a directory with
+`<project>.json` (PEP 691) and `<project>.html` (PEP 503) files and name it in
+`BYRLE_PYPI_CORPUS`:
+
+```text
+curl -H "Accept: application/vnd.pypi.simple.v1+json" \
+    https://pypi.org/simple/requests/ > corpus/requests.json
+curl -H "Accept: text/html" https://pypi.org/simple/requests/ > corpus/requests.html
+cargo test --lib real_indexes -- --ignored --nocapture
+```
+
+On 2026-11-05, 158 projects in both forms, 316 indexes, 49,066 versions and 394,354 files:
+none failed to parse or be served, and no version was skipped. 4,536 files in the JSON
+indexes, and the same in the HTML, stayed on `files.pythonhosted.org`, all of kinds `filename_parts` does not read and pip does not
+install:
+
+| Kind | Files | Projects, among them |
+|---|---|---|
+| `.exe` | 2,600 | billiard, coverage, gevent, lxml |
+| `.egg` | 1,897 | amqp, beautifulsoup4, greenlet |
+| `.msi` | 31 | gevent, mpmath, tqdm |
+| `.rpm` | 8 | setuptools |
+
 ## Transport, and what it does not share with npm
 
 `pypi::Client` is deliberately the same shape as `npm::Client`, an `http`, a base and a

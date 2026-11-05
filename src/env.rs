@@ -707,6 +707,11 @@ pub const NPM_CORPUS_FULL: Var = other(
     "BYRLE_NPM_CORPUS_FULL",
     &["directory of full packuments for the ignored corpus test"],
 );
+pub const PYPI_CORPUS: Var = other(
+    Kind::Test,
+    "BYRLE_PYPI_CORPUS",
+    &["directory of simple indexes, .json and .html, for the ignored corpus test"],
+);
 pub const TEST_DATABASE_URL: Var = other(
     Kind::Test,
     "BYRLE_TEST_DATABASE_URL",
@@ -794,7 +799,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 97] = [
+pub const ALL: [Var; 98] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -875,6 +880,7 @@ pub const ALL: [Var; 97] = [
     BLESS,
     NPM_CORPUS,
     NPM_CORPUS_FULL,
+    PYPI_CORPUS,
     TEST_DATABASE_URL,
     TEST_SCHEMA_PER_PROCESS,
     HOME_DIR,
@@ -1626,6 +1632,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.path(NPM_CORPUS_FULL)
     }
 
+    pub fn pypi_corpus(&self) -> Result<Option<PathBuf>, EnvError> {
+        self.path(PYPI_CORPUS)
+    }
+
     pub fn test_database_url(&self) -> Result<Option<String>, EnvError> {
         self.text(TEST_DATABASE_URL)
     }
@@ -1907,6 +1917,7 @@ mod tests {
         assert!(!env.bless());
         assert_eq!(env.npm_corpus().unwrap(), None);
         assert_eq!(env.npm_corpus_full().unwrap(), None);
+        assert_eq!(env.pypi_corpus().unwrap(), None);
         assert_eq!(env.test_database_url().unwrap(), None);
         assert!(!env.test_schema_per_process().unwrap());
         assert_eq!(env.home().unwrap(), None);
@@ -1965,6 +1976,7 @@ mod tests {
             (BLESS, "1"),
             (NPM_CORPUS, "abbrev"),
             (NPM_CORPUS_FULL, "full"),
+            (PYPI_CORPUS, "simple"),
             (TEST_DATABASE_URL, "postgres://test"),
             (TEST_SCHEMA_PER_PROCESS, "1"),
             (HOME_DIR, "/home/u"),
@@ -2030,6 +2042,7 @@ mod tests {
         assert!(env.bless());
         assert_eq!(env.npm_corpus().unwrap(), Some(PathBuf::from("abbrev")));
         assert_eq!(env.npm_corpus_full().unwrap(), Some(PathBuf::from("full")));
+        assert_eq!(env.pypi_corpus().unwrap(), Some(PathBuf::from("simple")));
         assert_eq!(
             env.test_database_url().unwrap().as_deref(),
             Some("postgres://test")
