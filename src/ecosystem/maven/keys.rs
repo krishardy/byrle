@@ -9,6 +9,9 @@ use crate::util::lru::Lru;
 /// The key servers asked, in order; keyserver.ubuntu.com held 12 of 93 keys the first lacked.
 pub const SERVERS: [&str; 2] = ["https://keys.openpgp.org", "https://keyserver.ubuntu.com"];
 
+/// The most read of a server's copy of a key; 38DBBDC86092693E's was 135,482 bytes on Ubuntu's.
+pub const MAX_KEY_BYTES: usize = 1024 * 1024;
+
 /// Keys kept, by the fingerprint or key id a signature named them by.
 pub const MAX_KEYS: usize = 4096;
 
@@ -82,10 +85,14 @@ impl KeyServers {
         match response.status() {
             reqwest::StatusCode::NOT_FOUND => Ok(None),
             status if !status.is_success() => Err(format!("{server} answered {status}")),
-            _ => crate::http::capped_body(response, crate::env::DEFAULT_MAX_METADATA_BYTES)
-                .await
-                .map(|body| Some(String::from_utf8_lossy(&body).into_owned()))
-                .map_err(|e| format!("{server} could not be read: {e}")),
+            _ => match crate::http::capped_body(response, MAX_KEY_BYTES).await {
+                Ok(body) => Ok(Some(String::from_utf8_lossy(&body).into_owned())),
+                Err(crate::http::BodyError::TooLarge(limit)) => {
+                    tracing::warn!(byrle.signature.key = %issuer, server.address = %server, "the key server's copy is over {limit} bytes; it is not used");
+                    Ok(None)
+                }
+                Err(e) => Err(format!("{server} could not be read: {e}")),
+            },
         }
     }
 }
@@ -115,6 +122,21 @@ mod tests {
         );
         assert_eq!(asked.lock().unwrap().len(), 1);
         assert!(format!("{servers:?}").contains(&first.to_string()));
+    }
+
+    /// A copy over [`MAX_KEY_BYTES`] is not used, and the other server's is.
+    #[tokio::test]
+    async fn a_copy_over_the_limit_is_not_used() {
+        let (first, _) = recorded(vec![Answer::Chunked(vec![b'k'; MAX_KEY_BYTES + 1])]).await;
+        let (second, _) = recorded(vec![Answer::body("KEY")]).await;
+        let servers = KeyServers::at(
+            reqwest::Client::new(),
+            &[&format!("http://{first}"), &format!("http://{second}")],
+        );
+        assert_eq!(servers.copies("ABCD").await.unwrap(), ["KEY"]);
+        let (at, _) = recorded(vec![Answer::Chunked(vec![b'k'; MAX_KEY_BYTES])]).await;
+        let whole = KeyServers::at(reqwest::Client::new(), &[&format!("http://{at}")]);
+        assert_eq!(whole.copies("ABCD").await.unwrap()[0].len(), MAX_KEY_BYTES);
     }
 
     /// A key no server holds is no copy, and is asked again; a server that cannot answer
