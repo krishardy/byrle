@@ -507,6 +507,9 @@ Items that I've added that are not stage-bound.
     Neither reads a file's first sighting either, which dates an undated pinned fetch
     since decision 0129, so both report an undated version as having no date. Added
     2026-11-03.
+54. Opengrep for SAST: add it to `make sast` beside semgrep or in its place, with a
+    `scripts/make/opengrep.sh`, the same rules and `// nosemgrep:` suppressions, and a CI
+    step. Raised 2026-11-05.
 
 ## Architecture Refactor
 
