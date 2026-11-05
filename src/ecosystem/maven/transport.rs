@@ -152,11 +152,9 @@ impl Client {
             reqwest::StatusCode::NOT_FOUND => None,
             status if !status.is_success() => return Err(format!(".asc answered {status}")),
             _ => Some(
-                response
-                    .bytes()
+                crate::http::body_to_limit(response, crate::http::MAX_SIDECAR_BYTES)
                     .await
-                    .map_err(|e| format!(".asc request failed: {e}"))?
-                    .to_vec(),
+                    .map_err(|e| format!(".asc request failed: {e}"))?,
             ),
         };
         self.signatures
@@ -357,8 +355,7 @@ impl Client {
             }
             _ => {}
         }
-        let body = response
-            .bytes()
+        let body = crate::http::capped_body(response, crate::http::MAX_SIDECAR_BYTES)
             .await
             .map_err(|e| format!("{} request failed: {e}", sidecar.suffix))?;
         Ok(Some(String::from_utf8_lossy(&body).into_owned()))
@@ -377,12 +374,9 @@ impl Client {
         if !response.status().is_success() {
             return Err(format!("maven-metadata.xml answered {}", response.status()));
         }
-        let body = response
-            .bytes()
+        let body = crate::http::capped_body(response, self.max_bytes)
             .await
             .map_err(|e| format!("maven-metadata.xml request failed: {e}"))?;
-        let body = crate::http::decode_for_parsing(&body, None, self.max_bytes)
-            .map_err(|e| format!("maven-metadata.xml body could not be decoded: {e}"))?;
         Ok(match parse(&body) {
             Ok(read) if read.is_of(key) => Ok(read.records(key, &versions)),
             Ok(_) => Err(format!("{url} names no versions of {key}")),
@@ -826,6 +820,14 @@ pub(crate) mod tests {
                 .unwrap_err();
             assert!(error.starts_with(said), "{error}");
         }
+        let limit = crate::http::MAX_SIDECAR_BYTES;
+        let addr = scripted(vec![Answer::Chunked(vec![b'a'; 4 * limit])]).await;
+        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let kept = client.signature(&format!("http://{addr}/x.jar")).await;
+        let kept = kept.unwrap().expect("it is there");
+        assert_eq!(kept.len(), limit + 1, "read one byte past the limit");
+        let why = super::super::signature::issuer(&kept).unwrap_err();
+        assert!(why.contains(&format!("over {limit} bytes")), "{why}");
     }
 
     /// A version the repository dates nothing for has nothing before it; metadata that
@@ -875,7 +877,7 @@ pub(crate) mod tests {
             (
                 Answer::body("<metadata/>".repeat(8)),
                 8,
-                "maven-metadata.xml body could not be decoded",
+                "maven-metadata.xml request failed: the body is over 8 bytes",
             ),
         ] {
             let addr = scripted(vec![answer]).await;

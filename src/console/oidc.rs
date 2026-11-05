@@ -286,18 +286,10 @@ async fn body(response: reqwest::Response) -> Result<Vec<u8>, String> {
     if !status.is_success() {
         return Err(format!("{} answered {status}", response.url()));
     }
-    let mut response = response;
-    let mut read = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-        read.extend_from_slice(&chunk);
-        if read.len() > MAX_ANSWER {
-            return Err(format!(
-                "{} answered more than {MAX_ANSWER} bytes",
-                response.url()
-            ));
-        }
-    }
-    Ok(read)
+    let url = response.url().to_string();
+    crate::http::capped_body(response, MAX_ANSWER)
+        .await
+        .map_err(|e| format!("{url}: {e}"))
 }
 
 impl Provider {
@@ -927,7 +919,7 @@ pub(crate) mod tests {
                 .fetched(&format!("{base}/big"))
                 .await
                 .unwrap_err()
-                .contains("more than")
+                .contains("is over")
         );
         let read = client.fetched(&format!("{base}/most")).await.unwrap();
         assert_eq!(

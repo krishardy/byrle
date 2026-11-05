@@ -67,7 +67,8 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 | Input | Bound | Where |
 |---|---|---|
 | A request path | 400 for a `.` or `..` segment, `%2e` in any case, split on `/` or `\`, so the path asked upstream is the path classified | `route::rewritten_by_url_parser` |
-| A metadata document | 64 MiB, applied to the decoded size, so a compression bomb stops at the limit; one over it, or one that cannot be decoded, is answered 502 and logged `UNINSPECTED`, and forwarded unread in observe mode | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
+| A metadata document | 64 MiB, applied to the size sent and to the decoded size, so a compression bomb stops at the limit; one over it, or one that cannot be decoded, is answered 502 and logged `UNINSPECTED`, and forwarded unread in observe mode | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
+| A sidecar the proxy reads: a checksum, an `.asc`, a Go `.info`, a sumdb answer | 64 KiB as sent; an `.asc` over it fails to verify, and one LRU of 8,192 `.asc`s keeps at most 512 MiB | `http::MAX_SIDECAR_BYTES` |
 | An archive member read into memory | 4 MiB | `analysis::MAX_MEMBER_BYTES` |
 | An artifact spooled for analysis | 1 GiB; one over it is stored as unreadable, which `install_scripts: block` refuses | `BYRLE_MAX_ARTIFACT_BYTES` |
 | An analysis job | 600 s; a job past it stops reading its file on the blocking thread, as a source comparison and a signature check do | `analysis::run::DEADLINE`, `util::blocking::run` |

@@ -48,6 +48,17 @@ impl std::fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
+impl From<crate::http::BodyError> for FetchError {
+    fn from(e: crate::http::BodyError) -> Self {
+        match e {
+            crate::http::BodyError::Transport(e) => Self::Transport(e),
+            crate::http::BodyError::TooLarge(limit) => {
+                Self::Undecodable(crate::http::DecodeError::TooLarge(limit))
+            }
+        }
+    }
+}
+
 impl Client {
     /// `index` is a base URL such as `https://pypi.org/simple`. A trailing slash is
     /// accepted and trimmed.
@@ -105,7 +116,7 @@ impl Client {
             .get(reqwest::header::CONTENT_ENCODING)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let body = response.bytes().await.map_err(FetchError::Transport)?;
+        let body = crate::http::capped_body(response, self.max_bytes).await?;
         let decoded = crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes)
             .map_err(FetchError::Undecodable)?;
         match format {

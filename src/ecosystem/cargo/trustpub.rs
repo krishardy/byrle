@@ -129,8 +129,7 @@ impl TrustPub {
         if !response.status().is_success() {
             return Err(format!("{url} answered {}", response.status().as_u16()));
         }
-        let body = response
-            .bytes()
+        let body = crate::http::capped_body(response, crate::env::DEFAULT_MAX_METADATA_BYTES)
             .await
             .map_err(|e| format!("{url}: body not read: {e}"))?;
         serde_json::from_slice(&body).map_err(|e| format!("{url}: body not understood: {e}"))

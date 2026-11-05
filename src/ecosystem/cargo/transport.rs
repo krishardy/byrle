@@ -43,8 +43,7 @@ impl Client {
             .get(reqwest::header::CONTENT_ENCODING)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let body = response
-            .bytes()
+        let body = crate::http::capped_body(response, self.max_bytes)
             .await
             .map_err(|e| format!("index request failed: {e}"))?;
         let decoded = crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes)
@@ -106,6 +105,7 @@ mod tests {
         let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         gzip.write_all(&super::super::fixture()).unwrap();
         let body = gzip.finish().unwrap();
+        let sent = body.len();
         let app = axum::Router::new().fallback(move || {
             let body = body.clone();
             async move { ([(axum::http::header::CONTENT_ENCODING, "gzip")], body) }
@@ -116,6 +116,15 @@ mod tests {
         let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
         let metadata = client.metadata(&itoa()).await.expect("fetched");
         assert_eq!(metadata.expect("read").records.len(), 37);
+        let small = Client::new(reqwest::Client::new(), &format!("http://{addr}"), sent);
+        let error = small
+            .metadata(&itoa())
+            .await
+            .expect_err("decodes past the limit");
+        assert!(
+            error.starts_with("index body could not be decoded"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -127,7 +136,7 @@ mod tests {
             (
                 Answer::body("x".repeat(64)),
                 8,
-                "index body could not be decoded",
+                "index request failed: the body is over 8 bytes",
             ),
         ] {
             let error = client(vec![answer], max_bytes)

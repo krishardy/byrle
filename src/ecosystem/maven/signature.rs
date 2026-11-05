@@ -89,6 +89,12 @@ pub fn verify(
 
 /// The detached signature `bytes` armor. Errors when they are not one.
 fn parse(bytes: &[u8]) -> Result<Signature, String> {
+    if bytes.len() > crate::http::MAX_SIDECAR_BYTES {
+        let limit = crate::http::MAX_SIDECAR_BYTES;
+        return Err(format!(
+            "it is over {limit} bytes, more than a signature is"
+        ));
+    }
     match DetachedSignature::from_armor_single(bytes) {
         Ok((detached, _)) => Ok(detached.signature),
         Err(e) => compressed(bytes).ok_or_else(|| format!("it is no signature: {e}")),

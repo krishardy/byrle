@@ -103,7 +103,7 @@ impl Client {
             .get(reqwest::header::CONTENT_ENCODING)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let body = response.bytes().await.map_err(FetchError::Transport)?;
+        let body = crate::http::capped_body(response, self.max_bytes).await?;
         crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes)
             .map_err(FetchError::Undecodable)
     }

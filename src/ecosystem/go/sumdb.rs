@@ -83,10 +83,9 @@ impl Client {
             }
             _ => {}
         }
-        response
-            .bytes()
+        crate::http::capped_body(response, crate::http::MAX_SIDECAR_BYTES)
             .await
-            .map(Some)
+            .map(|body| Some(body.into()))
             .map_err(|e| format!("{url}: body not read: {e}"))
     }
 

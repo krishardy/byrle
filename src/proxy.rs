@@ -3338,7 +3338,8 @@ async fn sidecar(
 }
 
 /// The document at `document_path` from upstream, for the sidecar at `path`: its body,
-/// `Content-Type` and `Content-Encoding`. `None` when it could not be fetched whole.
+/// `Content-Type` and `Content-Encoding`, the body cut one byte past the limit so the check
+/// that follows refuses it. `None` when it could not be fetched.
 async fn sidecar_document(
     proxy: &Proxy,
     repository: Repository,
@@ -3368,8 +3369,9 @@ async fn sidecar_document(
         header_of(header::CONTENT_TYPE),
         header_of(header::CONTENT_ENCODING),
     );
-    let body = fetched.bytes().await.ok()?;
-    Some((body, content_type, content_encoding))
+    let limit = proxy.config.max_metadata_bytes;
+    let body = crate::http::body_to_limit(fetched, limit).await.ok()?;
+    Some((body.into(), content_type, content_encoding))
 }
 
 /// A request for a path outside the one the proxy answers under: 404, naming that path.
@@ -7987,6 +7989,25 @@ mod tests {
                 "{said}"
             );
         }
+    }
+
+    /// The sidecar of a document over the limit is refused as the document is, and the
+    /// document is read no further than one byte past it.
+    #[tokio::test]
+    async fn a_sidecar_of_a_document_over_the_limit_is_refused() {
+        use crate::util::test_support::Answer;
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let (addr, _) =
+            crate::util::test_support::recorded(vec![Answer::Typed("text/xml", fixture)]).await;
+        let proxy = offline(None, Some(DENY_LANG3))
+            .with_upstream(Ecosystem::Maven, format!("http://{addr}/maven2"))
+            .with_max_metadata_bytes(64);
+        let base = serve(proxy.router()).await;
+        let sha1 = reqwest::get(format!("{base}{LANG3_METADATA}.sha1"))
+            .await
+            .unwrap();
+        assert_eq!(sha1.status(), 502);
+        assert!(sha1.text().await.unwrap().contains("over 64 bytes"));
     }
 
     /// An intel store that has loaded nothing, so no package can be decided.

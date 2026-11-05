@@ -82,10 +82,9 @@ impl KeyServers {
         match response.status() {
             reqwest::StatusCode::NOT_FOUND => Ok(None),
             status if !status.is_success() => Err(format!("{server} answered {status}")),
-            _ => response
-                .text()
+            _ => crate::http::capped_body(response, crate::env::DEFAULT_MAX_METADATA_BYTES)
                 .await
-                .map(Some)
+                .map(|body| Some(String::from_utf8_lossy(&body).into_owned()))
                 .map_err(|e| format!("{server} could not be read: {e}")),
         }
     }

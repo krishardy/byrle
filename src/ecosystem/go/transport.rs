@@ -91,7 +91,9 @@ impl Client {
             }
             _ => {}
         }
-        let body = response.bytes().await.map_err(|e| format!("{url}: {e}"))?;
+        let body = crate::http::capped_body(response, crate::http::MAX_SIDECAR_BYTES)
+            .await
+            .map_err(|e| format!("{url}: {e}"))?;
         serde_json::from_slice(&body)
             .map(Some)
             .map_err(|e| format!("{url}: {e}"))
@@ -251,12 +253,9 @@ impl Client {
         if !response.status().is_success() {
             return Err(format!("version list answered {}", response.status()));
         }
-        let body = response
-            .bytes()
+        let body = crate::http::capped_body(response, self.max_bytes)
             .await
             .map_err(|e| format!("version list request failed: {e}"))?;
-        let body = crate::http::decode_for_parsing(&body, None, self.max_bytes)
-            .map_err(|e| format!("version list body could not be decoded: {e}"))?;
         Ok(Ok(list(key, &body, &self.files(key))))
     }
 }
@@ -624,7 +623,7 @@ pub(crate) mod tests {
             (
                 Answer::body("v1.0.0\n".repeat(8)),
                 8,
-                "version list body could not be decoded",
+                "version list request failed: the body is over 8 bytes",
             ),
         ] {
             let addr = scripted(vec![answer]).await;

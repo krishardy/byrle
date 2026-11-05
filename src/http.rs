@@ -230,7 +230,7 @@ pub enum DecodeError {
     UnsupportedEncoding(String),
     /// The compressed stream was invalid.
     Corrupt(String),
-    /// Decompressed output passed the limit, which it carries.
+    /// The body, or its decompressed output, passed the limit, which it carries.
     TooLarge(usize),
 }
 
@@ -239,12 +239,62 @@ impl std::fmt::Display for DecodeError {
         match self {
             Self::UnsupportedEncoding(e) => write!(f, "cannot decode `Content-Encoding: {e}`"),
             Self::Corrupt(e) => write!(f, "compressed body is corrupt: {e}"),
-            Self::TooLarge(limit) => write!(f, "decompressed body exceeds {limit} bytes"),
+            Self::TooLarge(limit) => write!(f, "the body is over {limit} bytes"),
         }
     }
 }
 
 impl std::error::Error for DecodeError {}
+
+/// The most read of a checksum, an `.asc`, a go `.info` or a sumdb answer; a full tile is 8 KiB.
+pub const MAX_SIDECAR_BYTES: usize = 64 * 1024;
+
+/// A body could not be read under its limit.
+#[derive(Debug)]
+pub enum BodyError {
+    /// The body did not arrive whole.
+    Transport(reqwest::Error),
+    /// The body passed the limit, which it carries.
+    TooLarge(usize),
+}
+
+impl std::fmt::Display for BodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(e) => write!(f, "{e}"),
+            Self::TooLarge(limit) => write!(f, "{}", DecodeError::TooLarge(*limit)),
+        }
+    }
+}
+
+impl std::error::Error for BodyError {}
+
+/// `response`'s body, read no further than one byte past `limit`: longer means it passed.
+pub async fn body_to_limit(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, reqwest::Error> {
+    let mut read = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        read.extend_from_slice(&chunk);
+        if read.len() > limit {
+            read.truncate(limit + 1);
+            break;
+        }
+    }
+    Ok(read)
+}
+
+/// `response`'s body, as sent. Errors when it is over `limit` bytes or does not arrive.
+pub async fn capped_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, BodyError> {
+    let read = body_to_limit(response, limit)
+        .await
+        .map_err(BodyError::Transport)?;
+    if read.len() > limit {
+        return Err(BodyError::TooLarge(limit));
+    }
+    Ok(read)
+}
 
 /// Decode a response body for inspection, refusing to produce more than `limit` bytes.
 /// The client is sent the original encoded body.
@@ -604,6 +654,51 @@ mod tests {
         );
     }
 
+    /// A body sent in chunks with no `Content-Length` is read to its limit and no further.
+    #[tokio::test]
+    async fn a_body_is_read_no_further_than_its_limit() {
+        use futures_util::stream;
+        let chunks = |n: usize| {
+            let chunk = |_| Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b'a'; 100]));
+            axum::body::Body::from_stream(stream::iter((0..n).map(chunk)))
+        };
+        let cut = || {
+            use futures_util::StreamExt;
+            let first = stream::iter([Ok(bytes::Bytes::from_static(b"a"))]);
+            let failed = stream::once(async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Err(std::io::Error::other("cut"))
+            });
+            axum::body::Body::from_stream(first.chain(failed))
+        };
+        let router = axum::Router::new()
+            .route(
+                "/{n}",
+                axum::routing::get(move |axum::extract::Path(n): axum::extract::Path<usize>| {
+                    std::future::ready(chunks(n))
+                }),
+            )
+            .route(
+                "/cut/x",
+                axum::routing::get(move || std::future::ready(cut())),
+            );
+        let base = crate::proxy::testing::serve(router).await;
+        let get = |path: &str| reqwest::get(format!("{base}/{path}"));
+
+        let whole = capped_body(get("3").await.unwrap(), 300).await.unwrap();
+        assert_eq!(whole.len(), 300, "a body at its limit is read whole");
+        let over = capped_body(get("3").await.unwrap(), 299).await.unwrap_err();
+        assert_eq!(over.to_string(), "the body is over 299 bytes");
+        let endless = body_to_limit(get("100000").await.unwrap(), 150)
+            .await
+            .unwrap();
+        assert_eq!(endless.len(), 151, "one byte past the limit says it passed");
+        let cut = capped_body(get("cut/x").await.unwrap(), 300)
+            .await
+            .unwrap_err();
+        assert!(matches!(cut, BodyError::Transport(_)), "{cut}");
+    }
+
     #[test]
     fn unsupported_and_corrupt_bodies_are_distinguishable() {
         assert_eq!(
@@ -626,7 +721,7 @@ mod tests {
         assert!(
             DecodeError::TooLarge(99)
                 .to_string()
-                .contains("exceeds 99 bytes")
+                .contains("over 99 bytes")
         );
         assert!(
             DecodeError::Corrupt("bad header".into())
