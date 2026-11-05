@@ -574,6 +574,16 @@ pub(crate) mod tests {
     pub(crate) async fn server(
         routes: Vec<(String, u16, Vec<u8>)>,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
+        server_at(|_| routes).await
+    }
+
+    /// [`server`], with routes made from its base URL.
+    pub(crate) async fn server_at(
+        routes: impl FnOnce(&str) -> Vec<(String, u16, Vec<u8>)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let routes = routes(&base);
         let asked = Arc::new(Mutex::new(Vec::new()));
         let seen = asked.clone();
         let routes: Arc<std::collections::HashMap<String, (u16, Vec<u8>)>> = Arc::new(
@@ -592,10 +602,8 @@ pub(crate) mod tests {
                     (axum::http::StatusCode::from_u16(status).unwrap(), body)
                 }
             });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
         tokio::spawn(axum::serve(listener, router).into_future());
-        (format!("http://{addr}"), asked)
+        (base, asked)
     }
 
     pub(crate) fn analyser(label: &str, ceiling: u64, store: Arc<dyn Analyses>) -> Analyser {

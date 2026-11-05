@@ -13425,7 +13425,7 @@ mod tests {
             )
             .with_sources(Some(upstream.clone()))
             .with_detectors(detectors)
-            .with_virustotal(virustotal),
+            .with_virustotal(virustotal.map(|settings| (settings, reqwest::Client::new()))),
         );
         let path =
             crate::util::test_support::tempdir(&format!("{label}-audit")).join("audit.jsonl");

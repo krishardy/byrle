@@ -1472,6 +1472,11 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         };
         let positive = |v: &str| v.parse::<u32>().ok().filter(|n| *n > 0);
         let above_0 = "is not a whole number above 0";
+        let base = self.text_or(VIRUSTOTAL_URL, API)?;
+        if crate::http::trusted(&base).is_err() {
+            let why = "is not an https URL, or http to loopback";
+            return Err(EnvError::new(VIRUSTOTAL_URL, base, why));
+        }
         Ok(Some(Settings {
             key,
             mode: self.parsed(
@@ -1480,7 +1485,7 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
                 Mode::parse,
                 "is not `hash` or `upload`",
             )?,
-            base: self.text_or(VIRUSTOTAL_URL, API)?,
+            base,
             per_minute: self.parsed(VIRUSTOTAL_PER_MINUTE, PUBLIC_PER_MINUTE, positive, above_0)?,
             per_day: self.parsed(VIRUSTOTAL_PER_DAY, PUBLIC_PER_DAY, positive, above_0)?,
             uploads_from: PUBLIC_ORIGINS.map(str::to_owned).to_vec(),
@@ -2372,7 +2377,7 @@ mod tests {
         let set = testing::with(&[
             (VIRUSTOTAL_API_KEY, "k"),
             (VIRUSTOTAL_MODE, "upload"),
-            (VIRUSTOTAL_URL, "http://vt.test"),
+            (VIRUSTOTAL_URL, "http://127.0.0.1:9"),
             (VIRUSTOTAL_PER_MINUTE, "1000"),
             (VIRUSTOTAL_PER_DAY, "300000"),
         ])
@@ -2381,7 +2386,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (set.mode, set.base.as_str()),
-            (Mode::Upload, "http://vt.test")
+            (Mode::Upload, "http://127.0.0.1:9")
         );
         assert_eq!((set.per_minute, set.per_day), (1000, 300_000));
         let refused = |var, value| {
@@ -2390,6 +2395,10 @@ mod tests {
                 .unwrap_err()
                 .to_string()
         };
+        assert_eq!(
+            refused(VIRUSTOTAL_URL, "http://vt.test"),
+            "BYRLE_VIRUSTOTAL_URL: `http://vt.test` is not an https URL, or http to loopback"
+        );
         assert_eq!(
             refused(VIRUSTOTAL_MODE, "all"),
             "BYRLE_VIRUSTOTAL_MODE: `all` is not `hash` or `upload`"

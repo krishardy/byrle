@@ -64,7 +64,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let listen = environment.listen()?;
     let console = crate::console::Console::from_env(environment, &listen)?;
     let upstreams = environment.upstreams()?;
-    let client = upstream_client(environment)?;
+    let client = upstream_client(environment, reqwest::redirect::Policy::default())?;
     let max_metadata_bytes = environment.max_metadata_bytes()?;
     let max_records = environment.max_records()?;
     let max_verified = environment.max_verified()?;
@@ -101,7 +101,11 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     )
     .with_sources(environment.source_archives()?)
     .with_detectors(detectors(environment, &client, &upstreams).await?)
-    .with_virustotal(virustotal(environment)?.as_ref());
+    .with_virustotal(
+        virustotal(environment)?
+            .as_ref()
+            .map(|(s, c)| (s, c.clone())),
+    );
     analyser.forget_decisions_daily(environment.decision_retention_days()?);
 
     let proxy = Proxy::new(client.clone())
@@ -158,7 +162,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
 /// Errors when a setting does not parse.
 fn virustotal<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
-) -> Result<Option<crate::analysis::virustotal::Settings>, StartupError> {
+) -> Result<Option<(crate::analysis::virustotal::Settings, reqwest::Client)>, StartupError> {
     let settings = environment.virustotal()?;
     match &settings {
         Some(settings) => info!(
@@ -170,7 +174,11 @@ fn virustotal<L: Fn(&str) -> Option<OsString>>(
         ),
         None => info!(byrle.config.variable = %env::VIRUSTOTAL_API_KEY, "virustotal off"),
     }
-    Ok(settings)
+    let Some(settings) = settings else {
+        return Ok(None);
+    };
+    let redirects = crate::analysis::virustotal::redirects();
+    upstream_client(environment, redirects).map(|http| Some((settings, http)))
 }
 
 /// The console as it runs, against the account and usage `stores`, writing logins to
@@ -261,13 +269,14 @@ fn gate<L: Fn(&str) -> Option<OsString>>(
     Ok(Some(crate::account::gate::Gate::new(accounts)))
 }
 
-/// The client every upstream request goes through, trusting [`env::CA_BUNDLE`]'s roots
-/// too when it is set, or only them with [`env::CA_BUNDLE_EXCLUSIVE`].
+/// A client for one upstream service, following `redirects`, trusting [`env::CA_BUNDLE`]'s
+/// roots too when it is set, or only them with [`env::CA_BUNDLE_EXCLUSIVE`].
 /// Errors when a bundle is named and does not load.
 fn upstream_client<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
+    redirects: reqwest::redirect::Policy,
 ) -> Result<reqwest::Client, StartupError> {
-    let builder = crate::http::client_builder(crate::http::READ_TIMEOUT);
+    let builder = crate::http::client_builder(crate::http::READ_TIMEOUT).redirect(redirects);
     let Some(path) = environment.ca_bundle()? else {
         return Ok(builder.build().expect("the TLS backend initialises"));
     };
@@ -1021,6 +1030,33 @@ mod tests {
         let (started, log) = logged("startup-watch-off", &[(env::WATCH_INTERVAL, "0")]).await;
         assert!(started, "{log}");
         assert!(log.contains("watcher off"), "{log}");
+    }
+
+    /// VirusTotal's own client follows no redirect, so its key is not sent where one points.
+    #[tokio::test]
+    async fn virustotal_s_client_follows_no_redirect() {
+        use crate::util::test_support::{Answer, recorded};
+        let (elsewhere, asked) = recorded(vec![Answer::body("{}")]).await;
+        let to = format!("http://{elsewhere}/files/x");
+        let redirect = axum::Router::new().fallback(move || {
+            let to = to.clone();
+            async move {
+                (
+                    axum::http::StatusCode::TEMPORARY_REDIRECT,
+                    [(axum::http::header::LOCATION, to)],
+                )
+            }
+        });
+        let base = crate::proxy::testing::serve(redirect).await;
+        let environment = with(&[(env::VIRUSTOTAL_API_KEY, "k"), (env::VIRUSTOTAL_URL, &base)]);
+        let (settings, http) = virustotal(&environment).unwrap().expect("on");
+        let client = crate::analysis::virustotal::Client::new(http, &settings);
+        let answer = client.lookup("x").await.unwrap_err().to_string();
+        assert_eq!(answer, "VirusTotal: answered 307");
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "the redirect is not followed"
+        );
     }
 
     /// VirusTotal is said to be off without a key, and on with its mode and limits with one;

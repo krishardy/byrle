@@ -234,6 +234,12 @@ impl Client {
         let body = futures_util::stream::iter([Ok(Bytes::from(head))])
             .chain(file_stream(tokio::fs::File::from_std(file)))
             .chain(futures_util::stream::iter([Ok(Bytes::from(tail))]));
+        if let Some(to) = to
+            && !same_origin(to, &self.base)
+        {
+            let why = "the upload URL it answered is not on the API's host";
+            return Err(Failure::Other(why.to_owned()));
+        }
         let default = format!("{}/files", self.base);
         let response = self
             .http
@@ -293,6 +299,18 @@ fn random() -> [u8; 16] {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("the operating system supplies random bytes");
     bytes
+}
+
+/// Whether `url` has `base`'s scheme, host and port, where the key may be sent.
+fn same_origin(url: &str, base: &str) -> bool {
+    let origin = |url| reqwest::Url::parse(url).map(|url| url.origin());
+    matches!((origin(url), origin(base)), (Ok(a), Ok(b)) if a == b)
+}
+
+/// The redirects a VirusTotal client follows: none. reqwest keeps `x-apikey` on a redirect
+/// to another host, and an answer that redirects is a failure.
+pub fn redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::none()
 }
 
 /// A request that could not be sent, without its URL, which holds no secret but is long.
@@ -588,6 +606,13 @@ pub(crate) mod tests {
             request.contains("\r\n\r\nthe artifact bytes\r\n--byrle-"),
             "{request}"
         );
+
+        let elsewhere = client(addr)
+            .upload(Some("http://elsewhere.test/upload"), open(), 18, "a.tgz")
+            .await;
+        let why = "the upload URL it answered is not on the API's host";
+        assert_eq!(elsewhere, Err(Failure::Other(why.to_owned())));
+        assert!(!same_origin("not a url", "http://a.test"));
 
         let (addr, requests) = recorded(vec![Answer::body(UPLOADED.to_vec())]).await;
         let to = format!("http://{addr}/upload-here");
