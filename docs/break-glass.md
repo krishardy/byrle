@@ -69,6 +69,12 @@ A metadata document over `BYRLE_MAX_METADATA_BYTES`, 64 MiB by default, is answe
 and logged `UNINSPECTED: metadata document not checked, refused`. Raise the variable and
 restart the proxy.
 
+The same line, with a `byrle.reason` of "did not normalize", "did not parse", "could not be
+filtered", "could not be rewritten" or "could not be pointed at the proxy", is an npm
+packument or PyPI index the proxy could not check. No variable or policy exception releases
+it. `BYRLE_MODE=observe` forwards it, after a restart, or install as in
+[The proxy is down](#the-proxy-is-down).
+
 `BYRLE_MODE=observe` serves everything the policy refuses, for the whole proxy. It is
 read at startup, so switching to it needs a restart. It never serves what the proxy cannot
 assess: see [request-flow](request-flow.md).
