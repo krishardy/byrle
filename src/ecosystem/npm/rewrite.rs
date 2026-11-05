@@ -119,6 +119,11 @@ fn filter_listed(
             Disposition::Refused(_) => allowed += 1,
         }
     }
+    for version in refused_by_policy {
+        if listed(version) && !removed.contains(version) {
+            removed.push(version.clone());
+        }
+    }
 
     let gone: HashSet<&str> = removed.iter().map(String::as_str).collect();
     let tags = top.get("dist-tags").and_then(Members::of);
@@ -211,7 +216,11 @@ pub struct Rewrite<'a> {
 pub fn rewrite_packument(r: Rewrite<'_>) -> Result<Option<Vec<u8>>, String> {
     let (allowed_direct, refused) = r.packument.unserved_origins(r.origins);
     warn_allowed_direct(r.path, &allowed_direct);
-    if !r.refused_by_policy.is_empty() || (r.refuse_unservable && !refused.is_empty()) {
+    let unread = &r.packument.skipped;
+    if !r.refused_by_policy.is_empty()
+        || !unread.is_empty()
+        || (r.refuse_unservable && !refused.is_empty())
+    {
         return filtered(&r, &refused).map(Some);
     }
     warn_unserved(r.path, &refused, r.packument.records.len());
@@ -231,11 +240,14 @@ fn warn_allowed_direct(path: &str, allowed_direct: &BTreeMap<String, usize>) {
     );
 }
 
-/// The document with the versions the policy refuses, and those on an origin the proxy
-/// does not serve, removed. `refused` is those origins, with their version counts.
+/// The document with the versions the policy refuses, those that did not normalise, and those
+/// on an origin the proxy does not serve, removed. `refused` is those origins, with their
+/// version counts.
 /// `Err` when the document cannot be filtered, or the versions kept pointed at the proxy.
 fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Result<Vec<u8>, String> {
     let origins: Vec<&String> = refused.keys().collect();
+    let unread = r.packument.skipped.iter().map(|s| s.version.clone());
+    let removing: HashSet<String> = r.refused_by_policy.iter().cloned().chain(unread).collect();
     let artifacts = r.packument.records.iter().filter_map(|record| {
         Some((
             record.package.version().to_owned(),
@@ -246,7 +258,7 @@ fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Result<Vec<u8
         r.decoded,
         artifacts,
         r.origins,
-        r.refused_by_policy,
+        &removing,
         r.refuse_unservable,
         r.base,
     ) {
@@ -260,6 +272,7 @@ fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Result<Vec<u8
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
                 byrle.package.removed = filtered.removed.len(),
                 byrle.package.removed_by_policy = r.refused_by_policy.len(),
+                byrle.package.removed_unread = r.packument.skipped.len(),
                 byrle.package.kept = filtered.rewritten,
                 byrle.package.allowed_direct = filtered.allowed,
                 byrle.package.origins = ?origins,
@@ -1027,6 +1040,29 @@ mod tests {
                 filename: "core-7.0.0.tgz".into()
             }
         );
+    }
+
+    /// A version that does not normalise is removed, with the tags naming it, whether or not
+    /// artifacts are pointed at the proxy: its tarball URL would not be.
+    #[test]
+    fn a_version_that_does_not_normalise_is_removed_with_its_tags() {
+        let json = r#"{"name":"w","dist-tags":{"latest":"1.0.1","stable":"1.0.0"},"versions":{
+            "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}},
+            "1.0.1":{"version":"1.0.1","scripts":{"n":1},"dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.1.tgz"}}}}"#;
+        let packument = normalize_packument(json.as_bytes(), DocumentDetail::Abbreviated)
+            .expect("should normalise");
+        assert_eq!(packument.skipped.len(), 1, "{:?}", packument.skipped);
+        for base in [Some(PROXY), None] {
+            let body = rewrite_document(json, &policy(&[], &[]), base, &HashSet::new(), true)
+                .expect("the unread version is removed");
+            assert!(body["versions"].get("1.0.1").is_none(), "{body}");
+            assert!(body["dist-tags"].get("latest").is_none(), "{body}");
+            assert_eq!(body["dist-tags"]["stable"], "1.0.0");
+            let tarball = body["versions"]["1.0.0"]["dist"]["tarball"]
+                .as_str()
+                .unwrap();
+            assert_eq!(tarball.starts_with(PROXY), base.is_some(), "{tarball}");
+        }
     }
 
     /// A record with no file is skipped, and a body that cannot be filtered or rewritten
