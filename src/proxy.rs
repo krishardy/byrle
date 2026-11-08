@@ -1188,12 +1188,62 @@ fn upstream_response_headers(upstream: &HeaderMap) -> HeaderMap {
     headers
 }
 
+/// What a rewritten document is made for, which its `ETag` is marked with: the proxy's
+/// address, the policy's digest and the intel snapshot it was filtered with. A tag issued
+/// for another view is not sent upstream, so a 304 cannot keep a document filtered before
+/// a new policy or snapshot. See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
+fn etag_view(proxy: &Proxy, base: &str, snapshot: Option<&str>) -> String {
+    let policy = proxy
+        .config
+        .policy
+        .as_deref()
+        .map_or("-", |p| p.digest.as_str());
+    format!(
+        "{}\n{policy}\n{}",
+        base.trim_end_matches('/'),
+        snapshot.unwrap_or("-")
+    )
+}
+
+/// The view a client's marked `If-None-Match` is checked against: [`etag_view`] with the
+/// snapshot the package's intel is in now. `None`, and the conditional dropped, when the
+/// request is not one the proxy rewrites, carries no tag it issued, or its intel cannot be
+/// read.
+async fn current_view(
+    proxy: &Proxy,
+    target: &RequestTarget,
+    negotiation: &Negotiation,
+    client: &HeaderMap,
+    path: &str,
+) -> Option<String> {
+    let RequestTarget::Metadata(key) = target else {
+        return None;
+    };
+    let marked = client
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(crate::http::carries_mark);
+    let (true, Some(base)) = (
+        negotiation.rewriting && marked,
+        negotiation.rewrite_base.as_deref(),
+    ) else {
+        return None;
+    };
+    let intel = intel_for(proxy, key, path).await.ok()?;
+    Some(etag_view(
+        proxy,
+        base,
+        intel.as_ref().map(|intel| intel.snapshot.as_str()),
+    ))
+}
+
 /// A 304 for a metadata document: refill the store if its records are gone, and mark the
-/// `ETag` the client is told to keep.
+/// `ETag` the client is told to keep with `view`, the one its request was checked against.
 async fn revalidated(
     proxy: &Proxy,
     target: &RequestTarget,
     negotiation: &Negotiation,
+    view: Option<&str>,
     headers: &mut HeaderMap,
     path: &str,
 ) {
@@ -1216,12 +1266,11 @@ async fn revalidated(
         }
     }
 
-    if negotiation.rewriting
-        && let Some(base) = negotiation.rewrite_base.as_deref()
+    if let Some(view) = view
         && let Some(marked) = headers
             .get(header::ETAG)
             .and_then(|v| v.to_str().ok())
-            .map(|etag| mark_etag(etag, base))
+            .map(|etag| mark_etag(etag, view))
         && let Ok(value) = HeaderValue::from_str(&marked)
     {
         headers.insert(header::ETAG, value);
@@ -1257,6 +1306,8 @@ struct Refused {
     files: Vec<String>,
     /// Each check that removed at least one version, in name order.
     checks: Vec<String>,
+    /// The intel snapshot the versions were decided with, `None` with no intel.
+    snapshot: Option<String>,
 }
 
 /// What the proxy does with a metadata document it has read.
@@ -1598,7 +1649,13 @@ fn asked_for(mut headers: HeaderMap, artifact: &ArtifactFetch) -> HeaderMap {
     headers
 }
 
-fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -> HeaderMap {
+/// `view` is [`current_view`]'s: a marked `If-None-Match` is sent only for a tag issued for it.
+fn upstream_headers(
+    client: &HeaderMap,
+    negotiation: &Negotiation,
+    view: Option<&str>,
+    path: &str,
+) -> HeaderMap {
     let mut outbound = HeaderMap::new();
     for (name, value) in client {
         if !FORWARDED.contains(&name.as_str()) {
@@ -1627,15 +1684,17 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
         && let Some(inm) = client
             .get(header::IF_NONE_MATCH)
             .and_then(|v| v.to_str().ok())
-        && let Some(base) = negotiation.rewrite_base.as_deref()
     {
-        match unmark_if_none_match(inm, base).map(|v| HeaderValue::from_str(&v)) {
+        match view
+            .and_then(|view| unmark_if_none_match(inm, view))
+            .map(|v| HeaderValue::from_str(&v))
+        {
             Some(Ok(value)) => {
                 outbound.append(header::IF_NONE_MATCH, value);
             }
             _ => info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                "dropped a conditional request for a body this proxy did not rewrite"
+                "dropped a conditional request for a body this proxy did not rewrite for this policy and intel snapshot"
             ),
         }
     }
@@ -3669,6 +3728,8 @@ struct Upstream {
     content_encoding: Option<String>,
     /// The metadata document the body is, when the proxy reads it.
     document: Option<DocumentKind>,
+    /// The view the request's `If-None-Match` was checked against: [`current_view`].
+    view: Option<String>,
     length: Option<u64>,
     body: ByteStream,
 }
@@ -3913,13 +3974,21 @@ impl Exchange<'_> {
             &self.path,
             artifact.origin.as_deref(),
         );
+        let view = current_view(
+            self.proxy,
+            &self.target,
+            &self.negotiation,
+            headers,
+            &self.path,
+        )
+        .await;
         let response = self
             .proxy
             .config
             .upstream
             .request(self.method.clone(), &url)
             .headers(asked_for(
-                upstream_headers(headers, &self.negotiation, &self.path),
+                upstream_headers(headers, &self.negotiation, view.as_deref(), &self.path),
                 artifact,
             ))
             .send()
@@ -3951,6 +4020,7 @@ impl Exchange<'_> {
             headers,
             content_encoding,
             document,
+            view,
             length: response.content_length(),
             body: Box::pin(response.bytes_stream()),
         })
@@ -3960,10 +4030,12 @@ impl Exchange<'_> {
     /// artifact verified, anything else as it came.
     async fn respond(&self, mut upstream: Upstream, artifact: ArtifactFetch) -> Response {
         if upstream.status == reqwest::StatusCode::NOT_MODIFIED {
+            let view = upstream.view.take();
             revalidated(
                 self.proxy,
                 &self.target,
                 &self.negotiation,
+                view.as_deref(),
                 &mut upstream.headers,
                 &self.path,
             )
@@ -4149,16 +4221,22 @@ impl Exchange<'_> {
             DocumentStep::Answer(response) => return response,
             DocumentStep::Forward { body, refused } => {
                 mark_filtered(&mut headers, &refused);
-                body
+                (body, refused.snapshot)
             }
         };
+        let (forwarded, snapshot) = forwarded;
+        let view = self
+            .negotiation
+            .rewrite_base
+            .as_deref()
+            .map(|base| etag_view(self.proxy, base, snapshot.as_deref()));
         finish(
             forwarded,
             body,
             headers,
             forward_status,
             self.negotiation.encoding,
-            self.negotiation.rewrite_base.as_deref(),
+            view.as_deref(),
             &|bytes| self.log_proxied(status, bytes),
         )
     }
@@ -4272,7 +4350,7 @@ fn finish(
     mut headers: HeaderMap,
     forward_status: StatusCode,
     chosen_encoding: RequestedEncoding,
-    rewrite_base: Option<&str>,
+    view: Option<&str>,
     log_proxied: &dyn Fn(u64),
 ) -> Response {
     let body = match forwarded {
@@ -4294,7 +4372,7 @@ fn finish(
             if let Some(etag) = headers
                 .get(header::ETAG)
                 .and_then(|v| v.to_str().ok())
-                .map(|etag| mark_etag(etag, rewrite_base.unwrap_or_default()))
+                .map(|etag| mark_etag(etag, view.unwrap_or_default()))
                 && let Ok(value) = HeaderValue::from_str(&etag)
             {
                 headers.insert(header::ETAG, value);
@@ -4987,6 +5065,7 @@ fn policy_refused_versions(
         checks: checks.into_iter().collect(),
         versions: refused,
         files,
+        snapshot: intel.map(|intel| intel.snapshot.clone()),
     }
 }
 
@@ -5724,7 +5803,14 @@ mod tests {
             headers.append(name, HeaderValue::from_static(value));
         }
         let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
-        upstream_headers(&headers, &negotiation, path)
+        let view = unconsulted_view(&proxy, &negotiation);
+        upstream_headers(&headers, &negotiation, view.as_deref(), path)
+    }
+
+    /// [`current_view`] for a proxy that consults no intel.
+    fn unconsulted_view(proxy: &Proxy, negotiation: &Negotiation) -> Option<String> {
+        let base = negotiation.rewrite_base.as_deref()?;
+        Some(etag_view(proxy, base, None))
     }
 
     /// What reaches upstream, header by header. `None` is a header that must not.
@@ -5945,18 +6031,175 @@ mod tests {
             ("http://some-old-address:9999/npm", None),
         ] {
             let mut headers = client_headers("gzip");
-            let issued = mark_etag("W/\"abc123\"", issued_at);
+            let issued = mark_etag("W/\"abc123\"", &etag_view(&proxy, issued_at, None));
             headers.insert(
                 header::IF_NONE_MATCH,
                 HeaderValue::from_str(&issued).unwrap(),
             );
             let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
-            let sent = upstream_headers(&headers, &negotiation, "/npm/lodash");
+            let view = unconsulted_view(&proxy, &negotiation);
+            let sent = upstream_headers(&headers, &negotiation, view.as_deref(), "/npm/lodash");
             assert_eq!(
                 sent.get(header::IF_NONE_MATCH).map(|v| v.to_str().unwrap()),
                 expected,
                 "{issued_at}"
             );
+        }
+    }
+
+    /// A tag is sent upstream only under the policy and intel snapshot the document it came
+    /// with was filtered under. Any other tag, or intel that cannot be read, drops it.
+    #[tokio::test]
+    async fn a_tag_issued_under_another_policy_or_snapshot_is_not_sent_upstream() {
+        let conditional: Arc<Mutex<Vec<bool>>> = Arc::default();
+        let recorder = conditional.clone();
+        let router = Router::new().fallback(any(move |req: Request| {
+            let recorder = recorder.clone();
+            async move {
+                let asked = req.headers().contains_key(header::IF_NONE_MATCH);
+                recorder.lock().unwrap().push(asked);
+                Response::builder()
+                    .status(if asked {
+                        StatusCode::NOT_MODIFIED
+                    } else {
+                        StatusCode::OK
+                    })
+                    .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
+                    .header(header::ETAG, "W/\"t\"")
+                    .body(Body::from(fixture(LODASH)))
+                    .unwrap()
+            }
+        }));
+        let upstream = serve(router).await;
+        let intel = |snapshot: &str| -> Option<Arc<dyn Intel>> {
+            Some(Arc::new(crate::intel::store::testing::FixedIntel(Ok(
+                Some(PackageIntel {
+                    snapshot: snapshot.to_owned(),
+                    records: Vec::new(),
+                    ranges: Vec::new(),
+                    exploitation_loaded: true,
+                }),
+            ))))
+        };
+        let proxy = |intel: Option<Arc<dyn Intel>>, yaml: &str| {
+            Proxy::new(crate::service::Connection::default())
+                .with_upstream(Ecosystem::Npm, upstream.clone())
+                .with_public_base(Some("http://proxy.test".to_owned()))
+                .with_intel(intel)
+                .with_policy(Some(policy(yaml)))
+        };
+        let get = |proxy: Proxy, tag: Option<String>| async move {
+            let base = serve(proxy.router()).await;
+            let mut request = reqwest::Client::new().get(format!("{base}/npm/lodash"));
+            if let Some(tag) = tag {
+                request = request.header(header::IF_NONE_MATCH, tag);
+            }
+            let response = request.send().await.unwrap();
+            (
+                response.status(),
+                response.headers().get(header::ETAG).cloned(),
+            )
+        };
+        const ONE: &str = "version: 1\ncooldown_days: 0\n";
+        const TWO: &str = "version: 1\ncooldown_days: 1\n";
+
+        let (status, tag) = get(proxy(intel("s1"), ONE), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let tag = tag.expect("a tag").to_str().unwrap().to_owned();
+        let (_, unconsulted) = get(proxy(None, ONE), None).await;
+        let unconsulted = unconsulted.expect("a tag").to_str().unwrap().to_owned();
+        conditional.lock().unwrap().clear();
+
+        for (intel, yaml, tag, sent) in [
+            (intel("s1"), ONE, &tag, true),
+            (intel("s2"), ONE, &tag, false),
+            (intel("s1"), TWO, &tag, false),
+            (intel("s1"), ONE, &unconsulted, false),
+            (None, ONE, &unconsulted, true),
+        ] {
+            get(proxy(intel, yaml), Some(tag.clone())).await;
+            let asked = std::mem::take(&mut *conditional.lock().unwrap());
+            assert_eq!(asked.first(), Some(&sent), "{tag} {yaml}");
+        }
+        let unreadable: Option<Arc<dyn Intel>> =
+            Some(Arc::new(crate::intel::store::testing::FixedIntel(Err(()))));
+        get(proxy(unreadable, ONE), Some(unconsulted.clone())).await;
+        assert_eq!(conditional.lock().unwrap().first(), Some(&false));
+
+        let (status, remarked) = get(proxy(intel("s1"), ONE), Some(tag.clone())).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            remarked.expect("a tag").to_str().unwrap(),
+            tag,
+            "a 304 keeps the tag"
+        );
+    }
+
+    /// A [`crate::intel::store::testing::FixedIntel`] counting its package lookups.
+    struct Counted(crate::intel::store::testing::FixedIntel, AtomicU64);
+
+    impl Intel for Counted {
+        fn lookup<'a>(
+            &'a self,
+            ecosystem: &'a str,
+            name: &'a str,
+            version: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Vec<crate::intel::store::Record>> {
+            self.0.lookup(ecosystem, name, version)
+        }
+
+        fn snapshot(&self) -> crate::intel::store::Lookup<'_, Option<LoadedSnapshot>> {
+            self.0.snapshot()
+        }
+
+        fn package<'a>(
+            &'a self,
+            ecosystem: &'a str,
+            name: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Option<PackageIntel>> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.package(ecosystem, name)
+        }
+    }
+
+    /// A request's view is read only for a tag this proxy issued on a document it rewrites:
+    /// any other metadata GET costs the one intel lookup its filtering makes.
+    #[tokio::test]
+    async fn only_a_marked_tag_on_a_rewritten_document_costs_a_lookup() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture(LODASH),
+        )
+        .await;
+        let marked = mark_etag("W/\"t\"", "another view");
+        for (rewriting, tag) in [
+            (true, None),
+            (true, Some("W/\"t\"")),
+            (false, Some(marked.as_str())),
+        ] {
+            let counted = Arc::new(Counted(
+                crate::intel::store::testing::FixedIntel(Ok(Some(PackageIntel {
+                    snapshot: "s1".to_owned(),
+                    records: Vec::new(),
+                    ranges: Vec::new(),
+                    exploitation_loaded: true,
+                }))),
+                AtomicU64::new(0),
+            ));
+            let proxy = Proxy::new(crate::service::Connection::default())
+                .with_upstream(Ecosystem::Npm, upstream.clone())
+                .with_artifact_rewriting(rewriting)
+                .with_intel(Some(counted.clone()))
+                .with_policy(Some(policy("version: 1\ncooldown_days: 0\n")));
+            let base = serve(proxy.router()).await;
+            let mut request = reqwest::Client::new().get(format!("{base}/npm/lodash"));
+            if let Some(tag) = tag {
+                request = request.header(header::IF_NONE_MATCH, tag);
+            }
+            assert_eq!(request.send().await.unwrap().status(), 200);
+            assert_eq!(counted.1.load(Ordering::Relaxed), 1, "{rewriting} {tag:?}");
         }
     }
 
@@ -6319,6 +6562,7 @@ mod tests {
                 .collect(),
             checks: vec!["cooldown_days".to_owned(), "denials".to_owned()],
             files: Vec::new(),
+            snapshot: None,
         };
         mark_filtered(&mut headers, &refused);
         assert_eq!(headers[FILTERED_VERSIONS], "2");
@@ -10249,14 +10493,12 @@ mod tests {
                 }
             }),
         );
-        let base = serve(
-            Proxy::new(crate::service::Connection::default())
-                .with_upstream(Ecosystem::Npm, serve(router).await)
-                .router(),
-        )
-        .await;
+        let proxy = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, serve(router).await);
+        let base = serve(proxy.clone().router()).await;
 
-        let ours = crate::http::mark_etag("W/\"abc123\"", &format!("{base}/npm"));
+        let view = etag_view(&proxy, &format!("{base}/npm"), None);
+        let ours = crate::http::mark_etag("W/\"abc123\"", &view);
         let response = reqwest::Client::new()
             .get(format!("{base}/npm/lodash"))
             .header(header::IF_NONE_MATCH, ours)

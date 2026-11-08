@@ -326,8 +326,9 @@ const ETAG_PREFIX: &str = "byrle.";
 
 /// Label an upstream `ETag` as describing this proxy's version of the body.
 /// See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
-/// `etag` keeps a `W/` outside its quotes. `base` is the proxy's address, mixed in.
-pub fn mark_etag(etag: &str, base: &str) -> String {
+/// `etag` keeps a `W/` outside its quotes. `view` is what the body was made for, mixed in:
+/// the proxy's address, and the policy and intel snapshot it was filtered with.
+pub fn mark_etag(etag: &str, view: &str) -> String {
     let etag = etag.trim();
     let (weak, tag) = match etag.strip_prefix("W/") {
         Some(rest) => ("W/", rest),
@@ -336,15 +337,15 @@ pub fn mark_etag(etag: &str, base: &str) -> String {
     let Some(inner) = tag.strip_prefix('"').and_then(|t| t.strip_suffix('"')) else {
         return etag.to_owned();
     };
-    format!("{weak}\"{ETAG_PREFIX}{}.{inner}\"", base_tag(base))
+    format!("{weak}\"{ETAG_PREFIX}{}.{inner}\"", view_tag(view))
 }
 
 /// Turn an `If-None-Match` the client got from us back into what upstream issued, keeping
-/// only the tags this proxy issued at `base`, and never `*`.
+/// only the tags this proxy issued for `view`, and never `*`.
 /// See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
 /// Returns `None` when nothing is left to send.
-pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
-    let ours = format!("{ETAG_PREFIX}{}.", base_tag(base));
+pub fn unmark_if_none_match(header: &str, view: &str) -> Option<String> {
+    let ours = format!("{ETAG_PREFIX}{}.", view_tag(view));
     let mut out = Vec::new();
     for entry in header.split(',') {
         let entry = entry.trim();
@@ -365,10 +366,20 @@ pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
     Some(out.join(", "))
 }
 
-/// A short, stable tag for the address the proxy answers on.
-fn base_tag(base: &str) -> String {
+/// Whether an `If-None-Match` holds a tag this proxy issued, for any view.
+pub fn carries_mark(header: &str) -> bool {
+    header.split(',').any(|entry| {
+        let entry = entry.trim();
+        let tag = entry.strip_prefix("W/").unwrap_or(entry);
+        tag.strip_prefix('"')
+            .is_some_and(|inner| inner.starts_with(ETAG_PREFIX))
+    })
+}
+
+/// A short, stable tag for a view: what a rewritten body was made for.
+fn view_tag(view: &str) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(base.trim_end_matches('/').as_bytes());
+    let digest = Sha256::digest(view.trim_end_matches('/').as_bytes());
     digest[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -493,6 +504,18 @@ mod tests {
             unmark_if_none_match(&header, base).as_deref(),
             Some("\"ours\"")
         );
+    }
+
+    /// A header carries our mark when any tag in it, weak or strong, was issued here.
+    #[test]
+    fn a_header_carries_a_mark_when_one_tag_was_issued_here() {
+        let marked = mark_etag("W/\"ours\"", "view");
+        assert!(carries_mark(&marked));
+        assert!(carries_mark(&format!("\"theirs\", {marked}")));
+        assert!(carries_mark(&mark_etag("\"ours\"", "view")));
+        for header in ["\"theirs\"", "W/\"theirs\"", "*", "byrle.x"] {
+            assert!(!carries_mark(header), "{header}");
+        }
     }
 
     /// Anything that is not a quoted tag is left exactly as it came.
