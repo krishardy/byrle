@@ -70,9 +70,12 @@ pub const REGISTRY: Registry = Registry {
     upstream_url,
     read: |reading| Ok(inspect::read(reading)),
     reader: |filename| {
-        filename
-            .ends_with(".jar")
-            .then_some(crate::analysis::jar_annotation_processors as crate::analysis::Reader)
+        if filename.ends_with(".jar") {
+            Some(crate::analysis::jar_annotation_processors)
+        } else {
+            (!paths::is_descriptor(filename))
+                .then_some(crate::analysis::zip_annotation_processors as crate::analysis::Reader)
+        }
     },
     layout: |_| None,
     source: |_| None,
@@ -90,7 +93,7 @@ pub const REGISTRY: Registry = Registry {
     write: |_| None,
     meaningless: &[Rule::Deprecated, Rule::Yanked],
     install_scripts_unread: Some(
-        "maven-metadata.xml does not say; the .jar is read for annotation processors when it is downloaded",
+        "maven-metadata.xml does not say; a downloaded file is read for annotation processors when it is a zip",
     ),
     publishers: Some(signing::made),
     decides_head: true,
@@ -165,6 +168,18 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert!((REGISTRY.provenance_bundle)(b"{}").is_err());
         assert!((REGISTRY.reader)("x.jar").is_some());
+        let read = |filename| {
+            (REGISTRY.reader)(filename).expect("a reader")(&mut std::io::Cursor::new(b"not a zip"))
+        };
+        assert!(
+            read("x.jar").is_err(),
+            "a .jar that is not a zip is unreadable"
+        );
+        assert!(
+            read("x.aar").is_ok(),
+            "another file that is not a zip names no processor"
+        );
+        assert!((REGISTRY.reader)("x.module").is_none());
         assert!((REGISTRY.reader)("x.pom").is_none());
         assert!((REGISTRY.layout)("x.jar").is_none());
         assert!((REGISTRY.source)(&metadata.records[0]).is_none());

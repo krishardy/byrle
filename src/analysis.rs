@@ -168,6 +168,20 @@ pub fn jar_annotation_processors(
     Ok(found)
 }
 
+/// [`jar_annotation_processors`] for a file not named `.jar`, such as one a Gradle `.module`
+/// names for a processor variant. javac reads any file on its paths as a jar when it is a
+/// zip, found by its central directory. A file that is not one names no processor.
+pub fn zip_annotation_processors(
+    file: &mut dyn crate::ecosystem::Source,
+) -> Result<InstallScripts, ReadError> {
+    match jar_annotation_processors(file) {
+        Err(ReadError::NotAnArchive(_)) if zip::ZipArchive::new(&mut *file).is_err() => {
+            Ok(InstallScripts::default())
+        }
+        read => read,
+    }
+}
+
 /// The reader for `filename` in `ecosystem`, from its row's [`crate::ecosystem::Registry::reader`].
 pub fn reader(ecosystem: Ecosystem, filename: &str) -> Option<Reader> {
     (crate::ecosystem::of(ecosystem).reader)(filename)
@@ -945,6 +959,27 @@ mod tests {
         no_local_header[3] = 0x05;
         assert!(matches!(
             processors(&no_local_header),
+            Err(ReadError::NotAnArchive(_))
+        ));
+    }
+
+    /// A file not named `.jar` is read when it is a zip, bytes before it included, as javac
+    /// reads one. One that is not a zip names no processor, where a `.jar` is an error.
+    #[test]
+    fn a_zip_of_any_name_is_read_for_processors() {
+        let zip = crate::util::test_support::zip_of(&[(PROCESSOR_SERVICES, b"p.Processor\n")]);
+        let mut prefixed = b"#!/bin/sh\nexit 0\n".to_vec();
+        prefixed.extend_from_slice(&zip);
+        for bytes in [&zip, &prefixed] {
+            let found = zip_annotation_processors(&mut std::io::Cursor::new(bytes)).expect("reads");
+            assert_eq!(found.names, [PROCESSOR_SERVICES]);
+        }
+        let none = zip_annotation_processors(&mut std::io::Cursor::new(b"not a zip"))
+            .expect("not a zip is no processor");
+        assert!(none.names.is_empty());
+        let unreadable = crate::util::test_support::zip_of(&[(PROCESSOR_SERVICES, b"\xff\xfe")]);
+        assert!(matches!(
+            zip_annotation_processors(&mut std::io::Cursor::new(&unreadable)),
             Err(ReadError::NotAnArchive(_))
         ));
     }
