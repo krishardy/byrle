@@ -64,4 +64,5 @@ With no `BYRLE_DATABASE_URL`, a restart starts every undated file's wait again.
 While the analysis store errors, every undated file is refused, unless
 `cooldown_unanswered` is weighed under the threshold.
 
-`byrle explain` and `byrle policy diff` read no first sighting (TODO.md ad-hoc #53).
+`byrle explain` and `byrle policy diff` read a first sighting without recording one since
+2026-11-08 ([dates-reported](0137-dates-reported.md)).

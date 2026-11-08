@@ -57,7 +57,7 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
         _key: &'a PackageKey,
         _version: &'a str,
         _before: Option<jiff::Timestamp>,
-    ) -> BoxFuture<'a, Result<Option<crate::record::PackageRecord>, String>> {
+    ) -> BoxFuture<'a, Result<Option<Versioned>, String>> {
         Box::pin(async { Ok(None) })
     }
 
@@ -269,6 +269,23 @@ pub struct UpstreamCheck {
     pub check: fn(&str, Option<&str>, bool) -> crate::doctor::Finding,
 }
 
+/// A record read on its own, and what its client read to date it: [`Fetch::version`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Versioned {
+    pub record: crate::record::PackageRecord,
+    pub dates: crate::dating::RecordDates,
+}
+
+impl Versioned {
+    /// `record`, dated by its own time alone.
+    pub fn of(record: crate::record::PackageRecord) -> Self {
+        Self {
+            dates: crate::dating::RecordDates::of(&record),
+            record,
+        }
+    }
+}
+
 /// A document fetched for its publish times: [`Fetch::full`].
 #[derive(Debug, Clone)]
 pub struct FullDocument {
@@ -383,7 +400,7 @@ impl Clients {
         key: &PackageKey,
         version: &str,
         before: Option<jiff::Timestamp>,
-    ) -> Result<Option<crate::record::PackageRecord>, String> {
+    ) -> Result<Option<Versioned>, String> {
         self.of(at, key).version(key, version, before).await
     }
 
@@ -396,11 +413,11 @@ impl Clients {
         metadata: &PackageMetadata,
         version: &str,
         before: Option<jiff::Timestamp>,
-    ) -> Result<Option<crate::record::PackageRecord>, String> {
+    ) -> Result<Option<Versioned>, String> {
         Ok(
             match self.version(at, &metadata.key, version, before).await? {
                 Some(alone) => Some(alone),
-                None => metadata.version(version).cloned(),
+                None => metadata.version(version).cloned().map(Versioned::of),
             },
         )
     }
@@ -919,6 +936,7 @@ mod table {
             panic!("the limit does not parse");
         };
         assert_eq!(error.var, crate::env::MAX_METADATA_BYTES.name);
+        assert!(Clients::from_env(&with(&[(crate::env::UPSTREAM_NPM, "not a url")])).is_err());
         let missing = "/nonexistent/byrle-ca.pem";
         let Err(error) = Clients::from_env(&with(&[(crate::env::CA_BUNDLE, missing)])) else {
             panic!("the bundle does not load");

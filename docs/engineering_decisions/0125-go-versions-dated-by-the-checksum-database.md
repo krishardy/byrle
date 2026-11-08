@@ -16,7 +16,7 @@
 | a Go version's date, under a cooldown | its `.info` `Time` | the time of the first row that holds its record, below |
 | `@latest`'s version | dated by the `Time` in its body | dated as a list's versions are, which takes the place of the body's `Time`; the body's when that fails |
 | a pinned `.zip` or `.mod` | its own `.info` `Time` | the same rule, through `Fetch::version` with the cooldown's start |
-| `byrle explain` and `byrle policy diff` | the `.info` `Time` | the same: their clients have no setting for the index or sum.golang.org |
+| `byrle explain` and `byrle policy diff` | the `.info` `Time` | the `.info` `Time` until 2026-11-08; since, the same rule ([dates-reported](0137-dates-reported.md)) |
 
 sum.golang.org's log only appends. A tree head of size `S` holds records `0` to `S - 1`,
 so a tree of size `S` seen at time `t` shows every record below `S` was public by `t`.

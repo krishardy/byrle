@@ -6,7 +6,6 @@ use std::ffi::OsString;
 
 use crate::analysis::detector::built_in;
 use crate::analysis::detector::metadata::{Listing, Metadata};
-use crate::ecosystem::Clients;
 use crate::env::Env;
 use crate::identity::PackageRef;
 use crate::intel::store::{Intel as IntelStore, Record};
@@ -365,24 +364,26 @@ async fn answer_using<L: Fn(&str) -> Option<OsString>>(
 ) -> Result<String, Stopped> {
     match target.purl.as_deref() {
         Some(argument) => {
-            let clients = Clients::from_env(environment).map_err(|e| stopped(2, e))?;
-            package_answer(policy, store, argument, &clients).await
+            let reader = crate::dating::Reader::from_env(environment)
+                .await
+                .map_err(|e| stopped(2, e))?;
+            package_answer(policy, store, argument, &reader).await
         }
         None => Ok(policy_report(policy, consulted(store).await?)),
     }
 }
 
-/// [`run`] on what a running proxy holds: the policy in force, its intel store and the
-/// clients it asks the registries with. The console answers a remote `explain` with it.
+/// [`run`] on what a running proxy holds: the policy in force, its intel store and what it
+/// reads dates with. The console answers a remote `explain` with it.
 pub async fn run_on(
     target: &crate::cli::Explain,
     policy: Option<&Policy>,
     store: Option<&dyn IntelStore>,
-    clients: &Clients,
+    reader: &crate::dating::Reader,
 ) -> Answered {
     let answered_on = match (policy, target.purl.as_deref()) {
         (None, _) => Err(stopped(2, "the deployment has no policy in force")),
-        (Some(policy), Some(argument)) => package_answer(policy, store, argument, clients).await,
+        (Some(policy), Some(argument)) => package_answer(policy, store, argument, reader).await,
         (Some(policy), None) => consulted(store)
             .await
             .map(|intel| policy_report(policy, intel)),
@@ -417,8 +418,9 @@ async fn package_answer(
     policy: &Policy,
     store: Option<&dyn IntelStore>,
     argument: &str,
-    clients: &Clients,
+    reader: &crate::dating::Reader,
 ) -> Result<String, Stopped> {
+    let clients = &reader.clients;
     let reference = argument
         .parse::<PackageRef>()
         .map_err(|e| stopped(2, format!("`{argument}` is not a package reference: {e}")))?;
@@ -427,8 +429,9 @@ async fn package_answer(
     let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
     let metadata = crate::ecosystem::fetched(clients.metadata(at, reference.key()).await)
         .map_err(|e| stopped(1, e))?;
-    let Some(package) = clients
-        .version_of(at, &metadata, reference.version(), None)
+    let before = policy.cooldown_start(jiff::Timestamp::now());
+    let Some(versioned) = clients
+        .version_of(at, &metadata, reference.version(), before)
         .await
         .map_err(|e| stopped(1, e))?
     else {
@@ -437,15 +440,16 @@ async fn package_answer(
             format!("the registry does not publish {argument}"),
         ));
     };
-    let package = &package;
-
-    let full = clients.full_document(at, reference.key()).await;
-    let times = match (full.as_ref(), policy.needs_publish_times()) {
-        (Err(e), true) => return Err(stopped(1, e)),
-        (Ok(Some(full)), _) => Some(full.times.clone()),
-        _ => None,
+    let reading = crate::dating::Reading {
+        cooldown: policy.uses_cooldown(),
+        every: true,
     };
-    let full = full.ok().flatten().and_then(|full| full.metadata.ok());
+    let dated = reader.date(at, reference.key(), &versioned, reading).await;
+    if let Some(e) = dated.unread.filter(|_| policy.needs_publish_times()) {
+        return Err(stopped(1, e));
+    }
+    let package = &versioned.record;
+    let (times, full, dating) = (dated.times, dated.full, dated.dating);
 
     let (ecosystem, name) = crate::intel::snapshot_intel::key_of(reference.key());
     let intel = crate::intel::store::for_command(store, &ecosystem, &name, true)
@@ -488,6 +492,7 @@ async fn package_answer(
         ),
         as_of,
     );
+    answer.push_str(&dates(&dating));
     if let Some(intel) = intel.as_ref() {
         answer.push_str(&advisories(
             &intel.for_version(&facts.ecosystem, &facts.version),
@@ -495,6 +500,15 @@ async fn package_answer(
     }
     answer.push_str(&signals(&found, policy, &decided));
     Ok(answer)
+}
+
+/// Each place the version's date was read from, what it gave, and the one the policy reads.
+fn dates(dating: &crate::dating::Dating) -> String {
+    let file = dating
+        .file
+        .as_deref()
+        .map_or(String::new(), |file| format!(" for {file}"));
+    format!("  dates{file}, * the one used:\n{}", dating.lines("    "))
 }
 
 /// Each advisory the store holds against the version, one line per stream that reported it,
@@ -763,36 +777,184 @@ mod run_tests {
             ["the registry does not publish pkg:npm/lodash@9.9.9"]
         );
     }
-    /// A Go version the list leaves out is judged on its own `.info`, and one whose
-    /// `.info` answers an error stops with exit 1.
+    /// A Go version the list leaves out is judged on its own `.info`, dated by its `Time`
+    /// with no checksum record; one whose `.info` answers an error stops with exit 1.
     #[tokio::test]
     async fn a_go_version_is_read_from_its_own_info() {
-        let path = written("explain-go", "version: 1\ncooldown_days: 36500\n");
+        use crate::ecosystem::go::transport::tests::sumdb_of_quote;
+        let policy = Policy::parse("version: 1\ncooldown_days: 36500\n").unwrap();
         let purl = "pkg:golang/golang.org/x/text@v0.0.0-20170915032832-14c0d48ead0c";
         let info = crate::ecosystem::go::fixture("text-pseudo.info");
         let decided = scripted(vec![Answer::body("v0.3.0\n"), Answer::body(info)]).await;
         let failed = scripted(vec![Answer::body("v0.3.0\n"), Answer::Status(500)]).await;
-        let asking = |addr: std::net::SocketAddr| {
-            with(&[
-                (crate::env::POLICY, &path.display().to_string()),
-                (crate::env::UPSTREAM_GO, &format!("http://{addr}")),
-            ])
+        let reader = |addr: std::net::SocketAddr, sumdb| {
+            crate::dating::testing::reader(
+                crate::ecosystem::go::transport::tests::clients(&format!("http://{addr}"), sumdb),
+                &[],
+                None,
+            )
         };
-        let answered = run(&asked(Some(purl)), &asking(decided)).await;
-        assert_eq!(answered.code, 0, "{:?}", answered.notes);
+        let answer = package_answer(
+            &policy,
+            None,
+            purl,
+            &reader(decided, sumdb_of_quote().await),
+        )
+        .await
+        .unwrap_or_else(|stopped| panic!("{}", stopped.note));
         assert!(
-            answered
-                .answer
-                .contains("published 2017-09-15, cooldown_days 36500"),
-            "{}",
-            answered.answer
+            answer.contains("published 2017-09-15, cooldown_days 36500"),
+            "{answer}"
         );
-        let answered = run(&asked(Some(purl)), &asking(failed)).await;
-        assert_eq!(answered.code, 1);
+        let sighting = format!(
+            "      the file's first sighting      not read: {} is not set\n",
+            crate::env::DATABASE_URL
+        );
+        for line in [
+            "  dates for v0.0.0-20170915032832-14c0d48ead0c.zip, * the one used:\n",
+            "    * the .info Time                 2017-09-15T03:28:32Z\n",
+            "      the checksum database          no record of this version\n",
+            "      the full document's time       the ecosystem has no fuller document\n",
+            "      the file host's Last-Modified  not asked: an earlier source dates it\n",
+            &sighting,
+        ] {
+            assert!(answer.contains(line), "{line}{answer}");
+        }
+        let Err(stopped) =
+            package_answer(&policy, None, purl, &reader(failed, sumdb_of_quote().await)).await
+        else {
+            panic!("the .info answered 500");
+        };
+        assert_eq!(stopped.code, 1);
         assert!(
-            answered.notes[0].ends_with(".info answered 500"),
-            "{:?}",
-            answered.notes
+            stopped.note.ends_with(".info answered 500"),
+            "{}",
+            stopped.note
+        );
+    }
+
+    /// A Go version whose `.info` claims 2020 is dated by its record in the checksum
+    /// database, so a cooldown refuses it, and both times are shown.
+    #[tokio::test]
+    async fn a_backdated_go_version_is_refused_on_its_checksum_record() {
+        let (client, published, _db) = crate::ecosystem::go::transport::tests::backdated().await;
+        let clients = crate::ecosystem::go::transport::tests::holding(client);
+        let reader = crate::dating::testing::reader(clients, &[], None);
+        let policy = Policy::parse("version: 1\ncooldown_days: 7\n").unwrap();
+        let answer = package_answer(&policy, None, "pkg:golang/example.com/m@v1950", &reader)
+            .await
+            .unwrap_or_else(|stopped| panic!("{}", stopped.note));
+        assert!(answer.contains("cooldown_days    FAIL"), "{answer}");
+        assert!(
+            answer.contains("    the .info Time  ") && answer.contains("2020-01-01T00:00:00Z"),
+            "{answer}"
+        );
+        let used = answer
+            .lines()
+            .find(|line| line.starts_with("    * "))
+            .expect("one is used");
+        assert!(
+            used.contains("the checksum database, record 1950"),
+            "{answer}"
+        );
+        let at: jiff::Timestamp = used.rsplit(' ').next().unwrap().parse().unwrap();
+        assert!(at > published[1950], "{answer}");
+    }
+
+    /// An npm version its full packument has no time for is dated by its file host, else
+    /// by the first sighting the proxy stored, which `explain` reads and never records.
+    #[tokio::test]
+    async fn an_undated_version_is_dated_by_its_host_then_its_first_sighting() {
+        use crate::analysis::store::{Analyses, InProcess};
+        let router = axum::Router::new().route(
+            "/widget-1.0.0.tgz",
+            axum::routing::get(|| async {
+                (
+                    [(
+                        axum::http::header::LAST_MODIFIED,
+                        "Thu, 17 Sep 2026 00:00:00 GMT",
+                    )],
+                    "x",
+                )
+            }),
+        );
+        let host = crate::proxy::testing::serve(router).await;
+        let packument = |tarball: &str| {
+            serde_json::json!({"name": "widget", "versions": {"1.0.0": {
+                "name": "widget", "version": "1.0.0",
+                "dist": {"tarball": tarball, "integrity": "sha512-AAAA"}}},
+                "time": {"0.9.0": "2020-01-01T00:00:00Z"}})
+            .to_string()
+        };
+        let policy = Policy::parse("version: 1\ncooldown_days: 7\n").unwrap();
+        let store = std::sync::Arc::new(InProcess::new(4));
+        let policy = &policy;
+        let answer = |tarball: String, served: Vec<String>| {
+            let store = store.clone();
+            async move {
+                let doc = packument(&tarball);
+                let registry = scripted(vec![Answer::body(doc.clone()), Answer::body(doc)]).await;
+                let upstreams = crate::ecosystem::Upstreams::defaults().with(
+                    crate::ecosystem::Repository::of(crate::identity::Ecosystem::Npm),
+                    &format!("http://{registry}"),
+                );
+                let clients = crate::ecosystem::Clients::new(
+                    crate::service::Connection::default(),
+                    &upstreams,
+                    1 << 20,
+                );
+                let reader = crate::dating::testing::reader(clients, &served, Some(store));
+                package_answer(policy, None, "pkg:npm/widget@1.0.0", &reader)
+                    .await
+                    .unwrap_or_else(|stopped| panic!("{}", stopped.note))
+            }
+        };
+        let by_host = answer(format!("{host}/widget-1.0.0.tgz"), vec![host.clone()]).await;
+        assert!(
+            by_host.contains("    * the file host's Last-Modified  2026-09-17T00:00:00Z\n"),
+            "{by_host}"
+        );
+        assert!(
+            by_host.contains("      the file's first sighting      none stored\n"),
+            "{by_host}"
+        );
+
+        let seen = store
+            .first_seen("pkg:npm/widget@1.0.0", "widget-1.0.0.tgz")
+            .await
+            .unwrap();
+        let by_sighting = answer(format!("{host}/widget-1.0.0.tgz"), Vec::new()).await;
+        assert!(
+            by_sighting.contains(&format!(
+                "      the file host's Last-Modified  not asked: the file is on {host}, which the proxy does not serve\n"
+            )),
+            "{by_sighting}"
+        );
+        assert!(
+            by_sighting.contains(&format!("    * the file's first sighting      {seen}\n")),
+            "{by_sighting}"
+        );
+        assert!(
+            by_sighting.contains("cooldown_days    FAIL"),
+            "{by_sighting}"
+        );
+        assert_eq!(
+            store
+                .sighted("pkg:npm/widget@1.0.0", "other.tgz")
+                .await
+                .unwrap(),
+            None,
+            "explain records no sighting"
+        );
+        let unseen = answer(format!("{host}/other.tgz"), Vec::new()).await;
+        assert!(unseen.contains("none stored"), "{unseen}");
+        assert_eq!(
+            store
+                .sighted("pkg:npm/widget@1.0.0", "other.tgz")
+                .await
+                .unwrap(),
+            None,
+            "explain records no sighting"
         );
     }
 

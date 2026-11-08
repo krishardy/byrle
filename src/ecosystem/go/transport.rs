@@ -5,13 +5,14 @@ use std::sync::{Arc, Mutex};
 
 use tracing::warn;
 
-use crate::ecosystem::{Claim, Claimed, Fetch, Fetched, FullDocument};
+use crate::dating::{Read, RecordDates, Source};
+use crate::ecosystem::{Claim, Claimed, Fetch, Fetched, FullDocument, Versioned};
 use crate::identity::PackageKey;
 use crate::policy::facts::PublishTimes;
-use crate::record::{PackageMetadata, PackageRecord};
+use crate::record::PackageMetadata;
 use crate::util::lru::Lru;
 
-use super::heads::{self, Heads};
+use super::heads::{self, Heads, Placed};
 use super::paths::{LIST, escape};
 use super::sumdb::{self, Answer};
 use super::wire::{Info, list, preferred, published, record};
@@ -120,42 +121,68 @@ impl Client {
         key: &PackageKey,
         version: &str,
         before: Option<jiff::Timestamp>,
-    ) -> Result<Option<PackageRecord>, String> {
+    ) -> Result<Option<Versioned>, String> {
         let Some(info) = self.info(key, version).await? else {
             return Ok(None);
         };
         let time = published(&info)?;
-        let published_at = match before {
+        let dates = match before {
             Some(before) => self.date(key, version, time, before).await,
-            None => time,
+            None => dates(
+                time,
+                Read::nothing(
+                    checksum_database(None),
+                    "not asked: the policy has no cooldown",
+                ),
+                time.map(|_| 0),
+            ),
         };
-        Ok(Some(record(key, version, published_at, &self.files(key))))
+        Ok(Some(Versioned {
+            record: record(key, version, dates.time(), &self.files(key)),
+            dates,
+        }))
     }
 
     /// When `version` of `key` became public, for a cooldown starting `before`: by its
-    /// record in the checksum database, [`Heads::dated`]. Its `.info` `time` when the database
-    /// does not answer or has no record of it, which is logged.
+    /// record in the checksum database, [`Heads::placed`]. Its `.info` `time` when the
+    /// database does not answer or has no record of it, which is logged.
     async fn date(
         &self,
         key: &PackageKey,
         version: &str,
         time: Option<jiff::Timestamp>,
         before: jiff::Timestamp,
-    ) -> Option<jiff::Timestamp> {
+    ) -> RecordDates {
         let record = match self.record(key, version).await {
             Ok(Some(record)) => record,
             Ok(None) => {
                 warn!(byrle.package.purl = %key, byrle.package.version = version, "a go version is dated by its .info Time: the checksum database has no record of it");
-                return time;
+                let none = Read::nothing(checksum_database(None), "no record of this version");
+                return dates(time, none, time.map(|_| 0));
             }
             Err(e) => {
                 warn!(byrle.package.purl = %key, byrle.package.version = version, error.message = %e, "a go version is dated by its .info Time: the checksum database did not answer");
-                return time;
+                let none = Read::nothing(checksum_database(None), format!("did not answer: {e}"));
+                return dates(time, none, time.map(|_| 0));
             }
         };
-        self.heads
-            .dated(&self.sumdb, record, time, Some(before))
-            .await
+        let placed = self.heads.placed(&self.sumdb, record, Some(before)).await;
+        let source = checksum_database(Some(record));
+        let (read, used) = match placed {
+            Placed::Held(at) => (Read::at(source, at), Some(1)),
+            Placed::BelowEvery(oldest) => {
+                let info_first = matches!(time, Some(time) if time < oldest);
+                (
+                    Read::at(source, oldest),
+                    Some(if info_first { 0 } else { 1 }),
+                )
+            }
+            Placed::Unheld => (
+                Read::nothing(source, "no tree head kept holds the record"),
+                time.map(|_| 0),
+            ),
+        };
+        dates(time, read, used)
     }
 
     /// `version` of `key`'s record number, kept once known. `None` when the database has no
@@ -225,7 +252,7 @@ impl Client {
                 continue;
             };
             let time = published(&info)?;
-            let Some(at) = self.date(&metadata.key, version, time, before).await else {
+            let Some(at) = self.date(&metadata.key, version, time, before).await.time() else {
                 continue;
             };
             times.insert(version.to_owned(), at);
@@ -305,7 +332,7 @@ impl Fetch for Client {
         key: &'a PackageKey,
         version: &'a str,
         before: Option<jiff::Timestamp>,
-    ) -> futures_util::future::BoxFuture<'a, Result<Option<PackageRecord>, String>> {
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<Versioned>, String>> {
         Box::pin(Client::version(self, key, version, before))
     }
 
@@ -315,6 +342,27 @@ impl Fetch for Client {
         before: jiff::Timestamp,
     ) -> futures_util::future::BoxFuture<'a, Result<Option<PublishTimes>, String>> {
         Box::pin(async move { Client::dated(self, metadata, before).await.map(Some) })
+    }
+}
+
+/// The checksum database as a source of a version's date, naming `record` when known.
+fn checksum_database(record: Option<u64>) -> Source {
+    Source::Record(match record {
+        Some(record) => format!("the checksum database, record {record}"),
+        None => "the checksum database".to_owned(),
+    })
+}
+
+/// The `.info` `time` and the checksum database's `read`, `used` the one that dates it.
+fn dates(time: Option<jiff::Timestamp>, read: Read, used: Option<usize>) -> RecordDates {
+    let source = Source::Record("the .info Time".to_owned());
+    let info = match time {
+        Some(time) => Read::at(source, time),
+        None => Read::nothing(source, "the .info has no Time"),
+    };
+    RecordDates {
+        reads: vec![info, read],
+        used,
     }
 }
 
@@ -451,7 +499,8 @@ pub(crate) mod tests {
         let record = Fetch::version(&client, &toml(), "v1.0.0", None)
             .await
             .unwrap()
-            .expect("found");
+            .expect("found")
+            .record;
         assert_eq!(
             record.published_at,
             Some("2020-01-02T03:04:05Z".parse().unwrap())
@@ -485,8 +534,26 @@ pub(crate) mod tests {
         assert!(closed.version(&toml(), "v1.0.0", None).await.is_err());
     }
 
+    /// Clients whose Go client is `client`.
+    pub(crate) fn holding(client: Client) -> crate::ecosystem::Clients {
+        crate::ecosystem::Clients::new(
+            crate::service::Connection::default(),
+            &crate::ecosystem::Upstreams::defaults(),
+            1 << 20,
+        )
+        .with(
+            crate::ecosystem::Repository::of(Ecosystem::Go),
+            Arc::new(client),
+        )
+    }
+
+    /// Clients asking a Go module proxy at `base`, whose checksum database is `sumdb`.
+    pub(crate) fn clients(base: &str, sumdb: sumdb::Client) -> crate::ecosystem::Clients {
+        holding(Client::new(crate::service::Connection::default(), base, 1 << 20).with_sumdb(sumdb))
+    }
+
     /// A checksum database holding only rsc.io/quote, so no other module has a record.
-    async fn sumdb_of_quote() -> sumdb::Client {
+    pub(crate) async fn sumdb_of_quote() -> sumdb::Client {
         use super::super::sumdb::testing::{Database, client};
         client(Database::new(vec![quote_record()])).await
     }
@@ -494,7 +561,7 @@ pub(crate) mod tests {
     /// Records of `example.com/m` at `v0` to `v1999`, one every 10 minutes, each claiming
     /// a 2020 `.info` `Time`, with an index of them. Returns the client and when each was
     /// published.
-    async fn backdated() -> (
+    pub(crate) async fn backdated() -> (
         Client,
         Vec<jiff::Timestamp>,
         Arc<super::super::sumdb::testing::Database>,
@@ -511,6 +578,36 @@ pub(crate) mod tests {
             .with_sumdb(sumdb)
             .with_index(&index);
         (client, published, db)
+    }
+
+    /// A record no tree head kept holds is dated by its `.info` `Time`, and one below every
+    /// row by the oldest row when that is earlier.
+    #[tokio::test]
+    async fn a_record_no_tree_holds_is_dated_by_its_info() {
+        let (client, _, _) = backdated().await;
+        let m = PackageKey::from_registry_name(Ecosystem::Go, "example.com/m").unwrap();
+        client
+            .records
+            .lock()
+            .unwrap()
+            .insert(("example.com/m".to_owned(), "v9".to_owned()), 1 << 40);
+        let claimed: jiff::Timestamp = "2020-01-01T00:00:00Z".parse().unwrap();
+        let before = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(7 * 24);
+        let dates = client.date(&m, "v9", Some(claimed), before).await;
+        assert_eq!(dates.time(), Some(claimed));
+        assert_eq!(
+            dates.reads[1].said,
+            crate::dating::Said::Nothing("no tree head kept holds the record".to_owned())
+        );
+
+        let now = jiff::Timestamp::now();
+        let below = client.date(&m, "v500", Some(now), before).await;
+        assert_eq!(
+            below.used,
+            Some(1),
+            "the oldest row is earlier than its Time"
+        );
+        assert!(below.time().unwrap() < now);
     }
 
     /// v500, older than the seed, keeps its 2020 `Time`; v1950 is dated by its record, which
@@ -530,6 +627,7 @@ pub(crate) mod tests {
                     .await
                     .unwrap()
                     .unwrap()
+                    .record
                     .published_at
                     .unwrap()
             }
@@ -579,7 +677,8 @@ pub(crate) mod tests {
             .version(&toml(), "v1.0.0", Some(jiff::Timestamp::now()))
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .record;
         drop(guard);
         assert_eq!(
             record.published_at,

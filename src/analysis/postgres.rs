@@ -37,6 +37,15 @@ pub fn stores(
     }
 }
 
+/// The analysis store at [`crate::env::DATABASE_URL`], when it is set.
+pub async fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
+    environment: &crate::env::Env<L>,
+) -> Result<Option<std::sync::Arc<dyn Analyses>>, String> {
+    Ok(crate::intel::postgres::from_env(environment)
+        .await?
+        .map(|intel| std::sync::Arc::new(PgAnalyses::new(intel.pool().clone())) as _))
+}
+
 /// What the detectors found, kept across restarts and shared between proxies.
 #[derive(Debug, Clone)]
 pub struct PgAnalyses {
@@ -414,6 +423,10 @@ impl Analyses for PgAnalyses {
     fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp> {
         Box::pin(self.write_first_seen(purl, filename))
     }
+
+    fn sighted<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Option<Timestamp>> {
+        Box::pin(self.read_first_seen(purl, filename))
+    }
 }
 
 impl crate::analysis::store::Trees for PgAnalyses {
@@ -499,6 +512,27 @@ impl PgAnalyses {
         .await
         .map_err(AnalysisError::Backend)?;
         Timestamp::from_second(seen)
+            .map_err(|e| AnalysisError::Backend(sqlx::Error::Decode(Box::new(e))))
+    }
+
+    async fn read_first_seen(
+        &self,
+        purl: &str,
+        filename: &str,
+    ) -> Result<Option<Timestamp>, AnalysisError> {
+        let seen = sqlx::query_scalar!(
+            r#"
+            SELECT floor(EXTRACT(EPOCH FROM first_seen))::bigint AS "seen!"
+            FROM artifact_first_seen WHERE purl = $1 AND filename = $2
+            "#,
+            purl,
+            filename,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        seen.map(Timestamp::from_second)
+            .transpose()
             .map_err(|e| AnalysisError::Backend(sqlx::Error::Decode(Box::new(e))))
     }
 

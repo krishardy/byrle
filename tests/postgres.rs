@@ -2063,6 +2063,15 @@ async fn a_file_s_first_sighting_is_kept_once() {
     let intel = skip_without_database!("t_first_seen");
     let store = analyses(&intel);
     let purl = "pkg:pypi/x@1.0";
+    assert_eq!(
+        store.sighted(purl, "x-1.0.tar.gz").await.expect("reads"),
+        None,
+        "reading records nothing"
+    );
+    assert_eq!(
+        store.sighted(purl, "x-1.0.tar.gz").await.expect("reads"),
+        None
+    );
     let first = store
         .first_seen(purl, "x-1.0.tar.gz")
         .await
@@ -2072,6 +2081,10 @@ async fn a_file_s_first_sighting_is_kept_once() {
         store.first_seen(purl, "x-1.0.tar.gz")
     );
     assert_eq!((a.expect("reads"), b.expect("reads")), (first, first));
+    assert_eq!(
+        store.sighted(purl, "x-1.0.tar.gz").await.expect("reads"),
+        Some(first)
+    );
     let now = jiff::Timestamp::now();
     assert!(
         first <= now && now.duration_since(first).as_secs() < 60,

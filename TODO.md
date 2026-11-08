@@ -497,7 +497,7 @@ Items that I've added that are not stage-bound.
 52. Documentation of what each signal means: for every `signal_weights` key, what fires
     it, what it says about the version, an example of its detail, and why its default
     weight is what it is. Raised 2026-10-29.
-53. `byrle explain` and `byrle policy diff` date a Go version by its record, as the proxy
+53. [x] `byrle explain` and `byrle policy diff` date a Go version by its record, as the proxy
     does since decision 0125. They pass `before: None` to `Clients::version_of` today, so
     they read the `.info` `Time`, and `explain` reports a backdated version as allowed
     while the proxy refuses it. Their clients are built from the environment, which names
@@ -507,6 +507,10 @@ Items that I've added that are not stage-bound.
     Neither reads a file's first sighting either, which dates an undated pinned fetch
     since decision 0129, so both report an undated version as having no date. Added
     2026-11-03.
+    Done 2026-11-08: [dates-reported](docs/engineering_decisions/0137-dates-reported.md).
+    Both call the proxy's `dating::date`, pass a cooldown start, read a first sighting
+    without recording one, and print each date read and the one used. The Go tests set the
+    index and checksum database through `Clients::with`, so no setting was added.
 54. Opengrep for SAST: add it to `make sast` beside semgrep or in its place, with a
     `scripts/make/opengrep.sh`, the same rules and `// nosemgrep:` suppressions, and a CI
     step. Raised 2026-11-05.

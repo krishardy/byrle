@@ -683,11 +683,18 @@ impl Proxy {
         served: &[String],
         allowed_direct: &[String],
     ) -> Result<OriginPolicy, crate::origin::OriginError> {
-        let reachable = ReachableOrigins::new(
-            self.config.upstreams.bases(),
-            served.iter().map(String::as_str),
-        )?;
-        OriginPolicy::new(reachable, allowed_direct.iter().map(String::as_str))
+        origin_policy(&self.config.upstreams, served, allowed_direct)
+    }
+
+    /// What `byrle explain` reads dates with on this proxy: its clients, file hosts,
+    /// origins and first sightings.
+    pub fn date_reader(&self) -> crate::dating::Reader {
+        crate::dating::Reader::new(
+            self.config.clients.clone(),
+            self.config.upstream.clone(),
+            self.config.origins.clone(),
+            self.analyses(),
+        )
     }
 
     pub fn upstreams(&self) -> &Upstreams {
@@ -700,6 +707,16 @@ impl Proxy {
             .route("/", axum::routing::any(handle))
             .with_state(self)
     }
+}
+
+/// The origins served for `upstreams` and `served`, and the ones `allowed_direct`.
+pub(crate) fn origin_policy(
+    upstreams: &Upstreams,
+    served: &[String],
+    allowed_direct: &[String],
+) -> Result<OriginPolicy, crate::origin::OriginError> {
+    let reachable = ReachableOrigins::new(upstreams.bases(), served.iter().map(String::as_str))?;
+    OriginPolicy::new(reachable, allowed_direct.iter().map(String::as_str))
 }
 
 type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>>;
@@ -1630,7 +1647,7 @@ const FORWARDED: [&str; 4] = [
 ];
 
 /// The headers a request is forwarded upstream with: [`FORWARDED`].
-const UPSTREAM: crate::service::Declared = crate::service::Declared {
+pub(crate) const UPSTREAM: crate::service::Declared = crate::service::Declared {
     name: "the upstream registries",
     headers: &FORWARDED,
 };
@@ -1929,7 +1946,7 @@ const UNDATED: &str = "no publish time could be read and no first sighting store
                        `cooldown_days` cannot be answered";
 
 /// The purl of `key` at `version`, as log lines and answers name it.
-fn purl_of(key: &PackageKey, version: &str) -> String {
+pub(crate) fn purl_of(key: &PackageKey, version: &str) -> String {
     key.at_version(version)
         .map(|r| r.to_string())
         .unwrap_or_else(|_| format!("{key}@{version}"))
@@ -2292,7 +2309,7 @@ impl<'a> Deciding<'a> {
             )
             .await
         {
-            Ok(Some(alone)) => Lookup::Found(Box::new(alone)),
+            Ok(Some(alone)) => Lookup::Found(Box::new(alone.record)),
             Ok(None) => {
                 let at = self.request.repository;
                 lookup_or_fetch(self.proxy, at, key, claimed_version, filename, path).await
@@ -2521,57 +2538,48 @@ impl<'a> Deciding<'a> {
     }
 
     /// For a record whose document carried no publish time: the full document, and the
-    /// publish times from it or from the file host's `Last-Modified`, unless the file is
-    /// `unservable`, on an origin the proxy does not serve, which is not asked.
+    /// publish times from it, the file host's `Last-Modified` or the file's first sighting,
+    /// as [`crate::dating::date`] reads them. The file host is not asked when the file is
+    /// `unservable`, on an origin the proxy does not serve.
     async fn dated(&self, record: &PackageRecord, unservable: bool) -> Dated {
-        if record.published_at.is_some() {
-            return Dated::default();
-        }
-        let at = self.request.repository;
-        let (times, full) = match full_document(self.proxy, at, self.request.key).await {
-            Some(FullDocument { times, metadata }) => (Some(times), metadata.ok()),
-            None => (None, None),
-        };
-        let version = record.package.version();
-        let has = |times: &Option<facts::PublishTimes>| {
-            times.as_ref().is_some_and(|t| t.contains_key(version))
-        };
-        let mut times = times;
-        if !has(&times)
-            && !unservable
-            && let Some(host) = dated_by_host(self.proxy, record, self.request.path).await
-        {
-            times.get_or_insert_default().extend(host);
-        }
         let cooldown = (self.proxy.config.policy.as_deref()).is_some_and(Policy::uses_cooldown);
-        let mut undated = cooldown && !has(&times);
-        if undated && let Some(seen) = self.first_seen(version).await {
-            times
-                .get_or_insert_default()
-                .insert(version.to_owned(), seen);
-            undated = false;
-        }
+        let sources = Sourcing {
+            deciding: self,
+            unservable,
+        };
+        let found = crate::dating::date(
+            record,
+            &purl_of(self.request.key, record.package.version()),
+            crate::dating::RecordDates::of(record),
+            &sources,
+            crate::dating::Reading {
+                cooldown,
+                every: false,
+            },
+        )
+        .await;
         Dated {
-            times,
-            full,
-            undated,
+            undated: cooldown && found.dating.used.is_none(),
+            times: found.times,
+            full: found.full,
         }
     }
 
-    /// When the proxy first decided this file at `version`, recording now on the first
-    /// time. `None` with no analysis store, or when it errors.
-    async fn first_seen(&self, version: &str) -> Option<jiff::Timestamp> {
+    /// When the proxy first decided the file `filename` of `purl`, recording now on the
+    /// first time. Errors with no analysis store, or when it errors.
+    async fn first_seen(&self, purl: &str, filename: &str) -> Result<jiff::Timestamp, String> {
         let path = self.request.path;
-        let purl = purl_of(self.request.key, version);
-        let store = self.proxy.analyses()?;
-        match store.first_seen(&purl, self.request.filename).await {
+        let Some(store) = self.proxy.analyses() else {
+            return Err("not read: no analysis store".to_owned());
+        };
+        match store.first_seen(purl, filename).await {
             Ok(seen) => {
                 info!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, byrle.package.published = %seen, "no publish time: dated by the file's first sighting");
-                Some(seen)
+                Ok(seen)
             }
             Err(e) => {
                 warn!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, error.message = %e, "no publish time, and its first sighting could not be read");
-                None
+                Err(format!("not read: {e}"))
             }
         }
     }
@@ -4437,15 +4445,20 @@ fn defer_response(
 
 /// The full packument for a package whose client asked for less, logged either way.
 /// Fetched now and never kept: see docs/engineering_decisions/0056-no-metadata-cache.md.
-/// `None` for an ecosystem whose records carry publish times, or when it cannot be read.
-async fn full_document(proxy: &Proxy, at: Repository, key: &PackageKey) -> Option<FullDocument> {
+/// `Ok(None)` for an ecosystem whose records carry publish times. Errors when it cannot be
+/// read.
+async fn full_document(
+    proxy: &Proxy,
+    at: Repository,
+    key: &PackageKey,
+) -> Result<Option<FullDocument>, String> {
     let started = Instant::now();
     let full = match proxy.config.clients.full_document(at, key).await {
         Ok(Some(full)) => full,
-        Ok(None) => return None,
+        Ok(None) => return Ok(None),
         Err(e) => {
             warn!(byrle.package.purl = %key, error.message = %e, "no full packument for this package");
-            return None;
+            return Err(e);
         }
     };
     if let Err(e) = &full.metadata {
@@ -4457,11 +4470,11 @@ async fn full_document(proxy: &Proxy, at: Repository, key: &PackageKey) -> Optio
         byrle.metadata.fetch_ms = started.elapsed().as_millis() as u64,
         "full packument read"
     );
-    Some(full)
+    Ok(Some(full))
 }
 
 /// Say when a cooldown cannot be answered while filtering this document, because a PEP 503
-/// page carries no publish time, and that [`dated_by_host`] answers it on the artifact.
+/// page carries no publish time, and that [`crate::dating::date`] answers it on the artifact.
 fn report_undated(proxy: &Proxy, read: &dyn ecosystem::Document, path: &str) {
     if !proxy
         .config
@@ -4491,58 +4504,62 @@ fn report_undated(proxy: &Proxy, read: &dyn ecosystem::Document, path: &str) {
     );
 }
 
-/// The publish time from the file host's `Last-Modified`, for a record whose index gave
-/// none. One `HEAD`, on the pinned path only.
-/// See docs/engineering_decisions/0060-pep-503-html-index.md.
-/// Returns `None` when the host gives no date.
-async fn dated_by_host(
-    proxy: &Proxy,
-    record: &PackageRecord,
-    path: &str,
-) -> Option<facts::PublishTimes> {
-    if !proxy
-        .config
-        .policy
-        .as_deref()
-        .is_some_and(Policy::uses_cooldown)
-    {
-        return None;
-    }
-    let started = Instant::now();
-    let artifact = record.artifact().expect("a pinned record names its file");
-    let last_modified = head_last_modified(proxy, &artifact.url, path).await?;
-    info!(
-        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-        byrle.package.published = %last_modified,
-        byrle.metadata.fetch_ms = started.elapsed().as_millis() as u64,
-        "publish time read from the file's Last-Modified"
-    );
-    Some(
-        [(record.package.version().to_owned(), last_modified)]
-            .into_iter()
-            .collect(),
-    )
+/// Where [`Deciding::dated`] reads the sources past the record's own, each logged.
+struct Sourcing<'d, 'a> {
+    deciding: &'d Deciding<'a>,
+    /// The file is on an origin the proxy does not serve, so its host is not asked.
+    unservable: bool,
 }
 
-/// The `Last-Modified` a HEAD of `url` answers, for the request at `path`.
-/// Returns `None` when the host refuses the HEAD, cannot be asked, or sends no date.
-async fn head_last_modified(proxy: &Proxy, url: &str, path: &str) -> Option<jiff::Timestamp> {
-    let response = match proxy.config.upstream.head(url).send().await {
-        Ok(response) if response.status().is_success() => response,
-        Ok(response) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), http.response.status_code = response.status().as_u16(), "no publish time: the file host refused a HEAD");
-            return None;
-        }
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "no publish time: the file host could not be asked");
-            return None;
-        }
-    };
-    response
-        .headers()
-        .get(header::LAST_MODIFIED)
-        .and_then(|value| value.to_str().ok())
-        .and_then(crate::http::http_date)
+impl crate::dating::Sources for Sourcing<'_, '_> {
+    fn full(&self) -> futures_util::future::BoxFuture<'_, Result<Option<FullDocument>, String>> {
+        let deciding = self.deciding;
+        Box::pin(async move {
+            full_document(
+                deciding.proxy,
+                deciding.request.repository,
+                deciding.request.key,
+            )
+            .await
+        })
+    }
+
+    fn last_modified<'s>(
+        &'s self,
+        url: &'s str,
+    ) -> futures_util::future::BoxFuture<'s, Result<jiff::Timestamp, String>> {
+        Box::pin(async move {
+            if self.unservable {
+                return Err(
+                    "not asked: the file is on an origin the proxy does not serve".to_owned(),
+                );
+            }
+            let path = self.deciding.request.path;
+            let started = Instant::now();
+            let read =
+                crate::dating::last_modified(&self.deciding.proxy.config.upstream, url).await;
+            match &read {
+                Ok(last_modified) => info!(
+                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
+                    byrle.package.published = %last_modified,
+                    byrle.metadata.fetch_ms = started.elapsed().as_millis() as u64,
+                    "publish time read from the file's Last-Modified"
+                ),
+                Err(why) => {
+                    warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.reason = %why, "no publish time from the file host")
+                }
+            }
+            read
+        })
+    }
+
+    fn first_seen<'s>(
+        &'s self,
+        purl: &'s str,
+        filename: &'s str,
+    ) -> futures_util::future::BoxFuture<'s, Result<Option<jiff::Timestamp>, String>> {
+        Box::pin(async move { self.deciding.first_seen(purl, filename).await.map(Some) })
+    }
 }
 
 /// JSON about the proxy itself, marked not to be cached: it reports the state at this moment.
@@ -15108,17 +15125,6 @@ mod tests {
             },
         );
         assert_eq!(deciding.purl, "pkg:npm/lodash@ ");
-    }
-
-    /// A file host that cannot be asked gives no publish time.
-    #[tokio::test]
-    async fn a_file_host_that_cannot_be_asked_gives_no_date() {
-        let proxy = offline(None, None);
-        let closed = crate::util::test_support::closing_server().await;
-        assert_eq!(
-            head_last_modified(&proxy, &format!("http://{closed}/x.tar.gz"), "/npm/x").await,
-            None
-        );
     }
 
     /// Metadata fetched on the proxy's own behalf that does not read leaves nothing to find.

@@ -434,8 +434,17 @@ impl Fetch for Client {
         key: &'a PackageKey,
         version: &'a str,
         _before: Option<jiff::Timestamp>,
-    ) -> futures_util::future::BoxFuture<'a, Result<Option<PackageRecord>, String>> {
-        Box::pin(Client::version(self, key, version))
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<crate::ecosystem::Versioned>, String>>
+    {
+        Box::pin(async move {
+            let found = Client::version(self, key, version).await;
+            found.map(|found| {
+                found.map(|record| crate::ecosystem::Versioned {
+                    dates: crate::dating::RecordDates::named(&record, "the POM's Last-Modified"),
+                    record,
+                })
+            })
+        })
     }
 
     /// Every version is dated, whatever `before` is: see [`Client::dated`].
@@ -767,10 +776,15 @@ pub(crate) mod tests {
     async fn a_version_is_dated_by_its_pom() {
         let base = poms(&[("3.17.0", "Wed, 21 Aug 2024 14:04:19 GMT")]).await;
         let client = Client::new(crate::service::Connection::default(), &base, 1 << 20);
-        let record = Fetch::version(&client, &lang3(), "3.17.0", None)
+        let versioned = Fetch::version(&client, &lang3(), "3.17.0", None)
             .await
             .unwrap()
             .expect("published");
+        assert_eq!(
+            versioned.dates.reads[0].source.to_string(),
+            "the POM's Last-Modified"
+        );
+        let record = versioned.record;
         let at: jiff::Timestamp = "2024-08-21T14:04:19Z".parse().unwrap();
         assert_eq!(record.published_at, Some(at));
         assert_eq!(record.artifacts[0].filename, "commons-lang3-3.17.0.jar");

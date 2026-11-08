@@ -46,6 +46,29 @@ const MAX_ENTRY_BYTES: usize = 64 << 10;
 /// Every record below a size, by size, was in a signed tree by its time.
 type Rows = BTreeMap<u64, Timestamp>;
 
+/// Where [`Heads::placed`] put a record among the rows it keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placed {
+    /// The time of the first row that holds it.
+    Held(Timestamp),
+    /// Below every row: the oldest row's time, which holds it.
+    BelowEvery(Timestamp),
+    /// No row holds it.
+    Unheld,
+}
+
+impl Placed {
+    /// Its date, given the `time` its `.info` claims: the row's time, the earlier of `time`
+    /// and the oldest row's for a record below every row, and `time` for one no row holds.
+    pub fn at(self, time: Option<Timestamp>) -> Option<Timestamp> {
+        match self {
+            Self::Held(held) => Some(held),
+            Self::BelowEvery(oldest) => Some(time.map_or(oldest, |time| time.min(oldest))),
+            Self::Unheld => time,
+        }
+    }
+}
+
 /// The checksum database's trees as this process saw them, and index entries as trees.
 pub struct Heads {
     http: crate::service::Service,
@@ -92,10 +115,7 @@ impl Heads {
         insert(&mut rows, size, at);
     }
 
-    /// When `record` was public, given the `time` its `.info` claims: the earliest row that
-    /// holds it, split from the index until the rows around it are [`GRAIN`] apart. A record
-    /// below every row is dated by the earlier of `time` and the oldest row. With `before`,
-    /// a row at or before it is read first, so only a record older than `before` is.
+    /// When `record` was public, given the `time` its `.info` claims: [`Heads::placed`].
     pub async fn dated(
         &self,
         sumdb: &sumdb::Client,
@@ -103,6 +123,18 @@ impl Heads {
         time: Option<Timestamp>,
         before: Option<Timestamp>,
     ) -> Option<Timestamp> {
+        self.placed(sumdb, record, before).await.at(time)
+    }
+
+    /// Where `record` falls among the rows: the earliest row that holds it, split from the
+    /// index until the rows around it are [`GRAIN`] apart. With `before`, a row at or before
+    /// it is read first, so only a record older than `before` is below every row.
+    pub async fn placed(
+        &self,
+        sumdb: &sumdb::Client,
+        record: u64,
+        before: Option<Timestamp>,
+    ) -> Placed {
         if let Some(before) = before {
             self.seed(sumdb, before).await;
         }
@@ -111,23 +143,23 @@ impl Heads {
         loop {
             let (below, above) = self.around(record);
             let Some(held) = above else {
-                return time;
+                return Placed::Unheld;
             };
             let Some(below) = below else {
-                return Some(time.map_or(held, |time| time.min(held)));
+                return Placed::BelowEvery(held);
             };
             let span = held.duration_since(below);
             if span <= GRAIN || last == Some((below, held)) || splits == MAX_SPLITS {
-                return Some(held);
+                return Placed::Held(held);
             }
             last = Some((below, held));
             splits += 1;
             if self.resting() {
-                return Some(held);
+                return Placed::Held(held);
             }
             if let Err(e) = self.point(sumdb, below + span / 2).await {
                 warn!(error.message = %e, "a go version is dated by the checksum tree after it: the index could not be read between");
-                return Some(held);
+                return Placed::Held(held);
             }
         }
     }

@@ -9,6 +9,7 @@ pub mod analysis;
 pub mod audit;
 pub mod cli;
 pub mod console;
+pub mod dating;
 /// Debug builds only: see the module docs.
 #[cfg(debug_assertions)]
 pub mod defer;

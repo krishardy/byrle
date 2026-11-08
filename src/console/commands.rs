@@ -56,7 +56,7 @@ async fn explained(site: &Site, parts: &Parts) -> Result<Printed, Refused> {
         &target,
         policy.as_deref(),
         store.as_deref(),
-        proxy.clients(),
+        &proxy.date_reader(),
     )
     .await;
     Ok(Printed::of(
@@ -353,7 +353,7 @@ async fn policy_diffed(site: &Site, body: &[u8]) -> Result<Printed, Refused> {
         dates,
         (site.audit_log(), sent),
         proxy.intel_store(),
-        proxy.clients().clone(),
+        proxy.date_reader(),
     )
     .await;
     let notes: Vec<String> = run.notes.into_iter().chain(run.summary).collect();

@@ -183,6 +183,10 @@ pub trait Analyses: Trees {
     /// When the file `filename` of `purl` was first asked of this store, recording now when
     /// it was not. A later call returns the first time, never a new one.
     fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp>;
+
+    /// When the file `filename` of `purl` was first asked of this store, recording nothing.
+    /// `None` when it never was.
+    fn sighted<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Option<Timestamp>>;
 }
 
 /// Where a checksum database's largest tree is kept past a restart.
@@ -501,6 +505,17 @@ impl Analyses for InProcess {
             Ok(now)
         })
     }
+
+    fn sighted<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Option<Timestamp>> {
+        let key = (purl.to_owned(), filename.to_owned());
+        let held = self
+            .9
+            .lock()
+            .expect("first-seen store lock")
+            .get(&key)
+            .copied();
+        Box::pin(async move { Ok(held) })
+    }
 }
 
 impl Trees for InProcess {
@@ -614,6 +629,9 @@ pub(crate) mod tests {
         fn first_seen<'a>(&'a self, _: &'a str, _: &'a str) -> Stored<'a, Timestamp> {
             broken()
         }
+        fn sighted<'a>(&'a self, _: &'a str, _: &'a str) -> Stored<'a, Option<Timestamp>> {
+            broken()
+        }
     }
 
     impl Trees for Broken {
@@ -646,6 +664,17 @@ pub(crate) mod tests {
             bodies: vec![(name.to_owned(), body.to_owned())],
             anomalies: Vec::new(),
         })
+    }
+
+    /// Reading a sighting records none; the first one recorded is read back.
+    #[tokio::test]
+    async fn a_sighting_is_read_without_being_recorded() {
+        let store = InProcess::new(4);
+        let (purl, file) = ("pkg:npm/x@1.0.0", "x-1.0.0.tgz");
+        assert_eq!(store.sighted(purl, file).await.expect("reads"), None);
+        assert_eq!(store.sighted(purl, file).await.expect("reads"), None);
+        let first = store.first_seen(purl, file).await.expect("records");
+        assert_eq!(store.sighted(purl, file).await.expect("reads"), Some(first));
     }
 
     #[tokio::test]

@@ -148,3 +148,4 @@ Implemented means it is in the code, and the file names where.
 | 0134 | [The checksum database's tree is kept past a restart, and a tile once its proof passes](0134-checksum-tree-kept.md) | Implemented 2026-11-05 |  |
 | 0135 | [A PyPI file whose name fits several projects belongs to the index that lists it](0135-pypi-file-placed-by-listing-index.md) | Implemented 2026-11-08 |  |
 | 0136 | [A policy selector compares a crate name as crates.io does, `-` as `_`](0136-crate-names-compared-as-crates-io-does.md) | Implemented 2026-11-08 |  |
+| 0137 | [`explain` and `policy diff` date a version as the proxy does, and print each date read](0137-dates-reported.md) | Implemented 2026-11-08 |  |
