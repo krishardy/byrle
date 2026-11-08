@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::error::PypiError;
-use super::paths::{filename_parts, normalise};
+use super::paths::{normalise, version_in};
 
 /// What installing the file runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -106,16 +106,23 @@ struct Entry {
     provenance: Option<String>,
 }
 
-/// One project's index, read. A file whose name gives no version is skipped.
-/// `name` is used when the document does not name the project.
+/// One project's index, read. A file whose name gives no version, or is an sdist of another
+/// project, is skipped.
+/// `name` is the project asked for, which each sdist's filename is split by, as pip splits
+/// it. It names the project when the document does not, and is empty when not known.
 pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
     let document: Document = serde_json::from_slice(bytes).map_err(PypiError::NotJson)?;
     let listed = document.files.len();
+    let asked = normalise(name);
+    let name = document
+        .name
+        .map_or_else(|| asked.clone(), |n| normalise(&n));
+    let split_by = if asked.is_empty() { &name } else { &asked };
     let files: Vec<File> = document
         .files
         .into_iter()
         .filter_map(|entry| {
-            let (_, version, kind) = filename_parts(&entry.filename)?;
+            let (version, kind) = version_in(split_by, &entry.filename)?;
             Some(File {
                 filename: entry.filename,
                 version,
@@ -133,9 +140,6 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
             })
         })
         .collect();
-    let name = document
-        .name
-        .map_or_else(|| normalise(name), |n| normalise(&n));
     if files.is_empty() {
         return Err(PypiError::NothingReadable {
             name,
@@ -162,6 +166,7 @@ impl Project {
 mod tests {
     use super::*;
 
+    use super::super::paths::filename_parts;
     use super::super::{MAX_INDEX_BYTES, fixture};
 
     /// A version offering both is dated by its wheel, so the two upload times differ here.
@@ -316,6 +321,20 @@ mod tests {
         assert_eq!(MAX_INDEX_BYTES, 67_108_864);
         assert_eq!(Kind::Wheel.as_str(), "wheel");
         assert_eq!(Kind::Sdist.as_str(), "sdist");
+    }
+
+    /// An sdist's version is read after the name asked for, or the document's when none was,
+    /// and another project's sdist is skipped, as pip skips it.
+    #[test]
+    fn an_sdist_is_read_after_the_project_s_name() {
+        let body = br#"{"name":"Foo","files":[
+            {"filename":"foo-1.0-1.tar.gz","url":"https://f/a","hashes":{}},
+            {"filename":"bar-2.0.tar.gz","url":"https://f/b","hashes":{}}]}"#;
+        for (asked, version) in [("foo", "1.0-1"), ("", "1.0-1"), ("foo-1-0", "1")] {
+            let project = parse(asked, body).expect("reads");
+            assert_eq!(project.versions(), [version], "{asked}");
+            assert_eq!(project.name, "foo", "{asked}");
+        }
     }
 
     /// A JSON index with no `name` is named by the request.

@@ -174,8 +174,8 @@ mod tests {
         Client::new(crate::service::Connection::default(), base)
     }
 
-    /// The normalised name in the URL, the `Accept` header, the body and the records.
-    /// The name the document gives wins over the one asked for.
+    /// The normalised name in the URL, the `Accept` header, the body and the records. The
+    /// document's name wins over the one asked for; its sdists, of another project, are skipped.
     #[tokio::test]
     async fn asks_for_json_under_the_normalised_name_and_reads_the_index() {
         let body = String::from_utf8(fixture()).expect("the fixture is utf-8");
@@ -197,7 +197,7 @@ mod tests {
             .await
             .expect("the index reads");
         assert_eq!(project.name, "requests");
-        assert_eq!(project.versions().len(), 3);
+        assert_eq!(project.versions().len(), 2);
     }
 
     /// A PEP 503 page is read, with its relative hrefs resolved against the page's own
@@ -349,8 +349,8 @@ mod tests {
                     "/nameless/",
                     get(move || {
                         json(
-                            br#"{"name": "", "files": [{"filename": "x-1.0.tar.gz",
-                            "url": "https://f/x-1.0.tar.gz", "hashes": {}}]}"#,
+                            br#"{"name": "", "files": [{"filename": "x-1.0-py3-none-any.whl",
+                            "url": "https://f/x-1.0-py3-none-any.whl", "hashes": {}}]}"#,
                         )
                     }),
                 ),

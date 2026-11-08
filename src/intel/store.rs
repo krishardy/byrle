@@ -383,16 +383,7 @@ pub mod testing {
                     digest: p.snapshot,
                     taken_at: "2026-09-13T00:00:00Z".to_owned(),
                     sources: Vec::new(),
-                    streams: crate::ecosystem::of(crate::identity::Ecosystem::Npm)
-                        .streams
-                        .iter()
-                        .map(|listed| StreamDigest {
-                            stream: listed.stream.to_owned(),
-                            sha256: "aa".to_owned(),
-                            etag: None,
-                            last_modified: None,
-                        })
-                        .collect(),
+                    streams: streams_of(crate::identity::Ecosystem::Npm),
                     unconfigured: Vec::new(),
                 }))
             })
@@ -404,6 +395,51 @@ pub mod testing {
             _name: &'a str,
         ) -> Lookup<'a, Option<PackageIntel>> {
             Box::pin(async move { self.answer() })
+        }
+    }
+
+    /// Every stream `ecosystem` lists, each held.
+    fn streams_of(ecosystem: crate::identity::Ecosystem) -> Vec<StreamDigest> {
+        crate::ecosystem::of(ecosystem)
+            .streams
+            .iter()
+            .map(|listed| StreamDigest {
+                stream: listed.stream.to_owned(),
+                sha256: "aa".to_owned(),
+                etag: None,
+                last_modified: None,
+            })
+            .collect()
+    }
+
+    /// A [`FixedIntel`] whose snapshot covers `ecosystem` in place of npm.
+    pub struct Covering(pub crate::identity::Ecosystem, pub FixedIntel);
+
+    impl Intel for Covering {
+        fn lookup<'a>(
+            &'a self,
+            ecosystem: &'a str,
+            name: &'a str,
+            version: &'a str,
+        ) -> Lookup<'a, Vec<Record>> {
+            self.1.lookup(ecosystem, name, version)
+        }
+
+        fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move {
+                Ok(self.1.snapshot().await?.map(|loaded| LoadedSnapshot {
+                    streams: streams_of(self.0),
+                    ..loaded
+                }))
+            })
+        }
+
+        fn package<'a>(
+            &'a self,
+            ecosystem: &'a str,
+            name: &'a str,
+        ) -> Lookup<'a, Option<PackageIntel>> {
+            self.1.package(ecosystem, name)
         }
     }
 }

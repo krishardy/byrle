@@ -7640,6 +7640,42 @@ mod tests {
         assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
     }
 
+    /// pip reads `x-1.0-1.tar.gz` in x's index as version `1.0-1`, which PEP 440 spells
+    /// `1.0.post1`, so an advisory for `1.0.post1` removes it.
+    #[tokio::test]
+    async fn a_pypi_sdist_whose_version_holds_a_dash_is_matched_by_its_advisory() {
+        let fixed = crate::intel::store::testing::FixedIntel(Ok(Some(PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: vec![(
+                Some("1.0.post1".to_owned()),
+                crate::intel::store::Record {
+                    advisory_id: "MAL-1".to_owned(),
+                    aliases: Vec::new(),
+                    source: "osv".to_owned(),
+                    cvss: None,
+                    band: None,
+                    cvss_source: None,
+                    exploited: false,
+                    malware: true,
+                    informational: None,
+                    cached: None,
+                },
+            )],
+            ranges: Vec::new(),
+            exploitation_loaded: false,
+        })));
+        let intel = crate::intel::store::testing::Covering(Ecosystem::PyPI, fixed);
+        let proxy = offline(
+            Some(Arc::new(intel)),
+            Some("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n"),
+        );
+        let index = br#"{"name":"x","files":[
+            {"filename":"x-1.0-1.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0-1.tar.gz","hashes":{}},
+            {"filename":"x-0.9.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-0.9.tar.gz","hashes":{}}
+        ]}"#;
+        assert_eq!(served_filenames(&proxy, index).await, ["x-0.9.tar.gz"]);
+    }
+
     const ITOA_INDEX: &str = "/cargo/it/oa/itoa";
     const ITOA_DOWNLOAD: &str = "/cargo/crates/itoa/1.0.18/download";
     const DENY_ITOA: &str = "version: 1\ncooldown_days: 0\n\

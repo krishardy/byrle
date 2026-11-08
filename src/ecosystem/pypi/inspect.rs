@@ -19,8 +19,14 @@ pub struct Index {
     pub metadata: Option<Box<PackageMetadata>>,
 }
 
-/// No project name for the parsers: every message here names the project by its path.
-const UNNAMED: &str = "";
+/// The project `path` asks for, which pip splits each sdist's filename by. Empty when the
+/// path names none, and the parsers then use the index's own name.
+fn asked(path: &str) -> String {
+    match super::paths::classify_path(path) {
+        crate::route::RequestTarget::Metadata(key) => key.name().to_owned(),
+        _ => String::new(),
+    }
+}
 
 /// Parse a forwarded simple index and keep its records.
 ///
@@ -32,9 +38,10 @@ pub fn read_index(
     store: Keeping<'_>,
     path: &str,
 ) -> Result<Index, String> {
+    let asked = asked(path);
     let read = match format {
-        IndexFormat::Json => parse(UNNAMED, decoded),
-        IndexFormat::Html => super::html::parse(UNNAMED, page, decoded),
+        IndexFormat::Json => parse(&asked, decoded),
+        IndexFormat::Html => super::html::parse(&asked, page, decoded),
     };
     let project = match read {
         Ok(project) => project,
@@ -165,11 +172,34 @@ mod tests {
         );
         let unreadable = read(
             &store,
-            br#"{"name":"a/b/c","files":[{"filename":"x-1.0.tar.gz","url":"https://e/a","hashes":{}}]}"#,
+            br#"{"name":"a/b/c","files":[{"filename":"x-1.0-py3-none-any.whl","url":"https://e/a","hashes":{}}]}"#,
         )
         .expect("it parses");
         assert!(unreadable.metadata.is_none());
         assert_eq!(store.lock().unwrap().records(), 0);
+    }
+
+    /// An sdist is split after the project the request path asks for, as pip splits it, and
+    /// after the index's own name when the path names none.
+    #[test]
+    fn an_sdist_is_split_after_the_project_asked_for() {
+        let index = br#"{"name":"foo","files":[
+            {"filename":"foo-1.0-1.tar.gz","url":"https://e/a","hashes":{}}]}"#;
+        for (path, version) in [("/pypi/simple/foo-1-0/", "1"), ("/simple/foo/", "1.0-1")] {
+            let store = store();
+            let read = read_index(
+                index,
+                IndexFormat::Json,
+                "https://pypi.org/simple/foo/",
+                Keeping {
+                    store: &store,
+                    at: AT,
+                },
+                path,
+            )
+            .expect("it parses");
+            assert_eq!(read.project.versions(), [version], "{path}");
+        }
     }
 
     /// A PEP 503 page is read against the URL it came from.

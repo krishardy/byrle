@@ -4,7 +4,7 @@
 //! See docs/engineering_decisions/0060-pep-503-html-index.md.
 
 use super::error::PypiError;
-use super::paths::{filename_parts, normalise};
+use super::paths::{filename_parts, normalise, version_in};
 use super::wire::{File, Project};
 
 /// Read a PEP 503 page.
@@ -16,6 +16,9 @@ use super::wire::{File, Project};
 pub fn parse(name: &str, page: &str, bytes: &[u8]) -> Result<Project, PypiError> {
     let text = std::str::from_utf8(bytes).map_err(|_| PypiError::NotHtml("not UTF-8"))?;
     let page = reqwest::Url::parse(page).map_err(|_| PypiError::NotHtml("the page has no URL"))?;
+    let named = Some(normalise(name))
+        .filter(|name| !name.is_empty())
+        .or_else(|| named_by(&page));
     let mut files = Vec::new();
     for anchor in anchors(text)? {
         let Some(href) = anchor.attribute("href") else {
@@ -25,7 +28,11 @@ pub fn parse(name: &str, page: &str, bytes: &[u8]) -> Result<Project, PypiError>
             .join(&href)
             .map_err(|_| PypiError::NotHtml("an href that is not a URL"))?;
         let filename = unescape(anchor.text.trim());
-        let Some((_, version, kind)) = filename_parts(&filename) else {
+        let read = match &named {
+            Some(project) => version_in(project, &filename),
+            None => filename_parts(&filename).map(|(_, version, kind)| (version, kind)),
+        };
+        let Some((version, kind)) = read else {
             continue;
         };
         files.push(File {
@@ -43,10 +50,7 @@ pub fn parse(name: &str, page: &str, bytes: &[u8]) -> Result<Project, PypiError>
     if files.is_empty() {
         return Err(PypiError::NotHtml("no distribution file on the page"));
     }
-    let name = match normalise(name) {
-        name if !name.is_empty() => name,
-        _ => named_by(&page).unwrap_or_else(|| named_by_file(&files)),
-    };
+    let name = named.unwrap_or_else(|| named_by_file(&files));
     Ok(Project { name, files })
 }
 
@@ -386,6 +390,22 @@ mod tests {
                 "{page}"
             );
         }
+    }
+
+    /// An sdist's version is read after the name the request or the URL gives, and another
+    /// project's sdist is skipped. With neither, the last `-` splits it.
+    #[test]
+    fn an_sdist_is_read_after_the_project_s_name() {
+        let body = b"<a href=\"https://f/a\">foo-1.0-1.tar.gz</a>\
+                     <a href=\"https://f/b\">bar-2.0.tar.gz</a>";
+        for (name, page) in [("foo", "https://i/"), ("", "https://pypi.org/simple/foo/")] {
+            let project = parse(name, page, body).expect("reads");
+            assert_eq!(project.versions(), ["1.0-1"], "{name} {page}");
+            assert_eq!(project.name, "foo");
+        }
+        let unnamed = parse("", "https://i/", body).expect("reads");
+        assert_eq!(unnamed.versions(), ["1", "2.0"]);
+        assert_eq!(unnamed.name, "foo-1-0");
     }
 
     /// Only `#sha256=` is a digest, and only with 64 hex digits.

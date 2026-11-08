@@ -67,7 +67,8 @@ pub fn index_url(base: &str, name: &str) -> Result<String, PypiError> {
 }
 
 /// What a distribution filename says, a wheel's by PEP 427 and an sdist's by its last `-`.
-/// Eggs and installers give `None`.
+/// Eggs and installers give `None`. An sdist's split is a guess when its name or version
+/// holds a `-`: [`version_in`] reads it for a known project.
 /// Returns the [`normalise`]d project name, the version and the kind of file.
 pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
     if let Some(stem) = filename.strip_suffix(".whl") {
@@ -80,16 +81,35 @@ pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
         }
         return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));
     }
-    for extension in [".tar.gz", ".zip", ".tar.bz2", ".tar.xz"] {
-        if let Some(stem) = filename.strip_suffix(extension) {
-            let (name, version) = stem.rsplit_once('-')?;
-            if version.is_empty() || name.is_empty() {
-                return None;
-            }
-            return Some((normalise(name), version.to_owned(), Kind::Sdist));
-        }
+    let (name, version) = sdist_stem(filename)?.rsplit_once('-')?;
+    if version.is_empty() || name.is_empty() {
+        return None;
     }
-    None
+    Some((normalise(name), version.to_owned(), Kind::Sdist))
+}
+
+/// The version and kind of a file in `project`'s index. A wheel's is [`filename_parts`]'s.
+/// An sdist's follows the first `-` before which the name [`normalise`]s to `project`, as
+/// pip's `_find_name_version_sep` finds it: `foo-1.0-1.tar.gz` is `foo` at `1.0-1`.
+/// Returns `None` for an sdist of another project, which pip skips.
+pub(super) fn version_in(project: &str, filename: &str) -> Option<(String, Kind)> {
+    if filename.ends_with(".whl") {
+        return filename_parts(filename).map(|(_, version, kind)| (version, kind));
+    }
+    let stem = sdist_stem(filename)?;
+    let project = normalise(project);
+    let (at, _) = stem
+        .match_indices('-')
+        .find(|&(at, _)| at > 0 && normalise(&stem[..at]) == project)?;
+    let version = &stem[at + 1..];
+    (!version.is_empty()).then(|| (version.to_owned(), Kind::Sdist))
+}
+
+/// An sdist's filename without its archive extension.
+fn sdist_stem(filename: &str) -> Option<&str> {
+    [".tar.gz", ".zip", ".tar.bz2", ".tar.xz"]
+        .into_iter()
+        .find_map(|extension| filename.strip_suffix(extension))
 }
 
 /// Where a request under PyPI's prefixes goes upstream: `/simple/` to the index, `/packages/`
@@ -371,6 +391,38 @@ mod tests {
         ] {
             assert_eq!(classify_path(path), RequestTarget::Unrecognised, "{path}");
         }
+    }
+
+    /// In a known project's index an sdist's version follows the first `-` after the project
+    /// name, as pip reads it. The same filename gives another version in another project.
+    #[test]
+    fn an_sdist_in_a_known_project_is_split_after_its_name() {
+        for (project, filename, version) in [
+            ("foo", "foo-1.0-1.tar.gz", Some("1.0-1")),
+            ("foo-1-0", "foo-1.0-1.tar.gz", Some("1")),
+            ("Zope.Interface", "zope.interface-5.4.0.zip", Some("5.4.0")),
+            ("foo-bar", "foo_bar-2.0.tar.bz2", Some("2.0")),
+            ("foo", "foo--1.0.tar.gz", Some("-1.0")),
+            ("foo", "foo--1.0.tar.gz", Some("-1.0")),
+            ("foo", "bar-1.0.tar.gz", None),
+            ("foo", "foobar-1.0.tar.xz", None),
+            ("foo", "foo.tar.gz", None),
+            ("foo", "foo-.tar.gz", None),
+            ("", "-1.0.tar.gz", None),
+            ("foo", "foo-1.0.txt", None),
+        ] {
+            assert_eq!(
+                version_in(project, filename),
+                version.map(|v| (v.to_owned(), Kind::Sdist)),
+                "{project} {filename}"
+            );
+        }
+        assert_eq!(
+            version_in("foo", "foo-1.0.post1-1-py3-none-any.whl"),
+            Some(("1.0.post1".to_owned(), Kind::Wheel)),
+            "a wheel's version is its second field"
+        );
+        assert_eq!(version_in("foo", "foo-py3-none-any.whl"), None);
     }
 
     /// An sdist name with no `-` names no version.
