@@ -91,8 +91,8 @@ impl std::error::Error for OpenError {}
 /// Why an artifact was not written to the spool.
 #[derive(Debug)]
 pub enum WriteError {
-    /// The artifact is larger than the ceiling; `claimed` when `Content-Length` said so.
-    TooLarge { ceiling: u64, claimed: bool },
+    /// More bytes arrived than the ceiling.
+    TooLarge { ceiling: u64 },
     /// The upstream body ended in an error.
     Upstream(String),
     /// The file could not be created or written.
@@ -102,18 +102,7 @@ pub enum WriteError {
 impl std::fmt::Display for WriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TooLarge {
-                ceiling,
-                claimed: true,
-            } => write!(
-                f,
-                "the artifact's Content-Length is over the {ceiling}-byte ceiling set by {}",
-                crate::env::MAX_ARTIFACT_BYTES
-            ),
-            Self::TooLarge {
-                ceiling,
-                claimed: false,
-            } => write!(
+            Self::TooLarge { ceiling } => write!(
                 f,
                 "the artifact is over the {ceiling}-byte ceiling set by {}",
                 crate::env::MAX_ARTIFACT_BYTES
@@ -187,13 +176,11 @@ impl Spool {
 
     /// Write `body` to a new file, passing each chunk to `observe` as it is written.
     ///
-    /// `claimed` is the response's `Content-Length`. Over the ceiling, nothing is written.
-    /// The ceiling is enforced again on the bytes that arrive, because the header is a
-    /// claim. On any error the file is already deleted.
+    /// The ceiling is enforced on the bytes that arrive, not on `Content-Length`: a wrong
+    /// header must not make a small file unreadable. On any error the file is already deleted.
     pub async fn write<S, E>(
         &self,
         body: S,
-        claimed: Option<u64>,
         mut observe: impl FnMut(&[u8]) + Send,
     ) -> Result<Spooled, WriteError>
     where
@@ -201,23 +188,15 @@ impl Spool {
         E: std::fmt::Display,
     {
         let body = body.map(|chunk| chunk.map_err(|e| e.to_string()));
-        self.write_chunks(std::pin::pin!(body), claimed, &mut observe)
-            .await
+        self.write_chunks(std::pin::pin!(body), &mut observe).await
     }
 
     /// [`Spool::write`] for one stream type and one observer type, so there is one body.
     async fn write_chunks(
         &self,
         body: std::pin::Pin<&mut (dyn Stream<Item = Result<Bytes, String>> + Send)>,
-        claimed: Option<u64>,
         observe: &mut (dyn FnMut(&[u8]) + Send),
     ) -> Result<Spooled, WriteError> {
-        if claimed.is_some_and(|length| length > self.ceiling) {
-            return Err(WriteError::TooLarge {
-                ceiling: self.ceiling,
-                claimed: true,
-            });
-        }
         let number = self.next.fetch_add(1, Ordering::Relaxed);
         let path = self
             .dir
@@ -255,10 +234,7 @@ async fn copy(
         let chunk = chunk.map_err(WriteError::Upstream)?;
         len += chunk.len() as u64;
         if len > ceiling {
-            return Err(WriteError::TooLarge {
-                ceiling,
-                claimed: false,
-            });
+            return Err(WriteError::TooLarge { ceiling });
         }
         observe(&chunk);
         out.write_all(&chunk).await.map_err(WriteError::Io)?;
@@ -408,7 +384,7 @@ mod tests {
         assert_eq!(spool.ceiling(), 1024);
         let mut seen = Vec::new();
         let spooled = spool
-            .write(chunks(&[b"abc", b"", b"def"]), Some(6), |c| {
+            .write(chunks(&[b"abc", b"", b"def"]), |c| {
                 seen.extend_from_slice(c)
             })
             .await
@@ -438,7 +414,7 @@ mod tests {
         let dir = tempdir("spool-replaced");
         let (spool, _) = Spool::open(&dir, 1024).expect("opens");
         let spooled = spool
-            .write(chunks(&[b"checked"]), None, |_| {})
+            .write(chunks(&[b"checked"]), |_| {})
             .await
             .expect("writes");
         let name = dir.join(listing(&dir).pop().expect("one file"));
@@ -455,8 +431,8 @@ mod tests {
     async fn two_artifacts_at_once_are_two_files() {
         let dir = tempdir("spool-two");
         let (spool, _) = Spool::open(&dir, 1024).expect("opens");
-        let first = spool.write(chunks(&[b"a"]), None, |_| {}).await;
-        let second = spool.write(chunks(&[]), None, |_| {}).await;
+        let first = spool.write(chunks(&[b"a"]), |_| {}).await;
+        let second = spool.write(chunks(&[]), |_| {}).await;
         let (first, second) = (first.expect("writes"), second.expect("writes"));
         assert!(second.is_empty());
         assert_eq!(listing(&dir).len(), 2);
@@ -465,60 +441,19 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The bytes are counted as they arrive. An artifact exactly at the ceiling is written.
     #[tokio::test]
-    async fn a_claimed_length_over_the_ceiling_writes_nothing() {
-        let dir = tempdir("spool-claimed");
-        let (spool, _) = Spool::open(&dir, 4).expect("opens");
-        let mut observed = false;
-        let e = spool
-            .write(chunks(&[b"abcde"]), Some(5), |_| observed = true)
-            .await
-            .expect_err("over the ceiling");
-        assert!(
-            matches!(
-                e,
-                WriteError::TooLarge {
-                    ceiling: 4,
-                    claimed: true
-                }
-            ),
-            "{e}"
-        );
-        assert_eq!(
-            e.to_string(),
-            format!(
-                "the artifact's Content-Length is over the 4-byte ceiling set by {}",
-                crate::env::MAX_ARTIFACT_BYTES
-            )
-        );
-        assert!(!observed);
-        assert_eq!(listing(&dir), Vec::<String>::new());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    /// `Content-Length` is a claim, so the bytes are counted as they arrive. An artifact
-    /// exactly at the ceiling is written.
-    #[tokio::test]
-    async fn bytes_past_the_ceiling_are_refused_whatever_the_length_claimed() {
+    async fn bytes_past_the_ceiling_are_refused() {
         let dir = tempdir("spool-actual");
         let (spool, _) = Spool::open(&dir, 4).expect("opens");
-        let at_ceiling = spool.write(chunks(&[b"ab", b"cd"]), Some(4), |_| {}).await;
+        let at_ceiling = spool.write(chunks(&[b"ab", b"cd"]), |_| {}).await;
         assert_eq!(at_ceiling.expect("at the ceiling").len(), 4);
 
         let e = spool
-            .write(chunks(&[b"ab", b"cde"]), Some(1), |_| {})
+            .write(chunks(&[b"ab", b"cde"]), |_| {})
             .await
             .expect_err("over the ceiling");
-        assert!(
-            matches!(
-                e,
-                WriteError::TooLarge {
-                    ceiling: 4,
-                    claimed: false
-                }
-            ),
-            "{e}"
-        );
+        assert!(matches!(e, WriteError::TooLarge { ceiling: 4 }), "{e}");
         assert_eq!(
             e.to_string(),
             format!(
@@ -539,7 +474,7 @@ mod tests {
             Err("connection reset".to_owned()),
         ]);
         let e = spool
-            .write(body, None, |_| {})
+            .write(body, |_| {})
             .await
             .expect_err("the body failed");
         assert!(matches!(e, WriteError::Upstream(_)), "{e}");
@@ -556,7 +491,7 @@ mod tests {
         let (spool, _) = Spool::open(&dir, 1024).expect("opens");
         fs::remove_dir_all(&dir).expect("removes");
         let e = spool
-            .write(chunks(&[b"abc"]), None, |_| {})
+            .write(chunks(&[b"abc"]), |_| {})
             .await
             .expect_err("no directory");
         assert!(matches!(e, WriteError::Io(_)), "{e}");
@@ -572,7 +507,7 @@ mod tests {
     async fn a_file_removed_before_its_guard_is_dropped_is_not_a_panic() {
         let dir = tempdir("spool-removed");
         let (spool, _) = Spool::open(&dir, 1024).expect("opens");
-        let spooled = spool.write(chunks(&[b"a"]), None, |_| {}).await;
+        let spooled = spool.write(chunks(&[b"a"]), |_| {}).await;
         let spooled = spooled.expect("writes");
         for name in listing(&dir) {
             fs::remove_file(dir.join(name)).expect("removes");

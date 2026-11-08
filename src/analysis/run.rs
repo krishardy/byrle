@@ -437,11 +437,10 @@ impl Analyser {
         response: reqwest::Response,
         mut observe: impl FnMut(&[u8]) + Send,
     ) -> Option<Result<Spooled, WriteError>> {
-        let claimed = response.content_length();
         let mut verifier = digest.verifier();
         let written = self
             .spool
-            .write(response.bytes_stream(), claimed, |chunk| {
+            .write(response.bytes_stream(), |chunk| {
                 verifier.update(chunk);
                 observe(chunk);
             })
@@ -771,6 +770,27 @@ pub(crate) mod tests {
             "{:?}",
             analysis.scripts
         );
+    }
+
+    /// A `Content-Length` over the ceiling is not believed: the bytes are read, and a body
+    /// that ends before the length it declared stores nothing.
+    #[tokio::test]
+    async fn a_length_over_the_ceiling_alone_stores_nothing() {
+        use crate::util::test_support::{Answer, scripted};
+        let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
+        let digest = sri_of(&tarball);
+        let wrong = scripted(vec![Answer::Body {
+            bytes: tarball,
+            declared: Some(1 << 21),
+        }])
+        .await;
+        let analyser = analyser("run-claimed", 1 << 20, Arc::new(InProcess::new(8)));
+        analyser
+            .start(job(&digest, &format!("http://{wrong}/artifact")))
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(analyser.known(&digest).await, Known::Unknown);
     }
 
     /// A failed fetch and a spool that cannot be written store nothing, so the next
@@ -1133,7 +1153,6 @@ pub(crate) mod tests {
             .spool
             .write(
                 futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from_static(b"x"))]),
-                None,
                 |_| {},
             )
             .await

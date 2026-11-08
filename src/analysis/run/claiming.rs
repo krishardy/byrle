@@ -226,13 +226,10 @@ impl Analyser {
     /// `None` when the fetch or the spool failed, which is logged.
     async fn spool_hashed(&self, job: &ClaimJob) -> Option<Result<(Spooled, Sri), String>> {
         let response = self.fetch(&job.url).await?;
-        let claimed = response.content_length();
         let mut hasher = Sha256::new();
         let written = self
             .spool
-            .write(response.bytes_stream(), claimed, |chunk| {
-                hasher.update(chunk)
-            })
+            .write(response.bytes_stream(), |chunk| hasher.update(chunk))
             .await;
         match written {
             Ok(spooled) => Some(Ok((spooled, Sri::from_sha256(&hasher.finalize())))),
@@ -745,7 +742,6 @@ mod tests {
             .spool
             .write(
                 futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(zip()))]),
-                None,
                 |_| {},
             )
             .await

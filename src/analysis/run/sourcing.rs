@@ -254,12 +254,7 @@ impl Analyser {
             warn!(url.full = %url, http.response.status_code = response.status().as_u16(), "source comparison: not answered, nothing stored");
             return None;
         } else {
-            let claimed = response.content_length();
-            let read = match self
-                .spool
-                .write(response.bytes_stream(), claimed, |_| {})
-                .await
-            {
+            let read = match self.spool.write(response.bytes_stream(), |_| {}).await {
                 Ok(spooled) => tree_of(spooled, Layout::Tar).await.map(|read| match read {
                     Ok(tree) => Archive::Tree(Arc::new(tree)),
                     Err(why) => Archive::Unreadable(format!("the source archive: {why}")),
@@ -633,7 +628,6 @@ mod tests {
             .spool
             .write(
                 futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from_static(b"x"))]),
-                None,
                 |_| {},
             )
             .await
@@ -656,7 +650,6 @@ mod tests {
             .spool
             .write(
                 futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from_static(b"x"))]),
-                None,
                 |_| {},
             )
             .await
