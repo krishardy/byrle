@@ -10,7 +10,7 @@ pub mod npm;
 pub mod pypi;
 
 use crate::doctor::Client;
-use crate::env::{Env, EnvError, Var};
+use crate::env::{Env, Var};
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
 use crate::intel::range::VersionOrder;
 use crate::intel::stream::Stream;
@@ -302,12 +302,13 @@ impl Clients {
         )
     }
 
-    /// Clients for the upstreams and body limit the environment configures.
+    /// Clients for the upstreams, body limit and CA bundle the environment configures,
+    /// connecting as the proxy's do.
     pub fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
         environment: &Env<L>,
-    ) -> Result<Self, EnvError> {
+    ) -> Result<Self, crate::startup::StartupError> {
         Ok(Self::new(
-            crate::service::Connection::default(),
+            crate::startup::connection(environment)?,
             &environment.upstreams()?,
             environment.max_metadata_bytes()?,
         ))
@@ -912,11 +913,17 @@ mod table {
     #[tokio::test]
     async fn a_client_that_cannot_be_built_or_reach_its_registry_is_an_error() {
         use crate::env::testing::with;
-        let Err(error) = Clients::from_env(&with(&[(crate::env::MAX_METADATA_BYTES, "lots")]))
+        let Err(crate::startup::StartupError::Env(error)) =
+            Clients::from_env(&with(&[(crate::env::MAX_METADATA_BYTES, "lots")]))
         else {
             panic!("the limit does not parse");
         };
         assert_eq!(error.var, crate::env::MAX_METADATA_BYTES.name);
+        let missing = "/nonexistent/byrle-ca.pem";
+        let Err(error) = Clients::from_env(&with(&[(crate::env::CA_BUNDLE, missing)])) else {
+            panic!("the bundle does not load");
+        };
+        assert!(error.to_string().contains(missing), "{error}");
 
         let closed = crate::util::test_support::closing_server().await;
         let clients = Clients::from_env(&with(&[(

@@ -48,7 +48,10 @@ Headers reqwest and hyper add while sending (`Host`, the client's `User-Agent`, 
 | doctor's checks | `accept` | `doctor::probe` |
 
 A `service::Connection` is how every service connects: the read timeout, the CA bundle
-from `BYRLE_CA_BUNDLE`, and a credential sent on every request. The remote commands and
+from `BYRLE_CA_BUNDLE`, and a credential sent on every request. The proxy and the commands
+that fetch metadata themselves (`byrle explain <purl>`, `byrle policy diff`, `byrle policy
+check --fetch`) build it with `startup::connection`; before 2026-11-08 those commands
+trusted the platform's roots only (finding 40 of the security review). The remote commands and
 `byrle warm` use `http::token_connection`, which carries `X-Byrle-Token`; each service made
 from it adds the header to each request, where the check sees it, and allows it besides its
 own.

@@ -20,12 +20,12 @@ use byrle::startup;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Unwrap the variable or exit 2 if it can't be unwrapped
-fn unwrap_or_exit_2<T>(result: Result<T, env::EnvError>) -> T {
+fn unwrap_or_exit_2<T, E: std::fmt::Display>(result: Result<T, E>) -> T {
     unwrap_or_exit(result, 2)
 }
 
 /// Unwrap the variable or exit with a given code if it can't be unwrapped
-fn unwrap_or_exit<T>(result: Result<T, env::EnvError>, code: u8) -> T {
+fn unwrap_or_exit<T, E: std::fmt::Display>(result: Result<T, E>, code: u8) -> T {
     result.unwrap_or_else(|e| {
         eprintln!("byrle: {e}");
         std::process::exit(i32::from(code))

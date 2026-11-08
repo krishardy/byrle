@@ -265,7 +265,7 @@ fn gate<L: Fn(&str) -> Option<OsString>>(
 /// How each upstream service's client connects, trusting [`env::CA_BUNDLE`]'s roots too
 /// when it is set, or only them with [`env::CA_BUNDLE_EXCLUSIVE`].
 /// Errors when a bundle is named and does not load.
-fn connection<L: Fn(&str) -> Option<OsString>>(
+pub(crate) fn connection<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
 ) -> Result<crate::service::Connection, StartupError> {
     let connection = crate::service::Connection::default();
