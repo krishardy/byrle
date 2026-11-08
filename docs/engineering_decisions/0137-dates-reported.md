@@ -24,7 +24,7 @@ Neither printed where a date came from.
 The proxy, `explain` and `diff` call one function, `dating::date`. It reads the sources in
 the proxy's order and returns each one read, what it gave, and the one used:
 
-| Order | Source | Read by `explain` | Read by `diff` and the proxy |
+| Order | Source | Read by `explain` and `diff` | Read by the proxy |
 |---|---|---|---|
 | 1 | the record's own time, as its client read it. Go: the `.info` `Time` and the checksum database's record; Maven: the POM's `Last-Modified`; others: the metadata's time | always | always |
 | 2 | the full document's time | always | when 1 gave none |
@@ -57,13 +57,12 @@ that holds the record, or the oldest row for a record below every row; `*` marks
 | Option | Why not |
 |---|---|
 | a `BYRLE_*` setting for index.golang.org and sum.golang.org, which #53 proposed for the tests | the tests build their Go client with `with_sumdb` and `with_index` through `Clients::with`, and stay off the network without it |
-| `explain` asking the file host when an earlier source answered | a HEAD per `explain` for a date it does not use, and one to the real registry in each test with a cooldown |
-| `diff` reading every source | a full document and a HEAD for each listed version |
+| asking the file host when an earlier source answered | a HEAD per listed version for a date not used, and one to the real registry in each test with a cooldown |
 
 ## Costs
 
-`explain` reads the full document for every ecosystem that has one, as before, and now the
-first sighting under a cooldown. `diff` asks a file host for each listed version that steps 1
-and 2 leave undated.
+`explain` and `diff` read the full document for every ecosystem that has one, `diff` now
+also under a policy with no cooldown, and the first sighting under a cooldown. Each asks a
+file host for a version that steps 1 and 2 leave undated.
 
 `byrle policy check --fetch` still reads only the full document's times.

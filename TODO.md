@@ -509,7 +509,7 @@ Items that I've added that are not stage-bound.
     2026-11-03.
     Done 2026-11-08: [dates-reported](docs/engineering_decisions/0137-dates-reported.md).
     Both call the proxy's `dating::date`, pass a cooldown start, read a first sighting
-    without recording one, and print each date read and the one used. The Go tests set the
+    without recording one, and print every date read and the one used. The Go tests set the
     index and checksum database through `Clients::with`, so no setting was added.
 54. Opengrep for SAST: add it to `make sast` beside semgrep or in its place, with a
     `scripts/make/opengrep.sh`, the same rules and `// nosemgrep:` suppressions, and a CI

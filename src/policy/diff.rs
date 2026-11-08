@@ -595,7 +595,7 @@ impl Comparison {
         };
         let reading = crate::dating::Reading {
             cooldown: self.needs_times,
-            every: false,
+            every: true,
         };
         let dated = self
             .reader
@@ -945,6 +945,46 @@ mod run_tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// A Go version is dated for the earliest cooldown either policy starts, each as of its
+    /// own date, and for none when neither waits.
+    #[tokio::test]
+    async fn the_earliest_cooldown_start_dates_a_version() {
+        let comparison = |yaml: [&'static str; 2], dates: [jiff::civil::Date; 2]| async move {
+            Comparison {
+                policies: yaml.iter().map(|y| Policy::parse(y).unwrap()).collect(),
+                dates,
+                versions: Vec::new(),
+                store: None,
+                reader: crate::dating::Reader::from_env(&crate::env::testing::empty())
+                    .await
+                    .expect("reader"),
+                needs_times: true,
+                streams_recorded: true,
+            }
+        };
+        let (from, to) = (
+            jiff::civil::date(2026, 11, 1),
+            jiff::civil::date(2026, 11, 8),
+        );
+        let short = "version: 1\ncooldown_days: 7\n";
+        let long = "version: 1\ncooldown_days: 30\n";
+        let none = "version: 1\ncooldown_days: 0\n";
+        assert_eq!(
+            comparison([short, long], [to, to]).await.cooldown_start(),
+            Some("2026-10-09T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            comparison([short, short], [from, to])
+                .await
+                .cooldown_start(),
+            Some("2026-10-25T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            comparison([none, none], [to, to]).await.cooldown_start(),
+            None
+        );
+    }
+
     /// A Go version the list leaves out is decided on its own `.info`, and one whose
     /// `.info` answers an error is counted.
     #[tokio::test]
@@ -981,8 +1021,10 @@ mod run_tests {
         assert!(
             decided.report.contains(
                 "    dates for v0.0.0-20170915032832-14c0d48ead0c.zip, * the one used:\n\
-                 \x20     * the .info Time         2017-09-15T03:28:32Z\n\
-                 \x20       the checksum database  no record of this version\n"
+                 \x20     * the .info Time                 2017-09-15T03:28:32Z\n\
+                 \x20       the checksum database          no record of this version\n\
+                 \x20       the full document's time       the ecosystem has no fuller document\n\
+                 \x20       the file host's Last-Modified  not asked: an earlier source dates it\n"
             ),
             "{}",
             decided.report
