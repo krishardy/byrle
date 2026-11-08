@@ -74,6 +74,7 @@ pub const REGISTRY: Registry = Registry {
     versions: VersionOrder::Pep440,
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
+    selector_name: paths::canonical_name,
     intel_alias: |_| None,
     filename_projects: paths::filename_projects,
     published_name: Some(paths::published_name),

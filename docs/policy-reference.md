@@ -134,7 +134,9 @@ Exceptions: a setting loosened for the packages a selector matches.
 | `has_install_scripts` | `true` or `false` |
 
 Names and versions compare the ecosystem's way: a PyPI name by PEP 503, so `Django` is
-`django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`. A Go module path compares as
+`django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`. A crate name compares as
+crates.io's `canon_crate_name` does, so `Foo-Bar`, `foo_bar` and `foo-*` all cover the crate
+`foo-bar` ([0136](engineering_decisions/0136-crate-names-compared-as-crates-io-does.md)). A Go module path compares as
 written, case included, and its purl is `pkg:golang/rsc.io/quote@v1.5.2`. A Go range may
 write its versions with or without the `v`: `vers:golang/>=v1.5.0|<v1.6.0` and
 `vers:golang/>=1.5.0|<1.6.0` both denied `rsc.io/quote@v1.5.2` on 2026-10-16. A Maven

@@ -62,6 +62,7 @@ pub const REGISTRY: Registry = Registry {
     versions: VersionOrder::Maven,
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
+    selector_name: paths::canonical_name,
     intel_alias: |_| None,
     filename_projects: |_| Vec::new(),
     published_name: None,

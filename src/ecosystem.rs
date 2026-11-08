@@ -557,8 +557,11 @@ pub struct Registry {
     /// A non-empty registry name as a purl namespace and name.
     pub split_name: SplitName,
 
-    /// A name as a policy selector compares it, prefix or exact.
+    /// A name as intel stores it, so a lookup by the package key's name finds it.
     pub canonical_name: fn(&str) -> String,
+
+    /// A name as a policy selector compares it, prefix or exact.
+    pub selector_name: fn(&str) -> String,
 
     /// Another name intel may list a registry name's records under; `None` for most.
     pub intel_alias: fn(&str) -> Option<String>,
@@ -808,11 +811,21 @@ fn trimmed(base: &str) -> String {
     base.trim_end_matches('/').to_owned()
 }
 
-/// `name` as `ecosystem`, a purl type, compares it: a PyPI name PEP 503 normalised, an npm
-/// name as written. As written for an ecosystem with no row, which nothing here serves.
+/// `name` as `ecosystem`, a purl type, stores intel under it: a PyPI name PEP 503
+/// normalised, an npm name as written. As written for an ecosystem with no row, which
+/// nothing here serves.
 pub fn canonical_name(ecosystem: &str, name: &str) -> String {
     match ecosystem.parse::<Ecosystem>() {
         Ok(known) => (of(known).canonical_name)(name),
+        Err(_) => name.to_owned(),
+    }
+}
+
+/// `name` as a policy selector in `ecosystem` compares it: [`canonical_name`]'s, but a
+/// crate name with `-` read as `_`. As written for an ecosystem with no row.
+pub fn selector_name(ecosystem: &str, name: &str) -> String {
+    match ecosystem.parse::<Ecosystem>() {
+        Ok(known) => (of(known).selector_name)(name),
         Err(_) => name.to_owned(),
     }
 }

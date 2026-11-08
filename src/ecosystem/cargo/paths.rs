@@ -26,9 +26,16 @@ pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError>
     Ok((None, name.to_ascii_lowercase()))
 }
 
-/// A name in a policy selector, lowercased as [`split_name`] lowercases it.
+/// A name as intel stores it, lowercased as [`split_name`] lowercases it.
 pub fn canonical_name(name: &str) -> String {
     name.to_ascii_lowercase()
+}
+
+/// A name in a policy selector: lowercased, with `-` read as `_`, as crates.io's
+/// `canon_crate_name` reads it. crates.io refuses a name that reads as another's, so
+/// `foo-bar` and `foo_bar` are one crate.
+pub fn selector_name(name: &str) -> String {
+    name.to_ascii_lowercase().replace('-', "_")
 }
 
 /// The index file of a crate already lowercased: `1/a`, `2/ab`, `3/a/abc`, `se/rd/serde`.
@@ -126,6 +133,12 @@ mod tests {
             assert!(split_name(bad).is_err(), "{bad}");
         }
         assert_eq!(canonical_name("Serde_"), "serde_");
+        assert_eq!(
+            canonical_name("Serde-Json"),
+            "serde-json",
+            "intel keeps the spelling"
+        );
+        assert_eq!(selector_name("Serde-Json"), "serde_json");
     }
 
     #[test]
