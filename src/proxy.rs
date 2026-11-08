@@ -4052,25 +4052,24 @@ impl Exchange<'_> {
                     .await
             }
             (None, _) => {
-                if read {
-                    self.report_unread_media_type(&upstream);
+                if read && let Some(refused) = self.unread_media_type(&upstream) {
+                    return refused;
                 }
                 self.forward_artifact(upstream, artifact)
             }
         }
     }
 
-    /// Log and count as UNINSPECTED a metadata document answered 2xx in a media type the
-    /// adapter does not read, which is forwarded unfiltered: the versions the policy
-    /// refuses stay listed, and each artifact fetch is still decided.
-    fn report_unread_media_type(&self, upstream: &Upstream) {
-        self.proxy.uninspected.fetch_add(1, Ordering::Relaxed);
+    /// [`unchecked_document`] for a metadata document answered 2xx in a media type the
+    /// adapter does not read: 502 in enforce mode, forwarded unfiltered in observe mode.
+    fn unread_media_type(&self, upstream: &Upstream) -> Option<Response> {
         let content_type = upstream
             .headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("-");
-        warn!(url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path), http.response.header.content_type = %content_type, byrle.reason = "a media type the adapter does not read", "UNINSPECTED: metadata document not checked, forwarded");
+            .unwrap_or("none");
+        let why = format!("it is served as `{content_type}`, a media type the proxy does not read");
+        unchecked_document(self.proxy, &self.path, &why)
     }
 
     /// A manifest's body, read whole and sent on only when it is the one `claim` names.
@@ -5525,30 +5524,42 @@ mod tests {
         assert_eq!(proxy.health().documents_uninspected, 2);
     }
 
-    /// A packument served as `text/plain` is forwarded as it came and counted UNINSPECTED.
-    /// A 404 or a HEAD is not a document left unchecked.
+    /// A packument served as `text/plain` is 502 in enforce mode, forwarded in observe mode,
+    /// and counted UNINSPECTED either way. A 404 or a HEAD is no document left unchecked.
     #[tokio::test]
-    async fn a_document_in_a_media_type_not_read_is_counted_uninspected() {
+    async fn a_document_in_a_media_type_not_read_is_502() {
         let body = fixture(LODASH);
-        for (status, method, counted) in [
-            (StatusCode::OK, reqwest::Method::GET, 1),
-            (StatusCode::NOT_FOUND, reqwest::Method::GET, 0),
-            (StatusCode::OK, reqwest::Method::HEAD, 0),
+        for (status, method, mode, answered, counted) in [
+            (StatusCode::OK, reqwest::Method::GET, Mode::Enforce, 502, 1),
+            (StatusCode::OK, reqwest::Method::GET, Mode::Observe, 200, 1),
+            (
+                StatusCode::NOT_FOUND,
+                reqwest::Method::GET,
+                Mode::Enforce,
+                404,
+                0,
+            ),
+            (StatusCode::OK, reqwest::Method::HEAD, Mode::Enforce, 200, 0),
         ] {
             let (upstream, _) = upstream_serving(status, "text/plain", None, body.clone()).await;
             let proxy = Proxy::new(crate::service::Connection::default())
-                .with_upstream(Ecosystem::Npm, upstream);
+                .with_upstream(Ecosystem::Npm, upstream)
+                .with_mode(mode);
             let base = serve(proxy.clone().router()).await;
             let response = reqwest::Client::new()
                 .request(method.clone(), format!("{base}/npm/lodash"))
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), status.as_u16());
+            assert_eq!(response.status(), answered, "{status} {method} {mode:?}");
+            if answered == 502 {
+                let said = response.text().await.unwrap();
+                assert!(said.contains("served as `text/plain`"), "{said}");
+            }
             assert_eq!(
                 proxy.health().documents_uninspected,
                 counted,
-                "{status} {method}"
+                "{status} {method} {mode:?}"
             );
         }
         let (upstream, _) = upstream_serving(StatusCode::OK, "text/plain", None, body).await;

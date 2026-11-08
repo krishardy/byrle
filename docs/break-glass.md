@@ -71,7 +71,9 @@ restart the proxy.
 
 The same line, with a `byrle.reason` of "did not normalize", "did not parse", "could not be
 filtered", "could not be rewritten" or "could not be pointed at the proxy", is an npm
-packument or PyPI index the proxy could not check. No variable or policy exception releases
+packument or PyPI index the proxy could not check. With "a media type the proxy does not
+read", it is a document the upstream served under a `Content-Type` its adapter does not
+list, such as a mirror serving `maven-metadata.xml` as `application/octet-stream`. No variable or policy exception releases
 it. `BYRLE_MODE=observe` forwards it, after a restart, or install as in
 [The proxy is down](#the-proxy-is-down).
 
