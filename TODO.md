@@ -483,12 +483,12 @@ Items that I've added that are not stage-bound.
     vector is built, the risk score, the decision and the response. Raised 2026-10-19.
     Done 2026-10-19: [logic-flow](docs/logic-flow.md), and `request-flow.md` corrected
     against the code at `3ade87d`.
-50. Step-wise security reviews of each step in #49's diagrams. For each step: is it
+50. [x] Step-wise security reviews of each step in #49's diagrams. For each step: is it
     vulnerable, what does abnormal data do there, can a malicious package be coaxed
     through, and can malicious input make a score ignored or overridden. After #49.
     Raised 2026-10-19.
-    Reviewed 2026-10-26. The review is kept out of the repository until its findings are
-    fixed.
+    Reviewed 2026-10-26. Done 2026-11-08: [security-review](docs/security-review.md), every
+    finding resolved.
 51. `make strip-claude`, `make unsigned` and `make signed-off` become one `make
     commit-fixup`. It rewinds to the oldest failing commit and fixes each commit from there
     forward. Raised 2026-10-20. Done 2026-10-20: per commit it removes the Claude credit
