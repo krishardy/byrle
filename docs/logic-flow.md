@@ -109,7 +109,7 @@ flowchart TD
 | R9 | Negotiate | `negotiate`, `Exchange::observe` | whether the proxy reads the document: needs an `Accept-Encoding` it can decode |
 | R10 | Decide | `Exchange::artifact_fetch`, `method_not_allowed` | `decides_head` is true for Maven only; an artifact or manifest asked with another method is 405, forwarded in observe mode |
 | R11 | Send | `Exchange::send`, `upstream_url`, `upstream_headers` | only the headers in `FORWARDED`; no request body; redirects followed, up to reqwest's 10 |
-| R12 | Respond | `Exchange::respond`, `forward_document`, `forward_manifest`, `forward_artifact` | |
+| R12 | Respond | `Exchange::respond`, `forward_document`, `forward_manifest`, `forward_artifact`, `report_unread_media_type` | a metadata GET answered 2xx in a media type the adapter does not read is forwarded, logged `UNINSPECTED` and counted |
 
 Debug builds answer `BYRLE_DEFER_TEST` between R8 and R9.
 
