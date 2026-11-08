@@ -77,6 +77,12 @@ list, such as a mirror serving `maven-metadata.xml` as `application/octet-stream
 it. `BYRLE_MODE=observe` forwards it, after a restart, or install as in
 [The proxy is down](#the-proxy-is-down).
 
+A pinned fetch of a version published less than `provenance_window_days` ago, whose
+attestations the registry answers 404, is answered 503 under any `provenance` setting,
+and logged `attestations: not served yet for a recent version, nothing stored`. No policy
+exception releases it. It is served once the registry serves the attestations or the
+window passes, when the 404 is stored as a failed verification.
+
 `BYRLE_MODE=observe` serves everything the policy refuses, for the whole proxy. It is
 read at startup, so switching to it needs a restart. It never serves what the proxy cannot
 assess: see [request-flow](request-flow.md).

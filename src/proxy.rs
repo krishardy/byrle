@@ -12877,8 +12877,8 @@ mod tests {
         assert!(body.contains("https://elsewhere.example"), "{body}");
     }
 
-    /// A version published within the provenance window, and its prior, are verified with
-    /// a 404 not stored, since npm can answer 404 just after a publish. Older ones store it.
+    /// Each version published within the provenance window, this one or a prior, is
+    /// verified with a 404 not stored, since npm can answer 404 just after a publish.
     #[tokio::test]
     async fn a_recent_version_s_missing_attestations_are_asked_for_again() {
         let now = jiff::Timestamp::now();
@@ -12887,12 +12887,15 @@ mod tests {
             serde_json::from_str(&widget_versions(&["1.0.0", "2.0.0"])).expect("json");
         recent["time"]["1.0.0"] = serde_json::json!(hours_ago(2));
         recent["time"]["2.0.0"] = serde_json::json!(hours_ago(1));
+        let mut mixed = recent.clone();
+        mixed["time"]["1.0.0"] = serde_json::json!(hours_ago(30 * 24));
         for (label, packument, expected) in [
-            ("provenance-recent", recent.to_string(), true),
+            ("provenance-recent", recent.to_string(), [true, true]),
+            ("provenance-mixed", mixed.to_string(), [true, false]),
             (
                 "provenance-old",
                 widget_versions(&["1.0.0", "2.0.0"]),
-                false,
+                [false, false],
             ),
         ] {
             let (proxy, analyser) = provenance_proxy(label, PROVENANCE, &[], &[]).await;
@@ -12920,7 +12923,7 @@ mod tests {
             .await;
             assert_eq!(provenance, Provenance::NOT_VERIFIED, "{label}");
             let recent: Vec<bool> = work.iter().map(|a| a.recent).collect();
-            assert_eq!(recent, [expected, expected], "{label}");
+            assert_eq!(recent, expected, "{label}");
         }
     }
 
