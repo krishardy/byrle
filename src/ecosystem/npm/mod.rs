@@ -85,6 +85,7 @@ pub const REGISTRY: Registry = Registry {
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
     intel_alias: |_| None,
+    filename_projects: |_| Vec::new(),
     published_name: Some(paths::published_name),
     upstream: crate::env::UPSTREAM_NPM,
     upstream_url: paths::upstream_url,

@@ -63,7 +63,8 @@ enforces it with a redirect, measured:
 spelling. A name that normalises to nothing is refused rather than turned into a path.
 A wheel writes `-` in a project name as `_`, so `zope_interface-...whl` is normalised to
 `zope-interface` too. A wheel's name and version are the first two of at least five fields;
-an sdist's name may contain `-`, so its version follows the last one.
+an sdist's name may contain `-`: [0135](0135-pypi-file-placed-by-listing-index.md) reads its
+version after the project's name, and places a file a path names no project for.
 
 ## Files a resolver would never fetch
 

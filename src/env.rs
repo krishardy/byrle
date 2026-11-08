@@ -110,6 +110,8 @@ pub const DEFAULT_MAX_TRAFFIC_CLIENTS: usize = 256;
 /// Default seconds between the watcher's passes over the packages the proxy has served.
 pub const DEFAULT_WATCH_INTERVAL_SECONDS: u64 = 900;
 pub const DEFAULT_WATCH_MAX_VERSIONS: usize = 4;
+/// Default ceiling on the indexes asked to find which project a PyPI file belongs to.
+pub const DEFAULT_MAX_INDEXES_PER_FILE: usize = 4;
 pub const DEFAULT_ALLOCATOR_PURGE_DELAY_MS: usize = 0;
 
 /// Default ceiling on one artifact written to the spool.
@@ -545,6 +547,15 @@ pub const WATCH_MAX_VERSIONS: Var = runtime(
     ],
 )
 .with_default(Default::Number(DEFAULT_WATCH_MAX_VERSIONS as u64));
+pub const MAX_INDEXES_PER_FILE: Var = runtime(
+    "BYRLE_MAX_INDEXES_PER_FILE",
+    "",
+    &[
+        "indexes asked, one at a time, for the project a file fetched by a path naming",
+        "none belongs to, when its name fits several: PyPI's foo-1.0-1.tar.gz",
+    ],
+)
+.with_default(Default::Number(DEFAULT_MAX_INDEXES_PER_FILE as u64));
 pub const ALLOCATOR_PURGE_DELAY_MS: Var = runtime(
     "BYRLE_ALLOCATOR_PURGE_DELAY_MS",
     "",
@@ -809,7 +820,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 99] = [
+pub const ALL: [Var; 100] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -865,6 +876,7 @@ pub const ALL: [Var; 99] = [
     MAX_TRAFFIC_CLIENTS,
     WATCH_INTERVAL,
     WATCH_MAX_VERSIONS,
+    MAX_INDEXES_PER_FILE,
     ALLOCATOR_PURGE_DELAY_MS,
     SOURCE_ARCHIVES,
     DETECTORS,
@@ -1420,6 +1432,11 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.above_zero(WATCH_MAX_VERSIONS, DEFAULT_WATCH_MAX_VERSIONS)
     }
 
+    /// At least one: the index the filename's last `-` names is asked today.
+    pub fn max_indexes_per_file(&self) -> Result<usize, EnvError> {
+        self.above_zero(MAX_INDEXES_PER_FILE, DEFAULT_MAX_INDEXES_PER_FILE)
+    }
+
     /// [`crate::spool::default_dir`] when unset.
     pub fn spool_dir(&self) -> Result<PathBuf, EnvError> {
         Ok(self
@@ -1883,6 +1900,10 @@ mod tests {
             DEFAULT_WATCH_MAX_VERSIONS
         );
         assert_eq!(
+            env.max_indexes_per_file().unwrap(),
+            DEFAULT_MAX_INDEXES_PER_FILE
+        );
+        assert_eq!(
             env.watch_interval().unwrap(),
             Some(std::time::Duration::from_secs(
                 DEFAULT_WATCH_INTERVAL_SECONDS
@@ -1983,6 +2004,7 @@ mod tests {
             (MAX_ARTIFACT_BYTES, "4096"),
             (MAX_CONCURRENT_ANALYSES, "3"),
             (WATCH_MAX_VERSIONS, "2"),
+            (MAX_INDEXES_PER_FILE, "3"),
             (MAX_TRAFFIC_CLIENTS, "12"),
             (PROVENANCE_HISTORY, "9"),
             (DATABASE_URL, "postgres://db"),
@@ -2041,6 +2063,7 @@ mod tests {
         assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
         assert_eq!(env.max_concurrent_analyses().unwrap(), 3);
         assert_eq!(env.watch_max_versions().unwrap(), 2);
+        assert_eq!(env.max_indexes_per_file().unwrap(), 3);
         assert_eq!(env.max_traffic_clients().unwrap(), 12);
         assert_eq!(env.provenance_history().unwrap(), 9);
         assert_eq!(

@@ -24,10 +24,23 @@ use std::collections::BTreeMap;
 /// Metadata the proxy fetched itself: the outer error is the fetch, the inner the document.
 pub type Fetched = Result<Result<PackageMetadata, String>, String>;
 
+/// [`Fetch::listing`]'s answer: the place among the candidates and the metadata of the one listing a file.
+pub type Listing = Result<Option<(usize, PackageMetadata)>, String>;
+
 /// What an ecosystem's registry client answers for a request the proxy makes itself.
 pub trait Fetch: Send + Sync + std::fmt::Debug {
     /// The package's metadata as records.
     fn metadata<'a>(&'a self, key: &'a PackageKey) -> BoxFuture<'a, Fetched>;
+
+    /// The first of `candidates`, asked in order, whose document lists `filename`. `Ok(None)`
+    /// for an ecosystem whose filenames name their package, which asks nothing.
+    fn listing<'a>(
+        &'a self,
+        _candidates: &'a [PackageKey],
+        _filename: &'a str,
+    ) -> BoxFuture<'a, Listing> {
+        Box::pin(async { Ok(None) })
+    }
 
     /// The fuller document with publish times, for an ecosystem whose client asks for
     /// less. `Ok(None)` for one whose records carry `published_at`, which asks nothing.
@@ -323,6 +336,16 @@ impl Clients {
         self.0[&at].as_ref()
     }
 
+    /// [`Fetch::listing`], asked of `at`.
+    pub async fn listing(
+        &self,
+        at: Repository,
+        candidates: &[PackageKey],
+        filename: &str,
+    ) -> Listing {
+        self.0[&at].listing(candidates, filename).await
+    }
+
     /// The package's metadata as records, from `at`.
     pub async fn metadata(&self, at: Repository, key: &PackageKey) -> Fetched {
         self.of(at, key).metadata(key).await
@@ -539,6 +562,9 @@ pub struct Registry {
 
     /// Another name intel may list a registry name's records under; `None` for most.
     pub intel_alias: fn(&str) -> Option<String>,
+
+    /// Each package a filename fits, with its version there, when it fits several: PyPI's sdists.
+    pub filename_projects: fn(&str) -> Vec<(PackageKey, String)>,
 
     /// Whether the registry could publish a registry name; `None` when `split_name` checks it.
     pub published_name: Option<fn(&str) -> bool>,

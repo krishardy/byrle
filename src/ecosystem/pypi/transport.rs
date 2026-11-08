@@ -138,6 +138,28 @@ impl crate::ecosystem::Fetch for Client {
         Box::pin(Client::metadata(self, key))
     }
 
+    /// Each candidate's index is asked in turn. One the index answers 404 for is passed over;
+    /// any other failure ends the search, so an outage costs one request.
+    fn listing<'a>(
+        &'a self,
+        candidates: &'a [PackageKey],
+        filename: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, crate::ecosystem::Listing> {
+        Box::pin(async move {
+            for (asked, key) in candidates.iter().enumerate() {
+                match self.project(key.name()).await {
+                    Ok(project) if project.files.iter().any(|f| f.filename == filename) => {
+                        let metadata = normalize(&project).map_err(|e| e.to_string())?;
+                        return Ok(Some((asked, metadata)));
+                    }
+                    Ok(_) | Err(FetchError::Status(reqwest::StatusCode::NOT_FOUND)) => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            Ok(None)
+        })
+    }
+
     /// The index's records carry each file's `upload-time`: nothing more is asked.
     fn full<'a>(
         &'a self,
@@ -172,6 +194,24 @@ mod tests {
 
     fn client(base: &str) -> Client {
         Client::new(crate::service::Connection::default(), base)
+    }
+
+    /// An index that lists the file but names no usable project is an error, not a place.
+    #[tokio::test]
+    async fn a_listing_index_that_does_not_normalize_is_an_error() {
+        let base = serve(Router::new().route(
+            "/x/",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, SIMPLE_JSON)],
+                    r#"{"name":"a/b","files":[{"filename":"x-1.0-1.tar.gz","url":"https://f/x","hashes":{}}]}"#,
+                )
+            }),
+        ))
+        .await;
+        let x = PackageKey::from_registry_name(crate::identity::Ecosystem::PyPI, "x").unwrap();
+        let listed = crate::ecosystem::Fetch::listing(&client(&base), &[x], "x-1.0-1.tar.gz").await;
+        assert!(listed.expect_err("unusable").contains("a/b"));
     }
 
     /// The normalised name in the URL, the `Accept` header, the body and the records. The

@@ -115,6 +115,8 @@ Proxy configuration, all through the environment:
                                     before a client asks for them; 0 turns it off (default 900)
   BYRLE_WATCH_MAX_VERSIONS          new versions of one package the watcher analyses in one pass, the highest
                                     in version order; a client's request analyses any other (default 4)
+  BYRLE_MAX_INDEXES_PER_FILE        indexes asked, one at a time, for the project a file fetched by a path naming
+                                    none belongs to, when its name fits several: PyPI's foo-1.0-1.tar.gz (default 4)
   BYRLE_ALLOCATOR_PURGE_DELAY_MS    milliseconds the allocator keeps freed memory before returning it to the
                                     system; 0 returns it at once (default 0)
   BYRLE_SOURCE_ARCHIVES             host of the GitHub archives each artifact is compared with, the source

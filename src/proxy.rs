@@ -199,6 +199,8 @@ struct Config {
     provenance_history: usize,
     /// See [`crate::env::WATCH_MAX_VERSIONS`].
     watch_max_versions: usize,
+    /// See [`crate::env::MAX_INDEXES_PER_FILE`].
+    max_indexes_per_file: usize,
     /// Seconds a client is told to wait while a file's claim is checked.
     claim_retry_after: u64,
     /// Origins the operator added, kept so a later upstream change can rebuild `origins`.
@@ -270,6 +272,7 @@ impl Proxy {
                 mode: Mode::Enforce,
                 provenance_history: attestation::DEFAULT_HISTORY,
                 watch_max_versions: crate::env::DEFAULT_WATCH_MAX_VERSIONS,
+                max_indexes_per_file: crate::env::DEFAULT_MAX_INDEXES_PER_FILE,
                 claim_retry_after: crate::env::DEFAULT_CLAIM_RETRY_AFTER,
                 #[cfg(debug_assertions)]
                 defer_test: None,
@@ -363,6 +366,11 @@ impl Proxy {
 
     pub fn with_watch_max_versions(mut self, limit: usize) -> Self {
         self.config_mut().watch_max_versions = limit.max(1);
+        self
+    }
+
+    pub fn with_max_indexes_per_file(mut self, limit: usize) -> Self {
+        self.config_mut().max_indexes_per_file = limit.max(1);
         self
     }
 
@@ -950,6 +958,104 @@ async fn lookup_or_fetch(
         .lock()
         .expect("record store lock")
         .lookup(at, key, version, filename)
+}
+
+/// `target` keyed by the package whose document lists its file, when its filename fits
+/// several: [`ecosystem::Registry::filename_projects`]. The key the path gave is tried first.
+/// The documents held are read, then up to `max_indexes_per_file` of the others are asked in
+/// turn, and the one that lists the file is kept. `target` unchanged when none does.
+async fn placed(proxy: &Proxy, at: Repository, target: RequestTarget, path: &str) -> RequestTarget {
+    let RequestTarget::Artifact {
+        key,
+        claimed_version,
+        filename,
+    } = target
+    else {
+        return target;
+    };
+    let mut projects = (at.registry().filename_projects)(&filename);
+    if let Some(given) = projects.iter().position(|(project, _)| *project == key) {
+        projects[..=given].rotate_right(1);
+    }
+    let unheld = match held_listing(proxy, at, &projects, &filename) {
+        Ok(project) => return artifact(filename, project),
+        Err(unheld) => unheld,
+    };
+    if unheld.is_empty() {
+        return artifact(filename, (key, claimed_version));
+    }
+    let Some(asked) = asked_listing(proxy, at, &unheld, &filename, path).await else {
+        return artifact(filename, (key, claimed_version));
+    };
+    let project = projects
+        .into_iter()
+        .find(|(candidate, _)| *candidate == unheld[asked])
+        .expect("every key asked is a candidate");
+    artifact(filename, project)
+}
+
+/// The first of `projects` whose held document lists `filename`. Errors with those of them
+/// not held, up to `max_indexes_per_file`, to be asked.
+fn held_listing(
+    proxy: &Proxy,
+    at: Repository,
+    projects: &[(PackageKey, String)],
+    filename: &str,
+) -> Result<(PackageKey, String), Vec<PackageKey>> {
+    let store = proxy.store.lock().expect("record store lock");
+    if let Some(project) = projects
+        .iter()
+        .find(|(project, _)| store.lists(at, project, filename))
+    {
+        return Ok(project.clone());
+    }
+    Err(projects
+        .iter()
+        .map(|(project, _)| project)
+        .filter(|project| !store.holds(at, project))
+        .take(proxy.config.max_indexes_per_file)
+        .cloned()
+        .collect())
+}
+
+/// Which of `unheld` has the document listing `filename`, asked of the registry in turn. Its
+/// document is kept. `None` when none lists it or the registry failed, which is logged.
+async fn asked_listing(
+    proxy: &Proxy,
+    at: Repository,
+    unheld: &[PackageKey],
+    filename: &str,
+    path: &str,
+) -> Option<usize> {
+    let url_path = crate::http::url_path(path);
+    match proxy.config.clients.listing(at, unheld, filename).await {
+        Ok(Some((asked, metadata))) => {
+            info!(url.path = %url_path, byrle.package.purl = %unheld[asked], "the file is listed by this project's index");
+            proxy
+                .store
+                .lock()
+                .expect("record store lock")
+                .insert(at, metadata);
+            Some(asked)
+        }
+        Ok(None) => {
+            info!(url.path = %url_path, byrle.package.indexes = unheld.len(), "no index asked lists the file");
+            None
+        }
+        Err(e) => {
+            warn!(url.path = %url_path, error.message = %e, "the indexes that could list the file were not read");
+            None
+        }
+    }
+}
+
+/// The request for `filename` as `key` at `version`.
+fn artifact(filename: String, (key, version): (PackageKey, String)) -> RequestTarget {
+    RequestTarget::Artifact {
+        key,
+        claimed_version: version,
+        filename,
+    }
 }
 
 /// Fetch the metadata document the client did not ask for from `at`, and keep its records.
@@ -3255,6 +3361,11 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     {
         return defer_response(status, retry_after, &method, &path, &client, started);
     }
+    let target = if decided(&method, repository) {
+        placed(&proxy, repository, target, &path).await
+    } else {
+        target
+    };
     let negotiation = negotiate(&proxy, repository, &target, &method, req.headers());
     let exchange = Exchange {
         proxy: &proxy,
@@ -3527,6 +3638,12 @@ async fn own_endpoint(proxy: &Proxy, path: &str) -> Option<Response> {
     }
 }
 
+/// Whether a file asked with `method` is decided: a GET, and a HEAD where `at`'s row decides
+/// one.
+fn decided(method: &Method, at: Repository) -> bool {
+    method == Method::GET || method == Method::HEAD && at.registry().decides_head
+}
+
 /// One request forwarded upstream, and what [`handle`] knows about it.
 struct Exchange<'a> {
     proxy: &'a Proxy,
@@ -3585,8 +3702,7 @@ impl Exchange<'_> {
         if let Some(response) = self.method_not_allowed() {
             return ArtifactStep::Answer(response);
         }
-        let decided_head = self.method == Method::HEAD && self.repository.registry().decides_head;
-        if self.method != Method::GET && !decided_head {
+        if !decided(&self.method, self.repository) {
             return ArtifactStep::Fetch(ArtifactFetch::default());
         }
         match &self.target {
@@ -6265,14 +6381,12 @@ mod tests {
 
     /// The same, for a client whose user agent is `client`.
     async fn pinned_by(proxy: &Proxy, path: &str, client: &str) -> ArtifactStep {
-        let (
-            repository,
-            RequestTarget::Artifact {
-                key,
-                claimed_version,
-                filename,
-            },
-        ) = crate::route::classify(path).expect("a routed path")
+        let (repository, target) = crate::route::classify(path).expect("a routed path");
+        let RequestTarget::Artifact {
+            key,
+            claimed_version,
+            filename,
+        } = placed(proxy, repository, target, path).await
         else {
             panic!("{path} is not an artifact");
         };
@@ -7674,6 +7788,162 @@ mod tests {
             {"filename":"x-0.9.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-0.9.tar.gz","hashes":{}}
         ]}"#;
         assert_eq!(served_filenames(&proxy, index).await, ["x-0.9.tar.gz"]);
+        let (status, body) =
+            refused(pinned(&proxy, "/pypi/packages/ef/01/23/x-1.0-1.tar.gz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("pkg:pypi/x@1.0-1"), "{body}");
+    }
+
+    /// A PyPI index host answering `/<project>/` with an index listing `files`, or with a
+    /// status, from `projects`, and 404 for any other path. Records each path asked.
+    async fn pypi_indexes(
+        projects: &'static [(&'static str, Result<&'static [&'static str], u16>)],
+    ) -> (String, Recorder) {
+        let seen: Recorder = Arc::default();
+        let recorder = seen.clone();
+        let router = Router::new().fallback(any(move |req: Request| {
+            let seen = recorder.clone();
+            async move {
+                let path = req.uri().path().to_owned();
+                seen.lock().unwrap().paths.push(path.clone());
+                let answer = projects
+                    .iter()
+                    .find(|(project, _)| path == format!("/{project}/"));
+                let Some((project, Ok(files))) = answer else {
+                    let status = answer.map_or(404, |(_, a)| a.err().unwrap_or(404));
+                    return StatusCode::from_u16(status).unwrap().into_response();
+                };
+                let files: Vec<serde_json::Value> = files
+                    .iter()
+                    .map(|file| {
+                        serde_json::json!({
+                            "filename": file,
+                            "url": format!("https://files.pythonhosted.org/packages/aa/bb/{file}"),
+                            "hashes": {"sha256": x_hex(file)},
+                        })
+                    })
+                    .collect();
+                let index = serde_json::json!({"name": project, "files": files});
+                (
+                    [(header::CONTENT_TYPE, pypi::SIMPLE_JSON)],
+                    index.to_string(),
+                )
+                    .into_response()
+            }
+        }));
+        (serve(router).await, seen)
+    }
+
+    /// A proxy in front of `pypi_indexes(projects)`, refusing nothing.
+    async fn placing(
+        projects: &'static [(&'static str, Result<&'static [&'static str], u16>)],
+    ) -> (Proxy, Recorder) {
+        let (upstream, seen) = pypi_indexes(projects).await;
+        let proxy = offline(
+            None,
+            Some("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n"),
+        )
+        .with_upstream(Ecosystem::PyPI, upstream);
+        (proxy, seen)
+    }
+
+    fn index_paths(seen: &Recorder) -> Vec<String> {
+        seen.lock().unwrap().paths.clone()
+    }
+
+    /// A file on a hash path whose name fits two projects is placed by the index that lists
+    /// it, asked from the filename's last `-`. An index already held is not asked again.
+    #[tokio::test]
+    async fn a_pypi_file_is_placed_by_the_index_that_lists_it() {
+        const X: &[(&str, Result<&[&str], u16>)] = &[("x", Ok(&["x-1.0-1.tar.gz"]))];
+        let (proxy, seen) = placing(X).await;
+        let file = "/pypi/packages/aa/bb/x-1.0-1.tar.gz";
+        assert!(fetched(&pinned(&proxy, file).await));
+        assert_eq!(index_paths(&seen), ["/x-1-0/", "/x/"]);
+        assert!(fetched(&pinned(&proxy, file).await));
+        assert_eq!(index_paths(&seen).len(), 2, "x's index is held");
+
+        const HELD: &[(&str, Result<&[&str], u16>)] = &[
+            ("x-1-0", Ok(&["x_1_0-2.0.tar.gz"])),
+            ("x", Ok(&["x-1.0-1.tar.gz"])),
+        ];
+        let (proxy, seen) = placing(HELD).await;
+        let index = format!(
+            r#"{{"name":"x-1-0","files":[{{"filename":"x_1_0-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/aa/bb/x_1_0-2.0.tar.gz","hashes":{{"sha256":"{}"}}}}]}}"#,
+            x_hex("x_1_0-2.0.tar.gz")
+        );
+        resolve(
+            &proxy,
+            "/pypi/simple/x-1-0/",
+            pypi::SIMPLE_JSON,
+            index.as_bytes(),
+        )
+        .await;
+        assert!(fetched(&pinned(&proxy, file).await));
+        assert_eq!(
+            index_paths(&seen),
+            ["/x/"],
+            "x-1-0's index is held and lacks it"
+        );
+
+        const OTHER: &[(&str, Result<&[&str], u16>)] = &[
+            ("x-1-0", Ok(&["x_1_0-2.0.tar.gz"])),
+            ("x", Ok(&["x-1.0-1.tar.gz"])),
+        ];
+        let (proxy, seen) = placing(OTHER).await;
+        assert!(fetched(&pinned(&proxy, file).await));
+        assert_eq!(
+            index_paths(&seen),
+            ["/x-1-0/", "/x/"],
+            "x-1-0's index lacks it"
+        );
+    }
+
+    /// A `/packages/source/` path names its project, whose index is asked first.
+    #[tokio::test]
+    async fn a_pypi_source_path_asks_its_own_project_first() {
+        const X: &[(&str, Result<&[&str], u16>)] = &[("x", Ok(&["x-1.0-1.tar.gz"]))];
+        let (proxy, seen) = placing(X).await;
+        assert!(fetched(
+            &pinned(&proxy, "/pypi/packages/source/x/x/x-1.0-1.tar.gz").await
+        ));
+        assert_eq!(index_paths(&seen), ["/x/"]);
+    }
+
+    /// A dashed project name the last `-` reads costs the one index fetch it cost before.
+    #[tokio::test]
+    async fn a_dashed_pypi_name_costs_one_index_fetch() {
+        const ABC: &[(&str, Result<&[&str], u16>)] = &[("a-b-c", Ok(&["a-b-c-2.0.tar.gz"]))];
+        let (proxy, seen) = placing(ABC).await;
+        assert!(fetched(
+            &pinned(&proxy, "/pypi/packages/aa/bb/a-b-c-2.0.tar.gz").await
+        ));
+        assert_eq!(index_paths(&seen), ["/a-b-c/"]);
+    }
+
+    /// No more indexes than `max_indexes_per_file` are asked to place a file, and one that
+    /// fails ends the search. Either way the answer is the one the last `-` gave before.
+    #[tokio::test]
+    async fn placing_a_pypi_file_asks_at_most_the_cap_and_stops_on_a_failure() {
+        let (proxy, seen) = placing(&[]).await;
+        let proxy = proxy.with_max_indexes_per_file(2);
+        let (status, body) =
+            refused(pinned(&proxy, "/pypi/packages/aa/bb/q-1-2-3-4.tar.gz").await).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert!(body.contains("pkg:pypi/q-1-2-3@4"), "{body}");
+        assert_eq!(index_paths(&seen), ["/q-1-2-3/", "/q-1-2/", "/q-1-2-3/"]);
+
+        const BROKEN: &[(&str, Result<&[&str], u16>)] =
+            &[("x-1-0", Err(500)), ("x", Ok(&["x-1.0-1.tar.gz"]))];
+        let (proxy, seen) = placing(BROKEN).await;
+        let (status, _) =
+            refused(pinned(&proxy, "/pypi/packages/aa/bb/x-1.0-1.tar.gz").await).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(
+            !index_paths(&seen).contains(&"/x/".to_owned()),
+            "{:?}",
+            index_paths(&seen)
+        );
     }
 
     const ITOA_INDEX: &str = "/cargo/it/oa/itoa";

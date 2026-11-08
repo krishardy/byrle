@@ -106,6 +106,12 @@ mod tests {
         let request = String::from_utf8(requests.lock().unwrap()[0].clone()).unwrap();
         assert!(request.starts_with("GET /it/oa/itoa HTTP/1.1"), "{request}");
         assert!(Fetch::full(&client, &itoa()).await.unwrap().is_none());
+        let listed = Fetch::listing(&client, &[itoa()], "itoa-1.0.0.crate").await;
+        assert!(
+            listed.unwrap().is_none(),
+            "a crate's file names it: nothing is asked"
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     /// An index answering gzip, as index.crates.io does when asked, is read decoded.

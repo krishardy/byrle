@@ -74,8 +74,9 @@ flowchart TD
     R7 -->|yes| SC[digest of the filtered document,<br/>or forwarded]
     R7 -->|no| R8{R8 Unrecognised?}
     R8 -->|enforce| UR[refusal status]
-    R8 -->|observe: WARN| R9
-    R8 -->|no| R9[R9 negotiate, Exchange::observe]
+    R8 -->|observe: WARN| R8a
+    R8 -->|no| R8a[R8a placed: a file whose name<br/>fits several projects, decided]
+    R8a --> R9[R9 negotiate, Exchange::observe]
     R9 --> R10{R10 artifact_fetch:<br/>GET, or HEAD where<br/>decides_head}
     R10 -->|Artifact or Manifest,<br/>not GET or HEAD:<br/>enforce| X405[405]
     R10 -->|any method to Metadata<br/>or Other, a HEAD,<br/>observe| R11
@@ -104,6 +105,7 @@ flowchart TD
 | R6 | Proxy-written | `written` | |
 | R7 | Computed sidecar | `sidecar`, `sidecar_document` | fetches and filters the document, writes no audit line |
 | R8 | Unrecognised | `unrecognised` | |
+| R8a | Place | `placed`, `held_listing`, `asked_listing`, `pypi::paths::filename_projects`, PyPI's `Fetch::listing` | PyPI sdists only; the held indexes, then up to `BYRLE_MAX_INDEXES_PER_FILE` asked in turn ([0135](engineering_decisions/0135-pypi-file-placed-by-listing-index.md)) |
 | R9 | Negotiate | `negotiate`, `Exchange::observe` | whether the proxy reads the document: needs an `Accept-Encoding` it can decode |
 | R10 | Decide | `Exchange::artifact_fetch`, `method_not_allowed` | `decides_head` is true for Maven only; an artifact or manifest asked with another method is 405, forwarded in observe mode |
 | R11 | Send | `Exchange::send`, `upstream_url`, `upstream_headers` | only the headers in `FORWARDED`; no request body; redirects followed, up to reqwest's 10 |

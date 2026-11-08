@@ -63,6 +63,7 @@ pub const REGISTRY: Registry = Registry {
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
     intel_alias: |_| None,
+    filename_projects: |_| Vec::new(),
     published_name: None,
     upstream: crate::env::UPSTREAM_MAVEN,
     upstream_url,

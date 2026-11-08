@@ -75,6 +75,7 @@ pub const REGISTRY: Registry = Registry {
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
     intel_alias: |_| None,
+    filename_projects: paths::filename_projects,
     published_name: Some(paths::published_name),
     upstream: crate::env::UPSTREAM_PYPI,
     upstream_url: paths::upstream_url,
