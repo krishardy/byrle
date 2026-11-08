@@ -71,6 +71,8 @@ pub struct Attestation {
     pub url: String,
     /// The adapter's reader for that document, such as npm's `attestation::provenance_bundle`.
     pub bundle: fn(&[u8]) -> Result<Bundle, String>,
+    /// Published within the provenance window, so a 404 stores nothing (`attestation::recent`).
+    pub recent: bool,
 }
 
 /// The headers an artifact's host is sent for the analysis's own fetch: none.
@@ -296,8 +298,8 @@ impl Analyser {
         timings
     }
 
-    /// Fetch the attestations document and verify it. A registry that cannot be reached,
-    /// or answers 5xx or 429, stores nothing, so the next request tries again: a flaky
+    /// Fetch the attestations document and verify it. No answer, a 5xx, a 429, or a 404
+    /// for a recent version stores nothing, so the next request tries again: a flaky
     /// registry must not refuse a package. Any other answer is stored, a failure included.
     /// Returns the milliseconds it took.
     async fn attest(&self, attestation: &Attestation) -> u64 {
@@ -326,8 +328,8 @@ impl Analyser {
     }
 
     /// The attestations document, or the failure a registry's 4xx answer is.
-    /// Returns `None` when nothing should be stored: no answer, a 5xx or a 429, or a body
-    /// that failed.
+    /// Returns `None` when nothing should be stored: no answer, a 5xx or a 429, a 404 for a
+    /// recent version, or a body that failed.
     async fn attestation_document(
         &self,
         attestation: &Attestation,
@@ -345,6 +347,10 @@ impl Analyser {
         let status = response.status();
         if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             warn!(url.full = %url, http.response.status_code = status.as_u16(), "attestations: not answered, nothing stored");
+            return None;
+        }
+        if attestation.recent && status == reqwest::StatusCode::NOT_FOUND {
+            warn!(url.full = %url, http.response.status_code = status.as_u16(), "attestations: not served yet for a recent version, nothing stored");
             return None;
         }
         if !status.is_success() {
@@ -905,6 +911,7 @@ pub(crate) mod tests {
                 digest: digest.clone(),
                 url: format!("{base}/attestations"),
                 bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                recent: false,
             }],
             ..job(&digest, &format!("{base}/artifact"))
         };
@@ -924,7 +931,7 @@ pub(crate) mod tests {
     }
 
     /// A real document verifies and is stored, a 404 or a non-document is stored as a
-    /// failure, and a 503 stores nothing, so the next request verifies again.
+    /// failure, and a 503 or a recent version's 404 stores nothing.
     #[tokio::test]
     async fn attestations_are_verified_and_only_a_real_answer_is_stored() {
         let sigstore = std::fs::read(concat!(
@@ -941,7 +948,7 @@ pub(crate) mod tests {
         .await;
         let store = Arc::new(InProcess::new(8));
         let analyser = analyser("run-attest", 1 << 20, store.clone());
-        let digests: Vec<Sri> = (1..=4).map(crate::analysis::store::tests::sri).collect();
+        let digests: Vec<Sri> = (1..=5).map(crate::analysis::store::tests::sri).collect();
         let real = Sri::parse(
             "sha512-hJqJfoG/e4qFQaauQL00c6J6FrHLBGKtkFvW3JbTSIEFOhLrSjdSM/gWd/yUOfYo/gsERehTXGC1VZWX+9X4Dg==",
         )
@@ -951,15 +958,18 @@ pub(crate) mod tests {
             (digests[1].clone(), "/missing"),
             (digests[2].clone(), "/html"),
             (digests[3].clone(), "/busy"),
+            (digests[4].clone(), "/missing"),
         ];
         let job = Job {
             reader: None,
             attestations: checks
                 .iter()
-                .map(|(digest, path)| Attestation {
+                .enumerate()
+                .map(|(i, (digest, path))| Attestation {
                     digest: digest.clone(),
                     url: format!("{base}{path}"),
                     bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                    recent: i == 4,
                 })
                 .collect(),
             ..job(&digests[0], &format!("{base}/never-fetched"))
@@ -969,7 +979,7 @@ pub(crate) mod tests {
             .expect("starts")
             .await
             .expect("finishes");
-        assert_eq!(timings.attestations, 4);
+        assert_eq!(timings.attestations, 5);
         assert_eq!(
             timings.fetch_ms, 0,
             "no reader, so the artifact is not fetched"
@@ -992,6 +1002,11 @@ pub(crate) mod tests {
         ));
         assert_eq!(analyser.attested(&digests[3]).await, None);
         assert_eq!(
+            analyser.attested(&digests[4]).await,
+            None,
+            "a recent version's 404 is asked for again"
+        );
+        assert_eq!(
             analyser.known(&digests[0]).await,
             Known::Unknown,
             "the artifact itself was not fetched: its analysis was not asked for"
@@ -1010,6 +1025,7 @@ pub(crate) mod tests {
                 digest: digest.clone(),
                 url: format!("{}/attestations", crate::util::test_support::NO_UPSTREAM),
                 bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                recent: false,
             }],
             ..job(&digest, crate::util::test_support::NO_UPSTREAM)
         };
@@ -1060,6 +1076,7 @@ pub(crate) mod tests {
                 digest: digest.clone(),
                 url: registry,
                 bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                recent: false,
             }],
             ..job(&digest, crate::util::test_support::NO_UPSTREAM)
         };
@@ -1093,6 +1110,7 @@ pub(crate) mod tests {
                 digest: digest.clone(),
                 url: format!("http://{cut}/attestations"),
                 bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                recent: false,
             }],
             ..job(&digest, crate::util::test_support::NO_UPSTREAM)
         };

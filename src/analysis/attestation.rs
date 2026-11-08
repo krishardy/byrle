@@ -114,35 +114,56 @@ pub struct Prior {
     pub integrity: Option<String>,
     /// Published before the window opened, so its identity is established.
     pub established: bool,
+    pub published: jiff::Timestamp,
 }
 
 impl Prior {
-    /// `None` for a version that claims no attestation.
-    fn of(record: &PackageRecord) -> Option<Self> {
-        let attested = || {
-            record
-                .artifacts
-                .iter()
-                .filter_map(|a| Some((a, a.attestation_url.as_ref()?)))
-        };
-        let (file, url) = attested()
-            .find(|(a, _)| !a.filename.ends_with(".whl"))
-            .or_else(|| attested().next())?;
+    /// `record`, published at `published`. `None` for a version that claims no attestation.
+    fn of(record: &PackageRecord, published: jiff::Timestamp) -> Option<Self> {
+        let (file, url) = attested_file(record)?;
         Some(Self {
             version: record.package.version().to_owned(),
             attestation_url: url.clone(),
             integrity: file.integrity.clone(),
             established: false,
+            published,
         })
     }
 }
 
+/// The file whose attestations stand for `record`'s: an sdist's before a wheel's, and its
+/// attestations URL. `None` for a version that claims no attestation.
+fn attested_file(record: &PackageRecord) -> Option<(&crate::record::Artifact, &String)> {
+    let attested = || {
+        record
+            .artifacts
+            .iter()
+            .filter_map(|a| Some((a, a.attestation_url.as_ref()?)))
+    };
+    attested()
+        .find(|(a, _)| !a.filename.ends_with(".whl"))
+        .or_else(|| attested().next())
+}
+
 /// When a record was published: from `times` when given, the full packument's `time` map,
 /// and otherwise from the record.
-fn published(record: &PackageRecord, times: Option<&PublishTimes>) -> Option<jiff::Timestamp> {
+pub fn published(record: &PackageRecord, times: Option<&PublishTimes>) -> Option<jiff::Timestamp> {
     times
         .and_then(|t| t.get(record.package.version()).copied())
         .or(record.published_at)
+}
+
+/// Whether a version published at `published` is still within `window` of `now`. A 404
+/// for its attestations is then not stored: npm can answer 404 just after a publish.
+pub fn recent(
+    published: jiff::Timestamp,
+    window: jiff::SignedDuration,
+    now: jiff::Timestamp,
+) -> bool {
+    published
+        .checked_add(window)
+        .ok()
+        .is_none_or(|until| now < until)
 }
 
 /// Established versions compared by default: [`crate::env::PROVENANCE_HISTORY`].
@@ -178,7 +199,10 @@ pub fn previous(
     };
     let mut before: Vec<(jiff::Timestamp, Prior)> = records
         .iter()
-        .filter_map(|r| Some((published(r, times).filter(|t| *t < at)?, Prior::of(r)?)))
+        .filter_map(|r| {
+            let t = published(r, times).filter(|t| *t < at)?;
+            Some((t, Prior::of(r, t)?))
+        })
         .collect();
     before.sort_by_key(|(t, _)| *t);
     let line = line_of(this);
@@ -188,7 +212,7 @@ pub fn previous(
         .filter_map(|r| {
             Some((
                 published(r, times).filter(|t| *t < at)?,
-                Prior::of(r).is_some(),
+                attested_file(r).is_some(),
             ))
         })
         .collect();
@@ -236,13 +260,13 @@ pub fn predecessors(
                 by_line
                     .entry(line)
                     .or_default()
-                    .push(Prior::of(&records[i]).is_some());
+                    .push(attested_file(&records[i]).is_some());
             }
         }
         before.extend(
             group
                 .iter()
-                .filter_map(|&(t, i)| Some((t, Prior::of(&records[i])?))),
+                .filter_map(|&(t, i)| Some((t, Prior::of(&records[i], t)?))),
         );
     }
     out
@@ -413,6 +437,25 @@ mod tests {
 
     fn sri(integrity: &str) -> Sri {
         Sri::parse(integrity).expect("parses")
+    }
+
+    /// A version is recent until `window` after its publish time, and not at that instant.
+    #[test]
+    fn a_version_is_recent_until_the_window_has_passed() {
+        let published: jiff::Timestamp = "2026-11-01T00:00:00Z".parse().expect("parses");
+        let window = jiff::SignedDuration::from_hours(24);
+        let at = |hours: i64| published + jiff::SignedDuration::from_hours(hours);
+        assert!(recent(published, window, at(0)));
+        assert!(recent(
+            published,
+            window,
+            at(24) - jiff::SignedDuration::from_secs(1)
+        ));
+        assert!(!recent(published, window, at(24)));
+        assert!(
+            recent(jiff::Timestamp::MAX, window, at(0)),
+            "a window past the last timestamp has not passed"
+        );
     }
 
     /// `sigstore` 5.0.0 and 4.1.1 as npm serves their attestations, fetched 2026-09-26.

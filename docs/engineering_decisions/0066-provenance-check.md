@@ -108,7 +108,12 @@ answers 5xx or 429, or cannot be reached, stores nothing and the next request tr
 Under `provenance: block` the version answers 503 for as long as that lasts, with no bound
 after which it is served unverified: fail closed, as a cold intel store does. Decided
 2026-09-26, and pinned by `unverified_attestations_are_waited_for_only_when_they_can_refuse`.
-A 404, a document that is not one, or a bundle that does not verify is stored as a failure.
+A 404 for a version published less than `provenance_window_days` ago stores nothing, and
+the next request tries again: npm can answer 404 for a version's attestations just after it
+is published. That version answers 503 until npm serves them or the window passes
+(`analysis::attestation::recent`, finding 37 of the security review, 2026-11-08). An older
+version's 404, a document that is not one, or a bundle that does not verify is stored as a
+failure. A 404 stored for a recent version before 2026-11-08 is kept.
 A stored result is read back only by the verifier that wrote it, the `sigstore-verify`
 version and a digest of its embedded root, so a failure a verifier upgrade fixes is not
 kept.

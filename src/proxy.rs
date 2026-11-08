@@ -3139,18 +3139,19 @@ async fn attested(
         None => None,
         Some(to_verify) => result_of(analyser, to_verify).await,
     };
-    let priors: Vec<_> = match &previous {
+    let (priors, priors_published): (Vec<_>, Vec<_>) = match &previous {
         attestation::Previous::Known(priors, _) => priors
             .iter()
             .map(|prior| {
-                verifiable(
+                let to_verify = verifiable(
                     &prior.attestation_url,
                     prior.integrity.as_deref().and_then(|i| Sri::parse(i).ok()),
                     "it publishes no strong digest",
-                )
+                );
+                (to_verify, prior.published)
             })
-            .collect(),
-        attestation::Previous::Unknown => Vec::new(),
+            .unzip(),
+        attestation::Previous::Unknown => (Vec::new(), Vec::new()),
     };
     let mut prior_results = Vec::with_capacity(priors.len());
     for to_verify in &priors {
@@ -3163,7 +3164,9 @@ async fn attested(
             this: this_needed,
             priors: priors_needed,
         } => {
-            let needed = |to_verify: &Result<(String, Sri), String>| {
+            let now = jiff::Timestamp::now();
+            let needed = |to_verify: &Result<(String, Sri), String>,
+                          published: Option<jiff::Timestamp>| {
                 let (url, digest) = to_verify
                     .as_ref()
                     .expect("an attestation still needed can be verified");
@@ -3171,11 +3174,20 @@ async fn attested(
                     digest: digest.clone(),
                     url: url.clone(),
                     bundle,
+                    recent: published.is_some_and(|t| attestation::recent(t, window, now)),
                 }
             };
-            let mut work: Vec<Attestation> =
-                this.iter().filter(|_| this_needed).map(needed).collect();
-            work.extend(priors_needed.into_iter().map(|i| needed(&priors[i])));
+            let this_published = attestation::published(record, times);
+            let mut work: Vec<Attestation> = this
+                .iter()
+                .filter(|_| this_needed)
+                .map(|to_verify| needed(to_verify, this_published))
+                .collect();
+            work.extend(
+                priors_needed
+                    .into_iter()
+                    .map(|i| needed(&priors[i], Some(priors_published[i]))),
+            );
             (Provenance::NOT_VERIFIED, work)
         }
     }
@@ -12863,6 +12875,53 @@ mod tests {
         let (status, body) = refused(pinned(&proxy, WIDGET_2).await).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(body.contains("https://elsewhere.example"), "{body}");
+    }
+
+    /// A version published within the provenance window, and its prior, are verified with
+    /// a 404 not stored, since npm can answer 404 just after a publish. Older ones store it.
+    #[tokio::test]
+    async fn a_recent_version_s_missing_attestations_are_asked_for_again() {
+        let now = jiff::Timestamp::now();
+        let hours_ago = |hours: i64| (now - jiff::SignedDuration::from_hours(hours)).to_string();
+        let mut recent: serde_json::Value =
+            serde_json::from_str(&widget_versions(&["1.0.0", "2.0.0"])).expect("json");
+        recent["time"]["1.0.0"] = serde_json::json!(hours_ago(2));
+        recent["time"]["2.0.0"] = serde_json::json!(hours_ago(1));
+        for (label, packument, expected) in [
+            ("provenance-recent", recent.to_string(), true),
+            (
+                "provenance-old",
+                widget_versions(&["1.0.0", "2.0.0"]),
+                false,
+            ),
+        ] {
+            let (proxy, analyser) = provenance_proxy(label, PROVENANCE, &[], &[]).await;
+            let metadata =
+                npm::normalize_packument(packument.as_bytes(), crate::record::DocumentDetail::Full)
+                    .expect("normalizes");
+            hold_document(
+                &proxy,
+                packument.as_bytes(),
+                crate::record::DocumentDetail::Full,
+            );
+            let record = metadata
+                .records
+                .iter()
+                .find(|r| r.package.version() == "2.0.0")
+                .expect("2.0.0");
+            let (provenance, work) = attested(
+                &proxy,
+                Repository::of(Ecosystem::Npm),
+                Some(&analyser),
+                record,
+                Some(&widget_digest("2.0.0")),
+                None,
+            )
+            .await;
+            assert_eq!(provenance, Provenance::NOT_VERIFIED, "{label}");
+            let recent: Vec<bool> = work.iter().map(|a| a.recent).collect();
+            assert_eq!(recent, [expected, expected], "{label}");
+        }
     }
 
     /// PyPI project `x`: 1.0 then 2.0, each an sdist and a wheel, as a PEP 691 index. A
