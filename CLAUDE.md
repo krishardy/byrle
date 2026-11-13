@@ -77,6 +77,10 @@ These apply to chat messages. The documentation rules above apply here too.
 | "OSSF is Apache-2.0 with no attribution, GHSA is CC-BY-4.0 requiring it..." | a source/licence/attribution table |
 | "`Match` originates findings, `Enrich` only adds to them..." | a capability/meaning table |
 
+## Git Branching
+
+* When creating a branch, major work should be done in a feature `feat/<name>` branch. Minor chores should be done in a chore `chore/<name>` branch.
+
 ## GitHub
 
 * Public repository: https://github.com/krishardy/byrle. `gh` is not installed.
