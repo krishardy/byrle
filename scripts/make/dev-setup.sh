@@ -177,8 +177,11 @@ if need semgrep; then
 elif need pipx; then
     pipx install semgrep
 elif need pip3; then
-    # --user keeps it out of the system site-packages; pipx is still preferable.
-    pip3 install --user semgrep
+    # --user keeps it out of the system site-packages; pipx is still preferable. A Python
+    # marked externally managed (PEP 668) refuses --user, so report it and go on to kani.
+    if ! pip3 install --user semgrep; then
+        echo "    NOT INSTALLED: pip3 refused. Install pipx, then rerun. 'make sast' cannot run."
+    fi
 else
     echo "    NOT INSTALLED and no pipx or pip3 found. 'make sast' cannot run."
     echo "    See https://semgrep.dev/docs/getting-started/"

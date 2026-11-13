@@ -190,6 +190,12 @@ report_pin shellcheck "$(curl -sSf https://api.github.com/repos/koalaman/shellch
     | tag_name || true)" \
     "$shellcheck_version" scripts/make/lib/shellcheck.sh
 
+# shellcheck source=scripts/make/lib/opengrep.sh
+. "$repo_root/scripts/make/lib/opengrep.sh"
+report_pin opengrep "$(curl -sSf https://api.github.com/repos/opengrep/opengrep/releases/latest \
+    | tag_name || true)" \
+    "$opengrep_version" scripts/make/lib/opengrep.sh
+
 # shellcheck source=scripts/make/lib/java.sh
 . "$repo_root/scripts/make/lib/java.sh"
 report_pin JDK "$(curl -sSf https://api.github.com/repos/adoptium/temurin21-binaries/releases/latest \

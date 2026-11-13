@@ -511,9 +511,13 @@ Items that I've added that are not stage-bound.
     Both call the proxy's `dating::date`, pass a cooldown start, read a first sighting
     without recording one, and print every date read and the one used. The Go tests set the
     index and checksum database through `Clients::with`, so no setting was added.
-54. Opengrep for SAST: add it to `make sast` beside semgrep or in its place, with a
+54. [x] Opengrep for SAST: add it to `make sast` beside semgrep or in its place, with a
     `scripts/make/opengrep.sh`, the same rules and `// nosemgrep:` suppressions, and a CI
     step. Raised 2026-11-05.
+    Done 2026-11-13: [opengrep-trial](docs/engineering_decisions/0138-opengrep-trial.md).
+    Tried in `make sast` and removed from it. `make opengrep` stays, sharing
+    `scripts/make/lib/semgrep_scan.sh` with `make semgrep`. No CI step: CI runs no
+    `make sast` job.
 
 ## Architecture Refactor
 
