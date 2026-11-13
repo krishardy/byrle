@@ -6,12 +6,24 @@
       {
         "ordinal": 0,
         "name": "identity",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "artifact_attestation",
+            "name": "identity"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "failure",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artifact_attestation",
+            "name": "failure"
+          }
+        }
       }
     ],
     "parameters": {

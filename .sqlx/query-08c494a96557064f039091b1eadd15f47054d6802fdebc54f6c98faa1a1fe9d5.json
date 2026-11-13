@@ -6,37 +6,79 @@
       {
         "ordinal": 0,
         "name": "ecosystem!",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "artifact_analysis",
+            "name": "ecosystem"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "name!",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "artifact_analysis",
+            "name": "name"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "version!",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "artifact_analysis",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "unreadable",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artifact_analysis",
+            "name": "unreadable"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "anomalies",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "artifact_analysis",
+            "name": "anomalies"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "script?",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "artifact_install_script",
+            "name": "name"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "body?",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "artifact_install_script",
+            "name": "body"
+          }
+        }
       }
     ],
     "parameters": {

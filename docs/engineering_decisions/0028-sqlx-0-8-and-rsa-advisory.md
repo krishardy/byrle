@@ -76,7 +76,7 @@ kani 0.68.0 is still the newest release. On 2026-11-13 it compiled this crate:
 | 3. `AssertSqlSafe` in `tests/postgres.rs` | Done: the four in `fresh` and `connect`, the `raw_sql` in the range check, and the `UPDATE artifact_source` |
 | 3a. `AssertSqlSafe` in `src/intel/postgres.rs` | Done: the two statements in `write_advisories`, which format in `load::ADVISORY_COLUMNS` |
 | 4. Remove the RUSTSEC-2023-0071 block | Not done. `rsa` is built for `pgp` (amended 2026-10-17) |
-| 5. `make sqlx-prepare`, `make test-integration` | Not run. No Postgres on the machine that made the change |
+| 5. `make sqlx-prepare`, `make test-integration` | Done. `make sqlx-prepare` added an `origin` to each column in 33 of 63 `.sqlx/` files. `make test-integration`: 61 passed, 0 failed. `make sqlx-prepare ARGS=--check` passes |
 
 `make lint`, `make verify` and `make test` pass. `libsqlite3-sys` 0.30.1 stays in `Cargo.lock`
 under `sqlx-sqlite` 0.9.0, which is not built, and RUSTSEC-2026-0459 still fails `make check-deps`.
