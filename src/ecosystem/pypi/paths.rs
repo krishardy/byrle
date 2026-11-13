@@ -67,7 +67,8 @@ pub fn index_url(base: &str, name: &str) -> Result<String, PypiError> {
 }
 
 /// What a distribution filename says, a wheel's by PEP 427 and an sdist's by its last `-`.
-/// Eggs and installers give `None`.
+/// Eggs and installers give `None`. An sdist's split is a guess when its name or version
+/// holds a `-`: [`version_in`] reads it for a known project.
 /// Returns the [`normalise`]d project name, the version and the kind of file.
 pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
     if let Some(stem) = filename.strip_suffix(".whl") {
@@ -80,16 +81,61 @@ pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
         }
         return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));
     }
-    for extension in [".tar.gz", ".zip", ".tar.bz2", ".tar.xz"] {
-        if let Some(stem) = filename.strip_suffix(extension) {
-            let (name, version) = stem.rsplit_once('-')?;
-            if version.is_empty() || name.is_empty() {
-                return None;
-            }
-            return Some((normalise(name), version.to_owned(), Kind::Sdist));
+    let (name, version) = sdist_stem(filename)?.rsplit_once('-')?;
+    if version.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((normalise(name), version.to_owned(), Kind::Sdist))
+}
+
+/// The version and kind of a file in `project`'s index. A wheel's is [`filename_parts`]'s.
+/// An sdist's follows the first `-` before which the name [`normalise`]s to `project`, as
+/// pip's `_find_name_version_sep` finds it: `foo-1.0-1.tar.gz` is `foo` at `1.0-1`.
+/// Returns `None` for an sdist of another project, which pip skips.
+pub(super) fn version_in(project: &str, filename: &str) -> Option<(String, Kind)> {
+    if filename.ends_with(".whl") {
+        return filename_parts(filename).map(|(_, version, kind)| (version, kind));
+    }
+    let stem = sdist_stem(filename)?;
+    let project = normalise(project);
+    let (at, _) = stem
+        .match_indices('-')
+        .find(|&(at, _)| at > 0 && normalise(&stem[..at]) == project)?;
+    let version = &stem[at + 1..];
+    (!version.is_empty()).then(|| (version.to_owned(), Kind::Sdist))
+}
+
+/// The projects an sdist's filename could belong to, each with the version it would have
+/// there, from its last `-` to its first: `foo-1.0-1.tar.gz` is `foo-1-0` at `1` or `foo`
+/// at `1.0-1`. Only the index that lists a file says which it is.
+/// Returns nothing for a name with one reading, which its filename settles.
+pub fn filename_projects(filename: &str) -> Vec<(PackageKey, String)> {
+    let Some(stem) = sdist_stem(filename) else {
+        return Vec::new();
+    };
+    let mut projects: Vec<(PackageKey, String)> = Vec::new();
+    for (at, _) in stem.rmatch_indices('-') {
+        let Ok(key) = PackageKey::from_registry_name(Ecosystem::PyPI, &stem[..at]) else {
+            continue;
+        };
+        if projects.iter().any(|(held, _)| *held == key) {
+            continue;
+        }
+        if let Some((version, _)) = version_in(key.name(), filename) {
+            projects.push((key, version));
         }
     }
-    None
+    if projects.len() < 2 {
+        return Vec::new();
+    }
+    projects
+}
+
+/// An sdist's filename without its archive extension.
+fn sdist_stem(filename: &str) -> Option<&str> {
+    [".tar.gz", ".zip", ".tar.bz2", ".tar.xz"]
+        .into_iter()
+        .find_map(|extension| filename.strip_suffix(extension))
 }
 
 /// Where a request under PyPI's prefixes goes upstream: `/simple/` to the index, `/packages/`
@@ -133,8 +179,8 @@ pub fn classify_path(path: &str) -> RequestTarget {
         if name.is_empty() {
             return RequestTarget::Other;
         }
-        if name.contains('/') {
-            return artifact(name.rsplit('/').next().unwrap_or_default());
+        if let Some((project, file)) = name.split_once('/') {
+            return artifact(file.rsplit('/').next().unwrap_or_default(), Some(project));
         }
         return PackageKey::from_registry_name(Ecosystem::PyPI, name)
             .map_or(RequestTarget::Unrecognised, RequestTarget::Metadata);
@@ -146,19 +192,29 @@ pub fn classify_path(path: &str) -> RequestTarget {
     let Some(rest) = path.strip_prefix("packages/") else {
         return RequestTarget::Unrecognised;
     };
-    artifact(rest.rsplit('/').next().unwrap_or_default())
+    let filename = rest.rsplit('/').next().unwrap_or_default();
+    match rest.split('/').collect::<Vec<_>>()[..] {
+        ["source", _, project, _] => artifact(filename, Some(project)),
+        _ => artifact(filename, None),
+    }
 }
 
 /// The request for one file, named by a filename this build can read a version out of. A
-/// PEP 658 `<file>.metadata` is forwarded; any other filename is unrecognised.
-fn artifact(filename: &str) -> RequestTarget {
+/// PEP 658 `<file>.metadata` is forwarded; any other filename is unrecognised. `project` is
+/// the one a `/simple/` or `/packages/source/` path names, which splits the filename it fits.
+fn artifact(filename: &str, project: Option<&str>) -> RequestTarget {
     if filename
         .strip_suffix(".metadata")
         .is_some_and(|file| filename_parts(file).is_some())
     {
         return RequestTarget::Other;
     }
-    filename_parts(filename)
+    let named = project.and_then(|project| {
+        let (version, kind) = version_in(project, filename)?;
+        Some((normalise(project), version, kind))
+    });
+    named
+        .or_else(|| filename_parts(filename))
         .and_then(|(name, version, _)| {
             PackageKey::from_registry_name(Ecosystem::PyPI, &name)
                 .ok()
@@ -371,6 +427,91 @@ mod tests {
         ] {
             assert_eq!(classify_path(path), RequestTarget::Unrecognised, "{path}");
         }
+    }
+
+    /// In a known project's index an sdist's version follows the first `-` after the project
+    /// name, as pip reads it. The same filename gives another version in another project.
+    #[test]
+    fn an_sdist_in_a_known_project_is_split_after_its_name() {
+        for (project, filename, version) in [
+            ("foo", "foo-1.0-1.tar.gz", Some("1.0-1")),
+            ("foo-1-0", "foo-1.0-1.tar.gz", Some("1")),
+            ("Zope.Interface", "zope.interface-5.4.0.zip", Some("5.4.0")),
+            ("foo-bar", "foo_bar-2.0.tar.bz2", Some("2.0")),
+            ("foo", "foo--1.0.tar.gz", Some("-1.0")),
+            ("foo", "foo--1.0.tar.gz", Some("-1.0")),
+            ("foo", "bar-1.0.tar.gz", None),
+            ("foo", "foobar-1.0.tar.xz", None),
+            ("foo", "foo.tar.gz", None),
+            ("foo", "foo-.tar.gz", None),
+            ("", "-1.0.tar.gz", None),
+            ("foo", "foo-1.0.txt", None),
+        ] {
+            assert_eq!(
+                version_in(project, filename),
+                version.map(|v| (v.to_owned(), Kind::Sdist)),
+                "{project} {filename}"
+            );
+        }
+        assert_eq!(
+            version_in("foo", "foo-1.0.post1-1-py3-none-any.whl"),
+            Some(("1.0.post1".to_owned(), Kind::Wheel)),
+            "a wheel's version is its second field"
+        );
+        assert_eq!(version_in("foo", "foo-py3-none-any.whl"), None);
+    }
+
+    /// A filename that fits several projects gives each, from its last `-`, once each. One
+    /// that fits a single project, or is no sdist, gives none.
+    #[test]
+    fn an_sdist_name_with_several_readings_gives_each_project() {
+        let read = |filename| {
+            filename_projects(filename)
+                .into_iter()
+                .map(|(key, version)| format!("{}@{version}", key.name()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read("x-1.0-1.tar.gz"), ["x-1-0@1", "x@1.0-1"]);
+        assert_eq!(read("a-b-2.0.zip"), ["a-b@2.0", "a@b-2.0"]);
+        assert!(
+            read("x--1.0.tar.gz").is_empty(),
+            "`x-` and `x` are one project"
+        );
+        assert!(read("x-1.0.tar.gz").is_empty());
+        assert!(
+            read("x-1-.tar.gz").is_empty(),
+            "`x-1` would have no version"
+        );
+        assert!(read("x-1.0-1-py3-none-any.whl").is_empty());
+        assert!(read("-x-1.0.tar.gz").is_empty());
+    }
+
+    /// A `/simple/` or `/packages/source/` path names the project its file is split by.
+    #[test]
+    fn a_path_naming_the_project_splits_its_file() {
+        for path in [
+            "/pypi/simple/x/x-1.0-1.tar.gz",
+            "/pypi/packages/source/x/x/x-1.0-1.tar.gz",
+        ] {
+            assert_eq!(
+                classify_path(path),
+                RequestTarget::Artifact {
+                    key: key("x"),
+                    claimed_version: "1.0-1".into(),
+                    filename: "x-1.0-1.tar.gz".into(),
+                },
+                "{path}"
+            );
+        }
+        assert_eq!(
+            classify_path("/pypi/packages/source/y/y/x-1.0-1.tar.gz"),
+            RequestTarget::Artifact {
+                key: key("x-1-0"),
+                claimed_version: "1".into(),
+                filename: "x-1.0-1.tar.gz".into(),
+            },
+            "a file the path's project does not fit is read by its last `-`"
+        );
     }
 
     /// An sdist name with no `-` names no version.

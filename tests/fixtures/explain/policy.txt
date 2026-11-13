@@ -29,6 +29,7 @@ signal weights, for the risk score
   unservable                   100
   digest_mismatch              100
   signature_failed             100
+  cooldown_unanswered          100
   new_package                  1
   new_publisher                1
   no_repository                1
@@ -42,6 +43,7 @@ signal weights, for the risk score
   trustpub_repository_changed  1
   signing_key_new              1
   signing_key_expired          1
+  archive_suspicious           1
   advisory_malware             8
   advisory_vulnerability       4
   advisory_unsound             3
@@ -90,6 +92,7 @@ signal weights, for the risk score
   unservable                   100
   digest_mismatch              100
   signature_failed             100
+  cooldown_unanswered          100
   new_package                  1
   new_publisher                1
   no_repository                1
@@ -103,6 +106,7 @@ signal weights, for the risk score
   trustpub_repository_changed  1
   signing_key_new              1
   signing_key_expired          1
+  archive_suspicious           1
   advisory_malware             8
   advisory_vulnerability       4
   advisory_unsound             3
@@ -151,6 +155,7 @@ signal weights, for the risk score
   unservable                   100
   digest_mismatch              100
   signature_failed             100
+  cooldown_unanswered          100
   new_package                  1
   new_publisher                1
   no_repository                1
@@ -164,6 +169,7 @@ signal weights, for the risk score
   trustpub_repository_changed  1
   signing_key_new              1
   signing_key_expired          1
+  archive_suspicious           1
   advisory_malware             8
   advisory_vulnerability       4
   advisory_unsound             3
@@ -222,6 +228,7 @@ signal weights, for the risk score
   unservable                   100
   digest_mismatch              100
   signature_failed             100
+  cooldown_unanswered          100
   new_package                  1
   new_publisher                1
   no_repository                1
@@ -235,6 +242,7 @@ signal weights, for the risk score
   trustpub_repository_changed  1
   signing_key_new              1
   signing_key_expired          1
+  archive_suspicious           1
   advisory_malware             8
   advisory_vulnerability       4
   advisory_unsound             3

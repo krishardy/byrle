@@ -76,7 +76,7 @@ pub async fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
     let http = match environment
         .token()
         .map_err(|e| e.to_string())
-        .and_then(crate::http::token_client)
+        .and_then(crate::http::token_connection)
     {
         Ok(http) => http,
         Err(e) => return unread(e),
@@ -133,12 +133,18 @@ fn plan(lockfiles: &[PathBuf], targets: Option<&[Target]>) -> Result<Plan, Lockf
     Ok(plan)
 }
 
+/// The headers the proxy is sent for an artifact, besides the token: none.
+pub const ARTIFACTS: crate::service::Declared = crate::service::Declared {
+    name: "the proxy's artifacts",
+    headers: &[],
+};
+
 /// `plan`'s artifacts asked of the proxy at `base`, labelled. Every artifact is asked for
 /// once, which starts each analysis, before any is asked for again.
 /// Each artifact's outcome, and how many files of the versions read through the proxy were
 /// left out for other platforms.
 async fn warm(
-    http: &reqwest::Client,
+    http: &crate::service::Connection,
     base: &str,
     (plan, targets): (&Plan, Option<&[Target]>),
     deadline: Duration,
@@ -176,9 +182,10 @@ async fn warm(
     let asks: Vec<(String, Ask)> = direct
         .chain(found.into_iter().flat_map(|(asks, _)| asks))
         .collect();
+    let artifacts = crate::service::Service::new(ARTIFACTS, http);
     let first: Vec<(String, Answer, Option<String>)> = futures_util::stream::iter(asks)
         .map(|(label, ask)| {
-            let http = http.clone();
+            let http = artifacts.clone();
             async move {
                 match ask {
                     Ask::Known(outcome) => (label, Answer::Final(outcome), None),
@@ -191,7 +198,7 @@ async fn warm(
         .await;
     let outcomes = futures_util::stream::iter(first)
         .map(|(label, answer, url)| {
-            let http = http.clone();
+            let http = artifacts.clone();
             async move {
                 let outcome = match answer {
                     Answer::Final(outcome) => outcome,
@@ -270,7 +277,7 @@ enum Answer {
 }
 
 /// Ask for `url` once. The body is never read.
-async fn ask_once(http: &reqwest::Client, url: &str) -> Answer {
+async fn ask_once(http: &crate::service::Service, url: &str) -> Answer {
     let response = match http.get(url).send().await {
         Ok(response) => response,
         Err(e) => return Answer::Final(Outcome::Failed(e.to_string())),
@@ -298,7 +305,7 @@ async fn ask_once(http: &reqwest::Client, url: &str) -> Answer {
 /// Ask for `url` each second until the answer is not a 503 for its analysis, or
 /// `deadline` has passed `since` its first one.
 async fn ask_until_analysed(
-    http: &reqwest::Client,
+    http: &crate::service::Service,
     url: &str,
     since: Instant,
     deadline: Duration,
@@ -525,7 +532,7 @@ mod tests {
                 .route("/no-token", get(|| async { StatusCode::UNAUTHORIZED })),
         )
         .await;
-        let http = reqwest::Client::new();
+        let http = crate::service::Service::new(ARTIFACTS, &crate::service::Connection::default());
         let ask = |path: &str| {
             let url = format!("{base}{path}");
             let http = http.clone();

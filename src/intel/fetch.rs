@@ -2,10 +2,39 @@
 //! retries. Progress goes to `notice`, so `byrle refresh` owns its output and a test can
 //! read it.
 
+use std::collections::BTreeMap;
+
 use super::history::NotLoaded;
 use super::providers::osv::bundle::Tally;
 use super::refresh::{ATTEMPTS, FetchFailure, RETRY_WAIT, StreamDigest, retried, sha256_hex};
 use super::stream::{Payload, Stream, Transport};
+
+/// The headers a stream's host is sent for a bundle: none.
+pub const BUNDLES: crate::service::Declared = crate::service::Declared {
+    name: "intel bundle hosts",
+    headers: &[],
+};
+
+/// The headers GitHub's GraphQL API is sent: the token, and the query's type.
+pub const GITHUB: crate::service::Declared = crate::service::Declared {
+    name: "GitHub's GraphQL API",
+    headers: &["authorization", "content-type"],
+};
+
+/// The client for each kind of stream host.
+pub struct Hosts {
+    pub bundles: crate::service::Service,
+    pub github: crate::service::Service,
+}
+
+impl Hosts {
+    pub fn new(connection: &crate::service::Connection) -> Self {
+        Self {
+            bundles: crate::service::Service::new(BUNDLES, connection),
+            github: crate::service::Service::new(GITHUB, connection),
+        }
+    }
+}
 
 /// Where a fetch's progress lines go.
 pub type Notice<'a> = &'a dyn Fn(&str);
@@ -36,7 +65,7 @@ impl Fetched {
 /// `Required` and a refresh that gives up on it loads nothing. Each attempt starts the
 /// request over: the bundle is one GET with no range request, so there is nothing to resume.
 pub async fn stream_bundle(
-    http: &reqwest::Client,
+    hosts: &Hosts,
     declared: &Stream,
     (url, github_token): (&str, Option<&str>),
     notice: Notice<'_>,
@@ -44,9 +73,11 @@ pub async fn stream_bundle(
     let mut attempt = 1;
     loop {
         let got = match declared.transport {
-            Transport::Get => bundle(http, url, declared.ceiling, notice).await,
+            Transport::Get => bundle(&hosts.bundles, url, declared.ceiling, notice).await,
             Transport::GithubGraphql { query } => match github_token {
-                Some(token) => graphql(http, url, declared.ceiling, token, query, notice).await,
+                Some(token) => {
+                    graphql(&hosts.github, url, declared.ceiling, token, query, notice).await
+                }
                 None => Err(FetchFailure::settled(format!(
                     "{} is unset, so this stream is not read",
                     crate::env::GITHUB_TOKEN
@@ -70,7 +101,7 @@ pub async fn stream_bundle(
 
 /// The body at `url`, refused past `ceiling` bytes.
 pub async fn bundle(
-    http: &reqwest::Client,
+    http: &crate::service::Service,
     url: &str,
     ceiling: usize,
     notice: Notice<'_>,
@@ -136,14 +167,63 @@ pub struct Read {
     pub not_loaded: Vec<NotLoaded>,
 }
 
+impl Read {
+    /// Record `stream` as not loaded for `error`, and say that its last load stays.
+    fn not_load(
+        &mut self,
+        stream: &str,
+        bundle: Option<StreamDigest>,
+        error: String,
+        unconfigured: bool,
+        notice: Notice<'_>,
+    ) {
+        notice(&format!(
+            "{stream} is not loaded, and its last load stays: {error}"
+        ));
+        self.not_loaded.push(NotLoaded {
+            source: stream.to_owned(),
+            stream: stream.to_owned(),
+            bundle,
+            error,
+            unconfigured,
+        });
+    }
+
+    /// Move each loaded stream that parsed to under half the rows `stored` records for its
+    /// source to `not_loaded`, unless `forced` lists it. A stream that parsed to no rows,
+    /// over a source with any, is one of these.
+    pub fn refuse_shrunk(
+        &mut self,
+        stored: &BTreeMap<String, u64>,
+        forced: &[String],
+        notice: Notice<'_>,
+    ) {
+        for loaded in std::mem::take(&mut self.loaded) {
+            let parsed = u64::try_from(loaded.payload.count()).unwrap_or(u64::MAX);
+            let held = stored.get(loaded.source).copied().unwrap_or(0);
+            if parsed.saturating_mul(2) >= held || forced.iter().any(|f| f == loaded.source) {
+                self.loaded.push(loaded);
+                continue;
+            }
+            let [bundle] = loaded.streams;
+            let error = format!(
+                "it parsed to {parsed} rows, under half the {held} stored; \
+                 `byrle refresh --force {}` loads it",
+                loaded.source
+            );
+            self.not_load(loaded.source, Some(bundle), error, false, notice);
+        }
+    }
+}
+
 /// Fetch and parse each stream in `streams`, in order.
 ///
 /// A stream that does not load is one [`NotLoaded`], and the rest still load. One stream's
 /// bytes are freed before the next is fetched.
 pub async fn read_streams(
-    http: &reqwest::Client,
+    hosts: &Hosts,
     streams: &'static [Stream],
-    (urls, github_token): (&std::collections::BTreeMap<String, String>, Option<&str>),
+    (urls, github_token): (&BTreeMap<String, String>, Option<&str>),
     notice: Notice<'_>,
 ) -> Read {
     let mut read = Read::default();
@@ -151,7 +231,7 @@ pub async fn read_streams(
         let url = urls
             .get(declared.stream)
             .map_or(declared.url, String::as_str);
-        let got = stream_bundle(http, declared, (url, github_token), notice).await;
+        let got = stream_bundle(hosts, declared, (url, github_token), notice).await;
         let parsed = match got {
             Ok(fetched) => {
                 let bundle = fetched.stream(declared.stream);
@@ -165,18 +245,9 @@ pub async fn read_streams(
         let (parsed, bundle) = match parsed {
             Ok(parsed) => parsed,
             Err((bundle, error)) => {
-                notice(&format!(
-                    "{} is not loaded, and its last load stays: {error}",
-                    declared.stream
-                ));
-                read.not_loaded.push(NotLoaded {
-                    source: declared.stream.to_owned(),
-                    stream: declared.stream.to_owned(),
-                    bundle,
-                    error,
-                    unconfigured: matches!(declared.transport, Transport::GithubGraphql { .. })
-                        && github_token.is_none(),
-                });
+                let unconfigured = matches!(declared.transport, Transport::GithubGraphql { .. })
+                    && github_token.is_none();
+                read.not_load(declared.stream, bundle, error, unconfigured, notice);
                 continue;
             }
         };
@@ -211,7 +282,7 @@ fn failed(doing: &str, e: reqwest::Error) -> FetchFailure {
 /// A page that is not JSON, or that carries no `pageInfo`, ends the fetch: the bytes are
 /// still handed to `parse`, which reports what GitHub said.
 pub async fn graphql(
-    http: &reqwest::Client,
+    http: &crate::service::Service,
     url: &str,
     ceiling: usize,
     token: &str,
@@ -230,7 +301,7 @@ pub async fn graphql(
         let body = serde_json::to_vec(&body).expect("a JSON value serialises");
         let response = http
             .post(url)
-            .bearer_auth(token)
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body)
             .send()
@@ -279,12 +350,12 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::intel::refresh::http_client;
+    use crate::intel::refresh::hosts;
     use crate::util::test_support::{Answer, scripted};
 
     /// A client with a short read timeout, so a stalled test server ends quickly.
-    fn client() -> reqwest::Client {
-        http_client(Duration::from_millis(200)).expect("a client")
+    fn client() -> Hosts {
+        hosts(Duration::from_millis(200))
     }
 
     /// Collects what would have been printed.
@@ -305,7 +376,7 @@ mod tests {
         let addr = scripted(answers).await;
         let printed = Printed::default();
         let got = bundle(
-            &client(),
+            &client().bundles,
             &format!("http://{addr}/all.zip"),
             ceiling,
             &printed.notice(),
@@ -428,9 +499,16 @@ mod tests {
         let addr = scripted(vec![Answer::body(page.to_vec())]).await;
         let printed = Printed::default();
         let url = format!("http://{addr}/graphql");
-        let fetched = graphql(&client(), &url, 4096, "token", "query", &printed.notice())
-            .await
-            .expect("one page");
+        let fetched = graphql(
+            &client().github,
+            &url,
+            4096,
+            "token",
+            "query",
+            &printed.notice(),
+        )
+        .await
+        .expect("one page");
         let array: serde_json::Value = serde_json::from_slice(&fetched.bytes).expect("an array");
         assert_eq!(array.as_array().map(Vec::len), Some(1));
         assert_eq!(fetched.etag, None, "a page carries no bundle headers");
@@ -449,7 +527,7 @@ mod tests {
         let printed = Printed::default();
         let url = format!("http://{addr}/graphql");
         let failure = graphql(
-            &client(),
+            &client().github,
             &url,
             page.len() + 8,
             "token",
@@ -472,7 +550,7 @@ mod tests {
         let addr = scripted(vec![Answer::body("not json")]).await;
         let printed = Printed::default();
         let failure = graphql(
-            &client(),
+            &client().github,
             &format!("http://{addr}/graphql"),
             4096,
             "token",
@@ -717,7 +795,7 @@ mod tests {
         let printed = Printed::default();
         let closed = crate::util::test_support::closing_server().await;
         let failure = graphql(
-            &client(),
+            &client().github,
             &format!("http://{closed}/graphql"),
             4096,
             "token",
@@ -730,7 +808,7 @@ mod tests {
 
         let cut = scripted(vec![Answer::cut_short()]).await;
         let failure = graphql(
-            &client(),
+            &client().github,
             &format!("http://{cut}/graphql"),
             4096,
             "token",
@@ -741,7 +819,7 @@ mod tests {
         .expect_err("cut short");
         assert!(failure.why.starts_with("reading http"), "{}", failure.why);
         let failure = bundle(
-            &client(),
+            &client().bundles,
             &format!("http://{cut}/all.zip"),
             4096,
             &printed.notice(),
@@ -749,5 +827,71 @@ mod tests {
         .await
         .expect_err("cut short");
         assert!(failure.why.starts_with("reading http"), "{}", failure.why);
+    }
+
+    /// A stream that parsed to `ids` CVE ids, as read from a bundle.
+    fn loaded(source: &'static str, ids: usize) -> Loaded {
+        Loaded {
+            source,
+            payload: Payload::Exploited((0..ids).map(|i| format!("CVE-2026-{i}")).collect()),
+            tally: None,
+            streams: [Fetched {
+                bytes: Vec::new(),
+                etag: None,
+                last_modified: None,
+            }
+            .stream(source)],
+        }
+    }
+
+    /// Under half the stored rows is refused, and half is not. No rows over a stored source
+    /// is refused, unless forced. A source with nothing stored loads whatever it parsed to.
+    #[test]
+    fn a_stream_that_parsed_to_under_half_its_stored_rows_is_not_loaded() {
+        let mut read = Read {
+            loaded: vec![
+                loaded("a/half", 2),
+                loaded("b/under", 2),
+                loaded("c/empty", 0),
+                loaded("d/forced", 0),
+                loaded("e/new", 0),
+            ],
+            not_loaded: Vec::new(),
+        };
+        let stored = BTreeMap::from(
+            [
+                ("a/half", 4),
+                ("b/under", 5),
+                ("c/empty", 1),
+                ("d/forced", 9),
+            ]
+            .map(|(source, rows)| (source.to_owned(), rows)),
+        );
+        let printed = Printed::default();
+        read.refuse_shrunk(&stored, &["d/forced".to_owned()], &printed.notice());
+        assert_eq!(
+            read.loaded.iter().map(|l| l.source).collect::<Vec<_>>(),
+            ["a/half", "d/forced", "e/new"]
+        );
+        assert_eq!(
+            read.not_loaded
+                .iter()
+                .map(|n| (n.source.as_str(), n.stream.as_str(), n.unconfigured))
+                .collect::<Vec<_>>(),
+            [("b/under", "b/under", false), ("c/empty", "c/empty", false)]
+        );
+        assert!(
+            read.not_loaded.iter().all(|n| n.bundle.is_some()),
+            "each bundle was fetched, so it is recorded"
+        );
+        assert_eq!(
+            printed.lines(),
+            [
+                "b/under is not loaded, and its last load stays: it parsed to 2 rows, under \
+                 half the 5 stored; `byrle refresh --force b/under` loads it",
+                "c/empty is not loaded, and its last load stays: it parsed to 0 rows, under \
+                 half the 1 stored; `byrle refresh --force c/empty` loads it",
+            ]
+        );
     }
 }

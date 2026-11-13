@@ -11,6 +11,7 @@ pub mod facts;
 pub mod merge;
 pub mod packages;
 pub mod selector;
+pub mod settings;
 pub mod strictness;
 pub mod vers;
 
@@ -32,6 +33,8 @@ pub fn today() -> jiff::civil::Date {
 
 /// The shipped default for `cooldown_days`.
 pub const DEFAULT_COOLDOWN_DAYS: u32 = 7;
+/// A cooldown longer than this, a century, dates a version as this one does.
+pub const MAX_COOLDOWN_DAYS: u32 = 36_500;
 pub const DEFAULT_MAX_CVSS: f64 = 6.9;
 /// The shipped default for `provenance_window_days`, the cooldown's own.
 pub const DEFAULT_PROVENANCE_WINDOW_DAYS: u32 = 7;
@@ -281,6 +284,11 @@ impl SignalWeights {
         self.0.get(key).copied()
     }
 
+    /// Each key the policy sets.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
     /// Weights set as `pairs`, of a key and its weight, for a test.
     #[cfg(test)]
     pub fn of_pairs(pairs: &[(&str, u32)]) -> Self {
@@ -458,6 +466,13 @@ impl Policy {
             .iter()
             .filter_map(|entry| entry.set.cooldown_days)
             .fold(self.cooldown_days, u32::max)
+    }
+
+    /// When a version published `now` would be past [`Policy::longest_cooldown`], at most
+    /// [`MAX_COOLDOWN_DAYS`] back. `None` when no cooldown is in force.
+    pub fn cooldown_start(&self, now: jiff::Timestamp) -> Option<jiff::Timestamp> {
+        let days = Some(self.longest_cooldown()).filter(|days| *days > 0)?;
+        Some(now - window_of(days.min(MAX_COOLDOWN_DAYS)))
     }
 
     /// Whether any cooldown is in force, globally or in a package entry.
@@ -1157,6 +1172,7 @@ mod tests {
                     "unservable",
                     "digest_mismatch",
                     "signature_failed",
+                    "cooldown_unanswered",
                     "new_package",
                     "new_publisher",
                     "no_repository",
@@ -1170,6 +1186,7 @@ mod tests {
                     "trustpub_repository_changed",
                     "signing_key_new",
                     "signing_key_expired",
+                    "archive_suspicious",
                     "advisory_malware",
                     "advisory_vulnerability",
                     "advisory_unsound",
@@ -1593,6 +1610,20 @@ mod tests {
             policy.longest_cooldown(),
             5,
             "the entry's, past the global 0"
+        );
+        let now: jiff::Timestamp = "2026-10-30T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            policy.cooldown_start(now),
+            Some("2026-10-25T00:00:00Z".parse().unwrap())
+        );
+        let century = parse("cooldown_days: 99999\n").expect("loads");
+        assert_eq!(
+            century.cooldown_start(now),
+            Some(now - window_of(MAX_COOLDOWN_DAYS))
+        );
+        assert_eq!(
+            parse("cooldown_days: 0\n").unwrap().cooldown_start(now),
+            None
         );
         let refused = parse(
             "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \

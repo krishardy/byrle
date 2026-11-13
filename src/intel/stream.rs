@@ -55,6 +55,14 @@ impl Payload {
         }
     }
 
+    /// How many records or ids the bundle parsed to: the rows its source has once loaded.
+    pub fn count(&self) -> usize {
+        match self {
+            Self::Advisories(rows) => rows.len(),
+            Self::Exploited(ids) => ids.len(),
+        }
+    }
+
     /// The records the other tables are built from once Postgres has keyed them. Empty for
     /// exploited ids, which have no child tables.
     pub fn rows(&self) -> &[Rows] {
@@ -276,6 +284,7 @@ mod tests {
         let parsed = (declared(datadog::NPM_STREAM).parse)(br#"{"vant": ["2.13.3"], "0h": null}"#)
             .expect("the manifest parses");
         assert_eq!(parsed.payload.rows().len(), 2);
+        assert_eq!(parsed.payload.count(), 2);
         assert!(
             parsed.tally.is_none(),
             "a manifest counts nothing for the refresh to print"
@@ -297,6 +306,7 @@ mod tests {
             parsed.payload.rows().is_empty(),
             "exploited ids have no child tables"
         );
+        assert_eq!(parsed.payload.count(), 1, "each id is a row");
         let encoded = parsed.payload.encode(kev::STREAM);
         assert_eq!(encoded.kind, Kind::Exploited);
         assert_eq!(encoded.source, "cisa/kev");

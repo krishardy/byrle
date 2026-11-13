@@ -11,7 +11,10 @@ use base64::Engine as _;
 use super::{Accounts, Holder, TokenDigest};
 
 /// A token sent in a header of its own, for a client that sets custom headers.
-pub const TOKEN_HEADER: HeaderName = HeaderName::from_static("x-byrle-token");
+pub const TOKEN_HEADER: HeaderName = HeaderName::from_static(TOKEN);
+
+/// [`TOKEN_HEADER`]'s name.
+pub const TOKEN: &str = "x-byrle-token";
 
 /// What a 401 asks for. pip and uv send Basic credentials only once asked.
 pub const CHALLENGE: &str = r#"Basic realm="byrle""#;

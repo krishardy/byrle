@@ -52,6 +52,15 @@ withdrawn. Ranges are `SEMVER` (14,730) and `ECOSYSTEM` (145).
 them. The other 191 unscored records name modules, and `max_cvss` refuses an unscored
 advisory, as with 105 RustSec records ([advisory-kinds](engineering_decisions/0109-advisory-kinds.md)).
 
+A module path keeps its case: it is case-sensitive, and an advisory names the case its
+`go.mod` writes. GitHub serves a repository in any case, `github.com/Sirupsen/Logrus`
+answered 200 on 2026-11-05, and proxy.golang.org serves `github.com/sirupsen/logrus`,
+`github.com/!sirupsen/logrus` and `github.com/!sirupsen/!logrus` alike, so a client can ask
+for a GitHub module in a case its advisories do not name. `intel_for` looks up a
+`github.com/` path in lower case as well (`go::paths::intel_alias`), and merges the records
+both names find in one snapshot. Another host's paths are looked up as written: two paths
+differing in case may be two modules there.
+
 ## The adapter, checked again
 
 Go's column of [cargo-plan](cargo-plan.md)'s table, with what was measured since:
@@ -60,7 +69,7 @@ Go's column of [cargo-plan](cargo-plan.md)'s table, with what was measured since
 |---|---|---|
 | Route a path | `@v/list`, `@latest`, `.info`, `.mod`, `.zip`, under `/go/` | nothing: `classify_path` |
 | Read and filter a document | `@v/list` lines, and `@latest`'s JSON | `@latest` is a second document kind that names one version |
-| Publish time | `.info`'s `Time`, a request per version | a time asked per version, newest first, as npm's full packument is asked per document |
+| Publish time | `.info`'s `Time`, a request per version; since 0125, the version's record in sum.golang.org, placed in time by index.golang.org | a time asked per version, newest first, as npm's full packument is asked per document |
 | Artifact digest | `h1:` from sum.golang.org, over the zip's files | a digest the proxy fetches, and checks after the whole zip is spooled |
 | Decide without 503 | go does not retry a 503 | an answer held open while the artifact is analysed |
 | Code run at fetch or build | none: `go generate` is never run by a build | `meaningless` gains `install_scripts` |

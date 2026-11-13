@@ -2,8 +2,32 @@
 //! reports, so a policy weighting a rule it does not have is refused at load.
 //! See docs/engineering_decisions/0092-detectors.md.
 
+/// The name the detectors known by [`super::KNOWN`] give GuardDog.
+pub const NAME: &str = "guarddog";
+
 /// The release whose rules are listed here.
 pub const VERSION: &str = "3.2.0";
+
+/// GuardDog's rules a policy may weigh: its own and the two that say a rule could not run.
+pub const WEIGHED: [&str; 66] = super::joined(&RULES, &[super::ERROR_RULE, WHOIS_ERROR_RULE]);
+
+/// The rules that look up maintainers' email domains by WHOIS, on TCP port 43.
+pub const WHOIS_RULES: [&str; 2] = [
+    "potentially_compromised_email_domain",
+    "unclaimed_maintainer_email_domain",
+];
+
+/// The rule a run fires, in place of [`super::ERROR_RULE`], for an errored [`WHOIS_RULES`] rule.
+pub const WHOIS_ERROR_RULE: &str = "whois_error";
+
+/// The rule a run of the detector `detector` fires for `errored`, a rule in its `errors`.
+pub fn error_rule(detector: &str, errored: &str) -> &'static str {
+    if detector == NAME && WHOIS_RULES.contains(&errored) {
+        WHOIS_ERROR_RULE
+    } else {
+        super::ERROR_RULE
+    }
+}
 
 /// Every rule GuardDog 3.2.0 lists for npm or PyPI.
 pub const RULES: [&str; 64] = [

@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 
-use super::{Kept, http_client};
+use super::{Kept, hosts};
 use crate::env::{self, Env};
 use crate::http::READ_TIMEOUT;
 use crate::intel::fetch::Notice;
@@ -32,8 +32,13 @@ impl Run {
 }
 
 /// Load every stream in [`stream::all`] into the intel store, and append what each stream
-/// did to the ingestion history.
-pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: Notice<'_>) -> Run {
+/// did to the ingestion history. A stream that parsed to under half its source's stored rows
+/// is not loaded, unless `forced` lists it.
+pub async fn run<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+    forced: &[String],
+    notice: Notice<'_>,
+) -> Run {
     let intel = match postgres::required(environment).await {
         Ok(intel) => intel,
         Err(refused) => {
@@ -47,13 +52,22 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: 
         Err(code) => return Run::stopped(code),
     };
 
-    let read = fetch::read_streams(
-        &setup.http,
+    let mut read = fetch::read_streams(
+        &setup.hosts,
         stream::all(),
         (&setup.urls, setup.github_token.as_deref()),
         notice,
     )
     .await;
+    match intel.stored_rows().await {
+        Ok(stored) => read.refuse_shrunk(&stored, forced, notice),
+        Err(e) => {
+            notice(&format!(
+                "nothing loaded: the stored row counts are not read: {e}"
+            ));
+            return Run::stopped(1);
+        }
+    }
     let (loaded, not_loaded) = (read.loaded, read.not_loaded);
     if loaded.is_empty() {
         notice("nothing loaded: no stream loaded");
@@ -112,7 +126,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: 
 struct Setup {
     limit: usize,
     kept: Option<SnapshotDir>,
-    http: reqwest::Client,
+    hosts: crate::intel::fetch::Hosts,
     github_token: Option<String>,
     /// [`crate::env::STREAM_URLS`]: a mirror for each stream named.
     urls: std::collections::BTreeMap<String, String>,
@@ -144,14 +158,14 @@ impl Setup {
             .map(SnapshotDir::open)
             .transpose()
             .map_err(|e| stop(1, format!("{}: {e}", env::SNAPSHOT_DIR)))?;
-        let http = http_client(READ_TIMEOUT).map_err(|e| stop(1, format!("{e}")))?;
+        let hosts = hosts(READ_TIMEOUT);
         let github_token = environment
             .github_token()
             .map_err(|e| stop(2, e.to_string()))?;
         Ok(Self {
             limit,
             kept,
-            http,
+            hosts,
             github_token,
             urls,
         })

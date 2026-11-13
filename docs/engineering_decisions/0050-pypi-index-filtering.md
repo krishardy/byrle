@@ -3,6 +3,7 @@
 - **Number:** 0050
 - **Status:** Implemented 2026-09-18. `proxy::handle`, `ecosystem::pypi::rewrite`,
   `ecosystem::UncoveredMetadata`.
+- **Superseded by:** removing only whole versions, by [0124-pypi-file-publish-times](0124-pypi-file-publish-times.md)
 - **Related:** [quarantine-filter-metadata](0013-quarantine-filter-metadata.md),
   [uncovered-ecosystem-fails-closed](0048-uncovered-ecosystem-fails-closed.md),
   [pypi-simple-index](0046-pypi-simple-index.md), [adapter-interface](0047-adapter-interface.md)

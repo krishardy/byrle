@@ -65,6 +65,24 @@ Each pinned audit line names the digest of the policy it was decided under. To r
 log that spans a reload, pass both files: `byrle audit verify <log> --policy old.yaml
 --policy new.yaml`.
 
+A metadata document over `BYRLE_MAX_METADATA_BYTES`, 64 MiB by default, is answered 502
+and logged `UNINSPECTED: metadata document not checked, refused`. Raise the variable and
+restart the proxy.
+
+The same line, with a `byrle.reason` of "did not normalize", "did not parse", "could not be
+filtered", "could not be rewritten" or "could not be pointed at the proxy", is an npm
+packument or PyPI index the proxy could not check. With "a media type the proxy does not
+read", it is a document the upstream served under a `Content-Type` its adapter does not
+list, such as a mirror serving `maven-metadata.xml` as `application/octet-stream`. No variable or policy exception releases
+it. `BYRLE_MODE=observe` forwards it, after a restart, or install as in
+[The proxy is down](#the-proxy-is-down).
+
+A pinned fetch of a version published less than `provenance_window_days` ago, whose
+attestations the registry answers 404, is answered 503 under any `provenance` setting,
+and logged `attestations: not served yet for a recent version, nothing stored`. No policy
+exception releases it. It is served once the registry serves the attestations or the
+window passes, when the 404 is stored as a failed verification.
+
 `BYRLE_MODE=observe` serves everything the policy refuses, for the whole proxy. It is
 read at startup, so switching to it needs a restart. It never serves what the proxy cannot
 assess: see [request-flow](request-flow.md).

@@ -93,6 +93,10 @@ only to verify a signature with a public key.
 it. With the check changed to expect a dependent named `pgpx`, `make check-deps` printed
 `rsa is built for pgp, not pgp alone.` and exited 2.
 
+Amended 2026-11-03 by [crypto-bigint-advisory](0128-crypto-bigint-advisory.md): the check
+reads every route from byrle to `rsa` and passes while `pgp` is the only crate byrle depends
+on directly among them.
+
 `pgp` adds 87 crates to the build. With `pgp`, their 88 licences are 63 MIT and Apache-2.0,
 either, 17 MIT, 4 BSD-3-Clause, 3 MIT or Apache-2.0 or a BSD, and 1 Zlib.
 

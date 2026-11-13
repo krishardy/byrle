@@ -1,6 +1,7 @@
-//! Removing refused versions from a simple index, and pointing the rest at the proxy. A
-//! version is removed with every file that carries it: see
-//! docs/engineering_decisions/0050-pypi-index-filtering.md.
+//! Removing refused versions and files from a simple index, and pointing the rest at the
+//! proxy. A version is removed with every file that carries it: see
+//! docs/engineering_decisions/0050-pypi-index-filtering.md. A file refused alone, for its own
+//! upload time, is removed alone: see 0124-pypi-file-publish-times.md.
 
 use std::collections::HashSet;
 
@@ -26,6 +27,8 @@ pub struct Rewrite<'a> {
     pub base: Option<&'a str>,
     /// Versions the policy refuses, which are removed.
     pub refused_by_policy: &'a HashSet<String>,
+    /// Files the policy refuses alone, by filename, which are removed.
+    pub refused_files: &'a [String],
     /// Whether a version with a file on an origin the proxy refuses is removed too.
     pub refuse_unservable: bool,
     pub path: &'a str,
@@ -34,17 +37,20 @@ pub struct Rewrite<'a> {
 /// Remove refused versions and point the remaining files at the proxy, keeping each path.
 /// `r`: the index, its project, and what is refused.
 /// Returns `None` to forward the body as it came, which is logged: see 0046-pypi-simple-index.md.
-pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
+/// `Err` when it could not be filtered, or its files pointed at the proxy.
+pub fn rewrite_index(r: Rewrite<'_>) -> Result<Option<Vec<u8>>, String> {
     let unservable = unservable_versions(&r);
     let removed: HashSet<String> = r.refused_by_policy.union(&unservable).cloned().collect();
     let kept: Vec<&str> = r
         .project
         .files
         .iter()
-        .filter(|file| !removed.contains(&file.version))
+        .filter(|file| {
+            !removed.contains(&file.version) && !r.refused_files.contains(&file.filename)
+        })
         .map(|file| file.url.as_str())
         .collect();
-    let filtered = if removed.is_empty() {
+    let filtered = if removed.is_empty() && r.refused_files.is_empty() {
         None
     } else {
         Some(filtered(&r, &removed, unservable.len(), kept.len())?)
@@ -56,7 +62,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
             "UNINSPECTED: the simple index is forwarded as written, so its files are \
              fetched from the index's own host rather than through the proxy"
         );
-        return filtered;
+        return Ok(filtered);
     };
     repointed(&r, filtered, kept, base)
 }
@@ -76,14 +82,14 @@ fn unservable_versions(r: &Rewrite<'_>) -> HashSet<String> {
 }
 
 /// The index with the files of the `removed` versions taken out, `kept` files left, of which
-/// `unservable` were removed for an origin. Returns `None` when it cannot be filtered.
+/// `unservable` were removed for an origin. `Err` when it cannot be filtered.
 fn filtered(
     r: &Rewrite<'_>,
     removed: &HashSet<String>,
     unservable: usize,
     kept: usize,
-) -> Option<Vec<u8>> {
-    match remove_versions(r.decoded, r.format, r.project, removed) {
+) -> Result<Vec<u8>, String> {
+    match remove_versions(r.decoded, r.format, r.project, (removed, r.refused_files)) {
         Ok(body) => {
             warn!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
@@ -91,26 +97,24 @@ fn filtered(
                 byrle.package.kept_files = kept,
                 byrle.package.removed_by_policy = r.refused_by_policy.len(),
                 byrle.package.removed_unservable = unservable,
-                "REFUSED versions removed from the document so the resolver picks \
-                 another"
+                byrle.package.removed_files_by_policy = r.refused_files.len(),
+                "REFUSED versions and files removed from the document so the resolver \
+                 picks another"
             );
-            Some(body)
+            Ok(body)
         }
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %e, "UNINSPECTED: simple index could not be filtered");
-            None
-        }
+        Err(e) => Err(format!("the simple index could not be filtered: {e}")),
     }
 }
 
 /// `filtered`, or the index as it came, with the `kept` files pointed at `base`.
-/// Returns `filtered` when no file was repointed or the rewrite failed.
+/// Returns `filtered` when no file was repointed, and `Err` when the rewrite failed.
 fn repointed(
     r: &Rewrite<'_>,
     filtered: Option<Vec<u8>>,
     kept: Vec<&str>,
     base: &str,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, String> {
     let body = filtered.as_deref().unwrap_or(r.decoded);
     let files = kept.len();
     match rewrite_artifact_origins(body, kept, r.origins.reachable(), base) {
@@ -122,21 +126,18 @@ fn repointed(
                 byrle.package.left_alone_files = out.left_alone,
                 "simple index rewritten"
             );
-            if out.rewritten > 0 {
+            Ok(if out.rewritten > 0 {
                 Some(out.body)
             } else {
                 filtered
-            }
+            })
         }
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %e, "UNINSPECTED: simple index could not be rewritten");
-            filtered
-        }
+        Err(e) => Err(format!("the simple index could not be rewritten: {e}")),
     }
 }
 
-/// The index without the files that carry a version in `refused`, and without those
-/// versions in the PEP 700 `versions` key when it has one.
+/// The index without the files that carry a version in `refused` or are named in `files`,
+/// and without those versions in the PEP 700 `versions` key when it has one.
 ///
 /// The version of a file is the one [`super::wire::parse`] read from its filename, so the
 /// files are matched by `filename` against `project`.
@@ -144,12 +145,12 @@ fn remove_versions(
     decoded: &[u8],
     format: IndexFormat,
     project: &Project,
-    refused: &HashSet<String>,
+    (refused, files): (&HashSet<String>, &[String]),
 ) -> Result<Vec<u8>, RemoveError> {
     let removed: HashSet<&str> = project
         .files
         .iter()
-        .filter(|file| refused.contains(&file.version))
+        .filter(|file| refused.contains(&file.version) || files.contains(&file.filename))
         .map(|file| file.filename.as_str())
         .collect();
     match format {
@@ -236,7 +237,7 @@ mod tests {
     /// `a_version_with_a_file_on_an_unserved_origin_is_removed` turns on.
     fn rewrite(decoded: &[u8], base: Option<&str>, refused: &[&str]) -> Option<Vec<u8>> {
         let project = super::super::parse("", decoded).expect("the index parses");
-        rewrite_parsed(decoded, &project, base, refused)
+        rewrite_parsed(decoded, &project, base, refused).expect("the index rewrites")
     }
 
     fn rewrite_parsed(
@@ -244,7 +245,7 @@ mod tests {
         project: &Project,
         base: Option<&str>,
         refused: &[&str],
-    ) -> Option<Vec<u8>> {
+    ) -> Result<Option<Vec<u8>>, String> {
         let refused: HashSet<String> = refused.iter().map(|v| (*v).to_owned()).collect();
         rewrite_index(Rewrite {
             decoded,
@@ -253,6 +254,7 @@ mod tests {
             origins: &origins(&[]),
             base,
             refused_by_policy: &refused,
+            refused_files: &[],
             refuse_unservable: false,
             path: "/pypi/simple/x/",
         })
@@ -287,9 +289,11 @@ mod tests {
             origins: &origins(&[]),
             base: Some("http://127.0.0.1:8080"),
             refused_by_policy: &refused,
+            refused_files: &[],
             refuse_unservable: true,
             path: "/pypi/simple/x/",
         })
+        .unwrap()
         .expect("a version was refused, so the body changes");
         let out = String::from_utf8(out).expect("utf-8");
         assert!(
@@ -321,9 +325,11 @@ mod tests {
                 origins,
                 base: None,
                 refused_by_policy: &HashSet::new(),
+                refused_files: &[],
                 refuse_unservable,
                 path: "/pypi/simple/x/",
             })
+            .unwrap()
         };
         let (guard, log) = crate::util::test_support::capture(tracing::Level::WARN);
         let out = run(&origins(&[]), true).expect("a version was removed");
@@ -370,6 +376,34 @@ mod tests {
         {"filename":"x-2.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/ce/x-2.0-py3-none-any.whl","hashes":{}},
         {"filename":"x-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/02/x-2.0.tar.gz","hashes":{}}
     ]}"#;
+
+    /// A file refused alone leaves the index, and its version's other files stay.
+    #[test]
+    fn a_file_refused_alone_is_removed_alone() {
+        let project = super::super::parse("", INDEX).expect("the index parses");
+        let alone = |base| {
+            rewrite_index(Rewrite {
+                decoded: INDEX,
+                format: IndexFormat::Json,
+                project: &project,
+                origins: &origins(&[]),
+                base,
+                refused_by_policy: &HashSet::new(),
+                refused_files: &["x-1.0-py3-none-any.whl".to_owned()],
+                refuse_unservable: false,
+                path: "/pypi/simple/x/",
+            })
+            .unwrap()
+            .expect("a file was removed")
+        };
+        assert_eq!(filenames(&json(&alone(None))), ["x-1.0.tar.gz"]);
+        let out = json(&alone(Some("http://127.0.0.1:8080")));
+        assert_eq!(filenames(&out), ["x-1.0.tar.gz"]);
+        assert_eq!(
+            out["files"][0]["url"],
+            "http://127.0.0.1:8080/packages/ef/01/x-1.0.tar.gz"
+        );
+    }
 
     /// pip uses each file's url as written, so without this every file is fetched
     /// from the index's own host and nothing about those bytes is observed.
@@ -465,13 +499,19 @@ mod tests {
     }
 
     /// An index that escapes its slashes does not contain its URLs as written, so the
-    /// rewrite refuses it rather than repointing some files and not others.
+    /// rewrite fails rather than repointing some files and not others.
     #[test]
-    fn an_index_whose_urls_cannot_be_found_is_forwarded_untouched() {
+    fn an_index_whose_urls_cannot_be_found_is_not_rewritten() {
         let escaped = br#"{"name":"x","files":[
             {"filename":"x-1.0.tar.gz","url":"https:\/\/files.pythonhosted.org\/packages\/ef\/01\/x-1.0.tar.gz","hashes":{}}
         ]}"#;
-        assert_eq!(rewrite(escaped, Some("http://p"), &[]), None);
+        let project = super::super::parse("", escaped).expect("the index parses");
+        let out = rewrite_parsed(escaped, &project, Some("http://p"), &[]);
+        assert!(
+            out.as_ref()
+                .is_err_and(|why| why.contains("could not be rewritten")),
+            "{out:?}"
+        );
     }
 
     /// Every version refused leaves an index with no files, which pip reports as no
@@ -484,14 +524,24 @@ mod tests {
         assert_eq!(document["versions"], serde_json::json!([]));
     }
 
-    /// A body that is not the JSON the project was parsed from is forwarded as it came,
-    /// with the refusal left to the artifact request.
+    /// A body that is not the JSON the project was parsed from cannot be filtered, or have
+    /// its files pointed at the proxy.
     #[test]
-    fn a_body_that_is_not_json_is_forwarded_untouched() {
+    fn a_body_that_is_not_json_is_not_rewritten() {
         let project = super::super::parse("", TWO_VERSIONS).expect("parses");
-        assert_eq!(
-            rewrite_parsed(b"not json", &project, Some("http://p"), &["2.0"]),
-            None
+        let filtering = rewrite_parsed(b"not json", &project, Some("http://p"), &["2.0"]);
+        assert!(
+            filtering
+                .as_ref()
+                .is_err_and(|why| why.contains("could not be filtered")),
+            "{filtering:?}"
+        );
+        let repointing = rewrite_parsed(b"not json", &project, Some("http://p"), &[]);
+        assert!(
+            repointing
+                .as_ref()
+                .is_err_and(|why| why.contains("could not be rewritten")),
+            "{repointing:?}"
         );
     }
 

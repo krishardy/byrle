@@ -57,11 +57,11 @@ Implemented means it is in the code, and the file names where.
 | 0043 | [Every advisory stream is declared in one table](0043-stream-descriptor-table.md) | Implemented |  |
 | 0044 | [What CI gates, and what it does not](0044-ci-gates.md) | Implemented |  |
 | 0045 | [GitHub Advisory is a signal stream beside OSV, not a replacement for it](0045-github-advisory-signal-stream.md) | Decided 2026-09-16 |  |
-| 0046 | [PyPI's simple index is file-keyed, and a packument is not](0046-pypi-simple-index.md) | Implemented and served |  |
+| 0046 | [PyPI's simple index is file-keyed, and a packument is not](0046-pypi-simple-index.md) | Implemented and served | a version's publish time, by [0124](0124-pypi-file-publish-times.md) |
 | 0047 | [The adapter interface is a descriptor table and four shared modules](0047-adapter-interface.md) | Implemented |  |
 | 0048 | [An ecosystem no stream covers fails closed](0048-uncovered-ecosystem-fails-closed.md) | Implemented |  |
 | 0049 | [`main.rs` holds `main` and the runners, and nothing else](0049-main-is-a-thin-wrapper.md) | Implemented 2026-09-18 |  |
-| 0050 | [A PyPI index is filtered by policy, with or without intel](0050-pypi-index-filtering.md) | Implemented 2026-09-18 |  |
+| 0050 | [A PyPI index is filtered by policy, with or without intel](0050-pypi-index-filtering.md) | Implemented 2026-09-18 | removing only whole versions, by [0124](0124-pypi-file-publish-times.md) |
 | 0051 | [Each ecosystem's versions order by its own rules; PEP 440 is hand-written](0051-pep440-version-order.md) | Implemented 2026-09-18 |  |
 | 0052 | [Policy version ranges are VERS strings, in every ecosystem](0052-policy-version-ranges.md) | Implemented 2026-09-19 |  |
 | 0053 | [`doctor` checks pip and uv, and reads uv's TOML configuration](0053-doctor-python-clients.md) | Implemented 2026-09-19 |  |
@@ -133,3 +133,20 @@ Implemented means it is in the code, and the file names where.
 | 0119 | [A request path the proxy does not recognise is refused](0119-unrecognised-paths-refused.md) | Implemented 2026-10-19 |  |
 | 0120 | [The allocator returns freed memory at once](0120-allocator-purge-delay.md) | Implemented 2026-10-19 |  |
 | 0121 | [Advisory rows are named by their unique index, and a refresh writes only what changed](0121-advisory-rows-unkeyed.md) | Implemented 2026-10-19 |  |
+| 0122 | [A tarball is read as the extractor that reads the most would read it, and its odd shapes are a signal](0122-tarballs-read-as-the-widest-extractor.md) | Implemented 2026-10-29 |  |
+| 0123 | [An npm tarball with a `binding.gyp` runs `node-gyp rebuild` on install, as npm runs it](0123-node-gyp-install-from-binding-gyp.md) | Implemented 2026-10-29 |  |
+| 0124 | [A PyPI file is dated by its own upload, and refused alone for it](0124-pypi-file-publish-times.md) | Implemented 2026-10-29 |  |
+| 0125 | [A Go version is dated by its record in sum.golang.org, placed in time by index.golang.org](0125-go-versions-dated-by-the-checksum-database.md) | Implemented 2026-10-30 |  |
+| 0126 | [An artifact or manifest is served to GET and HEAD only](0126-files-served-to-get-and-head-only.md) | Implemented 2026-11-03 |  |
+| 0127 | [An artifact or manifest answered with any 2xx is verified as a 200 is](0127-every-2xx-verified.md) | Implemented 2026-11-03 |  |
+| 0128 | [RUSTSEC-2026-0387 accepted while `crypto-bigint` 0.5.5 is built only for `pgp`](0128-crypto-bigint-advisory.md) | Implemented 2026-11-03 |  |
+| 0129 | [An undated file is dated by its first sighting, and `cooldown_unanswered` refuses one with none](0129-undated-files-first-seen.md) | Implemented 2026-11-03 |  |
+| 0130 | [A stream that parses to under half its stored rows is not loaded, unless forced](0130-shrunk-stream-not-loaded.md) | Implemented 2026-11-04 |  |
+| 0131 | [A detector command that exits non-zero is not run, and a rule that could not run fires `error`](0131-detector-run-failures.md) | Implemented 2026-11-04 |  |
+| 0132 | [`policy diff` and `policy check` compare the top-level settings directly](0132-settings-compared-directly.md) | Implemented 2026-11-04 |  |
+| 0133 | [A client for each upstream service, sending only the headers it declares](0133-a-client-for-each-service.md) | Implemented 2026-11-05 |  |
+| 0134 | [The checksum database's tree is kept past a restart, and a tile once its proof passes](0134-checksum-tree-kept.md) | Implemented 2026-11-05 |  |
+| 0135 | [A PyPI file whose name fits several projects belongs to the index that lists it](0135-pypi-file-placed-by-listing-index.md) | Implemented 2026-11-08 |  |
+| 0136 | [A policy selector compares a crate name as crates.io does, `-` as `_`](0136-crate-names-compared-as-crates-io-does.md) | Implemented 2026-11-08 |  |
+| 0137 | [`explain` and `policy diff` date a version as the proxy does, and print each date read](0137-dates-reported.md) | Implemented 2026-11-08 |  |
+| 0138 | [Opengrep tried beside semgrep in `make sast`, and kept out of it](0138-opengrep-trial.md) | Trial ended 2026-11-13 |  |

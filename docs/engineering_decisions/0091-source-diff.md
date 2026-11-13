@@ -32,6 +32,12 @@ Both archives are read into path and SHA-256 pairs, with every `\r` removed. The
 component is dropped from each: `package/` and `{repo}-{commit}/`. A source archive whose
 headers state more than 512 MiB is not read.
 
+Amended 2026-11-05, for the security review: an archive of more than 200,000 members, files
+or not, is not read either, and a tar stops at 512 MiB plus 4 KiB of headers per member
+decompressed, about 1.3 GiB. A tar of empty files stated 0 bytes and was read up to the
+4 GiB every tarball may decompress to, each file an entry held in memory. 200,000 was not
+measured against real archives.
+
 | Finding | What it compares |
 |---|---|
 | lifecycle scripts | `preinstall`, `install` and `postinstall` in the published `package.json` that the source's lacks or has with another body |

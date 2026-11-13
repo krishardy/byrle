@@ -40,7 +40,7 @@ cargo
 golang
   upstream         https://proxy.golang.org
   documents        text/plain, application/json
-  publish times    `Time` in each version's `.info`, and in `@latest`
+  publish times    each version's record in sum.golang.org, placed in time by index.golang.org; `Time` in its `.info` below the cooldown's start
   versions         SemVer 2.0 after a `v`
   checks           no meaning here: install_scripts, yanked, deprecated
   clients          go

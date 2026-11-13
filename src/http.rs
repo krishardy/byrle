@@ -64,36 +64,20 @@ fn redacted(url: &str) -> String {
     parsed.to_string()
 }
 
-/// Every client this build fetches with: the proxy's upstream client and the intel
-/// refresh's. `read_timeout` is [`READ_TIMEOUT`] in the binary; a test passes a short one.
-/// There is no total timeout: see [`READ_TIMEOUT`]. HTTP/2's window grows with the link:
-/// at hyper's default, scipy's 35 MB wheel came through a forward proxy at half curl's rate.
-pub fn client_builder(read_timeout: Duration) -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
-        .user_agent(concat!("byrle/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(read_timeout)
-        .http2_adaptive_window(true)
-}
-
-/// A client sending `token` on every request, as [`crate::account::gate::TOKEN_HEADER`].
+/// A connection sending `token` on every request, as [`crate::account::gate::TOKEN_HEADER`].
 /// Errors when the token is no value a header can carry.
-pub fn token_client(token: Option<String>) -> Result<reqwest::Client, String> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(token) = token {
-        let mut value = reqwest::header::HeaderValue::from_str(&token).map_err(|_| {
-            format!(
-                "{} is not a value an HTTP header can carry",
-                crate::env::TOKEN
-            )
-        })?;
-        value.set_sensitive(true);
-        headers.insert(crate::account::gate::TOKEN_HEADER, value);
-    }
-    Ok(client_builder(READ_TIMEOUT)
-        .default_headers(headers)
-        .build()
-        .expect("a client with no TLS settings of its own builds"))
+pub fn token_connection(token: Option<String>) -> Result<crate::service::Connection, String> {
+    let connection = crate::service::Connection::default();
+    let Some(token) = token else {
+        return Ok(connection);
+    };
+    let value = reqwest::header::HeaderValue::from_str(&token).map_err(|_| {
+        format!(
+            "{} is not a value an HTTP header can carry",
+            crate::env::TOKEN
+        )
+    })?;
+    Ok(connection.carrying(crate::account::gate::TOKEN_HEADER, value))
 }
 
 /// Whether `url` is `https`, or `http` to loopback, where nothing between can read it.
@@ -230,7 +214,7 @@ pub enum DecodeError {
     UnsupportedEncoding(String),
     /// The compressed stream was invalid.
     Corrupt(String),
-    /// Decompressed output passed the limit, which it carries.
+    /// The body, or its decompressed output, passed the limit, which it carries.
     TooLarge(usize),
 }
 
@@ -239,12 +223,62 @@ impl std::fmt::Display for DecodeError {
         match self {
             Self::UnsupportedEncoding(e) => write!(f, "cannot decode `Content-Encoding: {e}`"),
             Self::Corrupt(e) => write!(f, "compressed body is corrupt: {e}"),
-            Self::TooLarge(limit) => write!(f, "decompressed body exceeds {limit} bytes"),
+            Self::TooLarge(limit) => write!(f, "the body is over {limit} bytes"),
         }
     }
 }
 
 impl std::error::Error for DecodeError {}
+
+/// The most read of a checksum, an `.asc`, a go `.info` or a sumdb answer; a full tile is 8 KiB.
+pub const MAX_SIDECAR_BYTES: usize = 64 * 1024;
+
+/// A body could not be read under its limit.
+#[derive(Debug)]
+pub enum BodyError {
+    /// The body did not arrive whole.
+    Transport(reqwest::Error),
+    /// The body passed the limit, which it carries.
+    TooLarge(usize),
+}
+
+impl std::fmt::Display for BodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(e) => write!(f, "{e}"),
+            Self::TooLarge(limit) => write!(f, "{}", DecodeError::TooLarge(*limit)),
+        }
+    }
+}
+
+impl std::error::Error for BodyError {}
+
+/// `response`'s body, read no further than one byte past `limit`: longer means it passed.
+pub async fn body_to_limit(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, reqwest::Error> {
+    let mut read = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        read.extend_from_slice(&chunk);
+        if read.len() > limit {
+            read.truncate(limit + 1);
+            break;
+        }
+    }
+    Ok(read)
+}
+
+/// `response`'s body, as sent. Errors when it is over `limit` bytes or does not arrive.
+pub async fn capped_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, BodyError> {
+    let read = body_to_limit(response, limit)
+        .await
+        .map_err(BodyError::Transport)?;
+    if read.len() > limit {
+        return Err(BodyError::TooLarge(limit));
+    }
+    Ok(read)
+}
 
 /// Decode a response body for inspection, refusing to produce more than `limit` bytes.
 /// The client is sent the original encoded body.
@@ -292,8 +326,9 @@ const ETAG_PREFIX: &str = "byrle.";
 
 /// Label an upstream `ETag` as describing this proxy's version of the body.
 /// See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
-/// `etag` keeps a `W/` outside its quotes. `base` is the proxy's address, mixed in.
-pub fn mark_etag(etag: &str, base: &str) -> String {
+/// `etag` keeps a `W/` outside its quotes. `view` is what the body was made for, mixed in:
+/// the proxy's address, and the policy and intel snapshot it was filtered with.
+pub fn mark_etag(etag: &str, view: &str) -> String {
     let etag = etag.trim();
     let (weak, tag) = match etag.strip_prefix("W/") {
         Some(rest) => ("W/", rest),
@@ -302,15 +337,15 @@ pub fn mark_etag(etag: &str, base: &str) -> String {
     let Some(inner) = tag.strip_prefix('"').and_then(|t| t.strip_suffix('"')) else {
         return etag.to_owned();
     };
-    format!("{weak}\"{ETAG_PREFIX}{}.{inner}\"", base_tag(base))
+    format!("{weak}\"{ETAG_PREFIX}{}.{inner}\"", view_tag(view))
 }
 
 /// Turn an `If-None-Match` the client got from us back into what upstream issued, keeping
-/// only the tags this proxy issued at `base`, and never `*`.
+/// only the tags this proxy issued for `view`, and never `*`.
 /// See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
 /// Returns `None` when nothing is left to send.
-pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
-    let ours = format!("{ETAG_PREFIX}{}.", base_tag(base));
+pub fn unmark_if_none_match(header: &str, view: &str) -> Option<String> {
+    let ours = format!("{ETAG_PREFIX}{}.", view_tag(view));
     let mut out = Vec::new();
     for entry in header.split(',') {
         let entry = entry.trim();
@@ -331,10 +366,20 @@ pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
     Some(out.join(", "))
 }
 
-/// A short, stable tag for the address the proxy answers on.
-fn base_tag(base: &str) -> String {
+/// Whether an `If-None-Match` holds a tag this proxy issued, for any view.
+pub fn carries_mark(header: &str) -> bool {
+    header.split(',').any(|entry| {
+        let entry = entry.trim();
+        let tag = entry.strip_prefix("W/").unwrap_or(entry);
+        tag.strip_prefix('"')
+            .is_some_and(|inner| inner.starts_with(ETAG_PREFIX))
+    })
+}
+
+/// A short, stable tag for a view: what a rewritten body was made for.
+fn view_tag(view: &str) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(base.trim_end_matches('/').as_bytes());
+    let digest = Sha256::digest(view.trim_end_matches('/').as_bytes());
     digest[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -459,6 +504,18 @@ mod tests {
             unmark_if_none_match(&header, base).as_deref(),
             Some("\"ours\"")
         );
+    }
+
+    /// A header carries our mark when any tag in it, weak or strong, was issued here.
+    #[test]
+    fn a_header_carries_a_mark_when_one_tag_was_issued_here() {
+        let marked = mark_etag("W/\"ours\"", "view");
+        assert!(carries_mark(&marked));
+        assert!(carries_mark(&format!("\"theirs\", {marked}")));
+        assert!(carries_mark(&mark_etag("\"ours\"", "view")));
+        for header in ["\"theirs\"", "W/\"theirs\"", "*", "byrle.x"] {
+            assert!(!carries_mark(header), "{header}");
+        }
     }
 
     /// Anything that is not a quoted tag is left exactly as it came.
@@ -604,6 +661,51 @@ mod tests {
         );
     }
 
+    /// A body sent in chunks with no `Content-Length` is read to its limit and no further.
+    #[tokio::test]
+    async fn a_body_is_read_no_further_than_its_limit() {
+        use futures_util::stream;
+        let chunks = |n: usize| {
+            let chunk = |_| Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b'a'; 100]));
+            axum::body::Body::from_stream(stream::iter((0..n).map(chunk)))
+        };
+        let cut = || {
+            use futures_util::StreamExt;
+            let first = stream::iter([Ok(bytes::Bytes::from_static(b"a"))]);
+            let failed = stream::once(async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Err(std::io::Error::other("cut"))
+            });
+            axum::body::Body::from_stream(first.chain(failed))
+        };
+        let router = axum::Router::new()
+            .route(
+                "/{n}",
+                axum::routing::get(move |axum::extract::Path(n): axum::extract::Path<usize>| {
+                    std::future::ready(chunks(n))
+                }),
+            )
+            .route(
+                "/cut/x",
+                axum::routing::get(move || std::future::ready(cut())),
+            );
+        let base = crate::proxy::testing::serve(router).await;
+        let get = |path: &str| reqwest::get(format!("{base}/{path}"));
+
+        let whole = capped_body(get("3").await.unwrap(), 300).await.unwrap();
+        assert_eq!(whole.len(), 300, "a body at its limit is read whole");
+        let over = capped_body(get("3").await.unwrap(), 299).await.unwrap_err();
+        assert_eq!(over.to_string(), "the body is over 299 bytes");
+        let endless = body_to_limit(get("100000").await.unwrap(), 150)
+            .await
+            .unwrap();
+        assert_eq!(endless.len(), 151, "one byte past the limit says it passed");
+        let cut = capped_body(get("cut/x").await.unwrap(), 300)
+            .await
+            .unwrap_err();
+        assert!(matches!(cut, BodyError::Transport(_)), "{cut}");
+    }
+
     #[test]
     fn unsupported_and_corrupt_bodies_are_distinguishable() {
         assert_eq!(
@@ -626,7 +728,7 @@ mod tests {
         assert!(
             DecodeError::TooLarge(99)
                 .to_string()
-                .contains("exceeds 99 bytes")
+                .contains("over 99 bytes")
         );
         assert!(
             DecodeError::Corrupt("bad header".into())

@@ -58,9 +58,9 @@ impl Document for VersionList {
 
     /// Zips are fetched at the proxy, which the go command asks for every file, so only
     /// refused versions' lines are removed. `None` when none is.
-    fn rewrite(&self, r: &Rewriting<'_>) -> Option<Vec<u8>> {
+    fn rewrite(&self, r: &Rewriting<'_>) -> Result<Option<Vec<u8>>, String> {
         if r.refused_by_policy.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut kept = Vec::with_capacity(r.decoded.len());
         for line in r.decoded.split_inclusive(|b| *b == b'\n') {
@@ -74,7 +74,7 @@ impl Document for VersionList {
             byrle.package.removed_by_policy = r.refused_by_policy.len(),
             "REFUSED versions removed from the document so the resolver picks another"
         );
-        Some(kept)
+        Ok(Some(kept))
     }
 }
 
@@ -83,8 +83,8 @@ impl Document for Latest {
         Some(&self.0)
     }
 
-    fn rewrite(&self, _: &Rewriting<'_>) -> Option<Vec<u8>> {
-        None
+    fn rewrite(&self, _: &Rewriting<'_>) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
     }
 
     fn names_none(&self, refused: &HashSet<String>) -> bool {
@@ -148,6 +148,7 @@ mod tests {
             base: Some("http://h/go"),
             origins,
             refused_by_policy: refused,
+            refused_files: &[],
             refuse_unservable: true,
             path: "/go/golang.org/x/text/@v/list",
         }
@@ -177,11 +178,12 @@ mod tests {
             Lookup::Found(_)
         ));
         let none = HashSet::new();
-        assert_eq!(read.rewrite(&rewriting(&body, &none, &origins)), None);
+        assert_eq!(read.rewrite(&rewriting(&body, &none, &origins)), Ok(None));
         assert!(!read.names_none(&none));
         let refused: HashSet<String> = ["v0.43.0".to_owned()].into();
         let kept = read
             .rewrite(&rewriting(b"v0.42.0\nv0.43.0\nv0.41.0", &refused, &origins))
+            .unwrap()
             .expect("rewritten");
         assert_eq!(kept, b"v0.42.0\nv0.41.0");
     }
@@ -202,7 +204,10 @@ mod tests {
         .expect("read");
         assert_eq!(store.lock().unwrap().len(), 0);
         let refused: HashSet<String> = ["v0.43.0".to_owned()].into();
-        assert_eq!(read.rewrite(&rewriting(&body, &refused, &origins)), None);
+        assert_eq!(
+            read.rewrite(&rewriting(&body, &refused, &origins)),
+            Ok(None)
+        );
         assert!(read.names_none(&refused));
         assert!(!read.names_none(&HashSet::new()));
     }

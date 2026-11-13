@@ -55,6 +55,17 @@ impl fmt::Display for FetchError {
     }
 }
 
+impl From<crate::http::BodyError> for FetchError {
+    fn from(e: crate::http::BodyError) -> Self {
+        match e {
+            crate::http::BodyError::Transport(e) => Self::Transport(e),
+            crate::http::BodyError::TooLarge(limit) => {
+                Self::Undecodable(crate::http::DecodeError::TooLarge(limit))
+            }
+        }
+    }
+}
+
 impl std::error::Error for FetchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

@@ -264,10 +264,16 @@ pub enum Failed {
     Refused(String),
 }
 
+/// The headers the provider is sent: the client's credentials, and the token request's type.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the OIDC provider",
+    headers: &["authorization", "content-type"],
+};
+
 /// The OIDC provider as the console uses it.
 pub struct Provider {
     pub settings: Settings,
-    client: reqwest::Client,
+    client: crate::service::Service,
     found: tokio::sync::Mutex<Option<Found>>,
     /// [`REFETCH_AFTER`], unless a test shortens it.
     refetch_after: std::time::Duration,
@@ -286,25 +292,17 @@ async fn body(response: reqwest::Response) -> Result<Vec<u8>, String> {
     if !status.is_success() {
         return Err(format!("{} answered {status}", response.url()));
     }
-    let mut response = response;
-    let mut read = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-        read.extend_from_slice(&chunk);
-        if read.len() > MAX_ANSWER {
-            return Err(format!(
-                "{} answered more than {MAX_ANSWER} bytes",
-                response.url()
-            ));
-        }
-    }
-    Ok(read)
+    let url = response.url().to_string();
+    crate::http::capped_body(response, MAX_ANSWER)
+        .await
+        .map_err(|e| format!("{url}: {e}"))
 }
 
 impl Provider {
-    pub fn new(settings: Settings, client: reqwest::Client) -> Self {
+    pub fn new(settings: Settings, connection: &crate::service::Connection) -> Self {
         Self {
             settings,
-            client,
+            client: crate::service::Service::new(SERVICE, connection),
             found: tokio::sync::Mutex::new(None),
             refetch_after: REFETCH_AFTER,
         }
@@ -792,7 +790,7 @@ pub(crate) mod tests {
         let (issuer, held) = provider().await;
         let (signing, jwk) = key("k1");
         held.lock().unwrap().keys = vec![jwk];
-        let provider = Provider::new(at(&issuer), reqwest::Client::new());
+        let provider = Provider::new(at(&issuer), &crate::service::Connection::default());
         let (pending, url) = provider
             .begin("https://h/admin/oidc/callback")
             .await
@@ -855,7 +853,7 @@ pub(crate) mod tests {
                 }),
             )
         };
-        let soon = Provider::new(at(&issuer), reqwest::Client::new());
+        let soon = Provider::new(at(&issuer), &crate::service::Connection::default());
         let (pending, _) = soon.begin("x").await.unwrap();
         let (new, new_jwk) = key("k2");
         held.lock().unwrap().keys = vec![old_jwk, new_jwk];
@@ -867,7 +865,7 @@ pub(crate) mod tests {
             Failed::Refused("the token names key k2, not held".into())
         );
 
-        let late = Provider::new(at(&issuer), reqwest::Client::new())
+        let late = Provider::new(at(&issuer), &crate::service::Connection::default())
             .with_refetch_after(std::time::Duration::ZERO);
         let (pending, _) = late.begin("x").await.unwrap();
         held.lock().unwrap().challenge = pending.challenge();
@@ -895,7 +893,10 @@ pub(crate) mod tests {
     /// A provider that does not answer, answers too much, or answers what does not read.
     #[tokio::test]
     async fn a_provider_that_answers_badly_is_an_error() {
-        let gone = Provider::new(at("http://127.0.0.1:9"), reqwest::Client::new());
+        let gone = Provider::new(
+            at("http://127.0.0.1:9"),
+            &crate::service::Connection::default(),
+        );
         assert!(gone.begin("x").await.is_err());
         let pending = Pending::begin();
         assert!(matches!(
@@ -905,7 +906,7 @@ pub(crate) mod tests {
 
         let (issuer, held) = provider().await;
         held.lock().unwrap().issuer = "https://elsewhere.example".into();
-        let other = Provider::new(at(&issuer), reqwest::Client::new());
+        let other = Provider::new(at(&issuer), &crate::service::Connection::default());
         assert!(other.begin("x").await.unwrap_err().contains("names issuer"));
 
         use axum::routing::{get, post};
@@ -921,13 +922,13 @@ pub(crate) mod tests {
             .route("/garbled", get(|| async { "not json" }))
             .route("/token", post(|| async { "not json" }));
         let base = crate::proxy::testing::serve(odd).await;
-        let client = Provider::new(at(&base), reqwest::Client::new());
+        let client = Provider::new(at(&base), &crate::service::Connection::default());
         assert!(
             client
                 .fetched(&format!("{base}/big"))
                 .await
                 .unwrap_err()
-                .contains("more than")
+                .contains("is over")
         );
         let read = client.fetched(&format!("{base}/most")).await.unwrap();
         assert_eq!(
@@ -979,11 +980,11 @@ pub(crate) mod tests {
     async fn the_keys_endpoint_failing_or_a_fresh_key_on_a_bad_token() {
         let (issuer, held) = provider().await;
         held.lock().unwrap().keys_down = true;
-        let early = Provider::new(at(&issuer), reqwest::Client::new());
+        let early = Provider::new(at(&issuer), &crate::service::Connection::default());
         assert!(early.begin("x").await.unwrap_err().contains("answered 500"));
 
         held.lock().unwrap().keys_down = false;
-        let late = Provider::new(at(&issuer), reqwest::Client::new())
+        let late = Provider::new(at(&issuer), &crate::service::Connection::default())
             .with_refetch_after(std::time::Duration::ZERO);
         let (pending, _) = late.begin("x").await.unwrap();
         let (fresh, fresh_jwk) = key("k3");
@@ -1016,7 +1017,10 @@ pub(crate) mod tests {
     async fn an_answer_cut_off_is_an_error() {
         use crate::util::test_support::{Answer, scripted};
         let server = scripted(vec![Answer::cut_short()]).await;
-        let client = Provider::new(at(&format!("http://{server}")), reqwest::Client::new());
+        let client = Provider::new(
+            at(&format!("http://{server}")),
+            &crate::service::Connection::default(),
+        );
         let cut = client
             .fetched(&format!("http://{server}/keys"))
             .await

@@ -20,8 +20,8 @@ forwarded, logged at WARN. Every other answer is the same in both modes
 The policy's checks, the detectors' and advisories' signals, and the proxy's own refusals
 are each a signal with a weight, and a version is refused when the weights present sum to
 `risk_threshold` ([every-refusal-a-signal](engineering_decisions/0116-every-refusal-a-signal.md)).
-The proxy's own, `unservable`, `no_strong_digest`, `digest_mismatch` and
-`signature_failed`, answer as drawn below when one weighs the threshold alone, which each
+The proxy's own, `unservable`, `no_strong_digest`, `digest_mismatch`, `signature_failed`
+and `cooldown_unanswered`, answer as drawn below when one weighs the threshold alone, which each
 does by default but `no_strong_digest`, 0; reached only by a sum, the refusal is the
 policy's; under it, each serves what it can, as
 [policy-reference](policy-reference.md#signal_weights) says.
@@ -36,7 +36,9 @@ detector's runs in flight times one run's time. An `artifact-analysis` 503 also 
 
 ```mermaid
 flowchart TD
-    REQ([request]) --> MOUNT{under BYRLE_PROXY_URL's path?}
+    REQ([request]) --> DOTS{a . or .. segment,<br/>%2e in any case,<br/>split on / or \?}
+    DOTS -->|yes| D400[400]
+    DOTS -->|no| MOUNT{under BYRLE_PROXY_URL's path?}
     MOUNT -->|no| M404[404: outside the proxy's path]
     MOUNT -->|yes, read below it| OWN{path}
     OWN -->|/-/byrle/health| H200[200: counters]
@@ -62,7 +64,10 @@ flowchart TD
     MOD -->|no proved answer| M503[503 checksum-database]
     MOD -->|no record| MREF[forwarded unverified;<br/>refusal status while<br/>no_strong_digest weighs<br/>the threshold]
     MOD -->|a record| MFWD[fetched; 502 when its h1:<br/>is not the one claimed]
-    KIND -->|any other method, a HEAD<br/>but a Maven artifact's, or a path<br/>of a shape the adapter lists| FWD
+    KIND -->|an artifact or manifest asked<br/>with a method but GET or HEAD| METH{BYRLE_MODE}
+    METH -->|enforce| M405[405, Allow: GET, HEAD]
+    METH -->|observe, logged at WARN| FWD
+    KIND -->|any method to a metadata<br/>or listed path, a HEAD but a<br/>Maven artifact's| FWD
     KIND -->|a path of no shape<br/>the adapter lists| UNREC{BYRLE_MODE}
     UNREC -->|enforce| UREF[refusal status:<br/>unrecognised path]
     UNREC -->|observe, logged at WARN| FWD
@@ -104,7 +109,8 @@ flowchart TD
 
     BODY -->|other, or not readable| PASS
     BODY -->|document| BUF{buffered under<br/>BYRLE_MAX_METADATA_BYTES?}
-    BUF -->|over it| PASS
+    BUF -->|over it, or undecodable,<br/>in observe mode| PASS
+    BUF -->|over it, or undecodable;<br/>npm or PyPI not read,<br/>filtered or repointed| D502
     BUF -->|body failed, or 30 s<br/>without a byte| D502[502]
     BUF -->|yes| DINTEL{intel store}
     DINTEL -->|cannot answer, or no stream<br/>covers npm| D503[503]
@@ -116,12 +122,13 @@ flowchart TD
 | Code | Produced by | When |
 |---|---|---|
 | 200 | proxy | health; ready; a verified artifact; a filtered and rewritten metadata document; Go's `sumdb/sum.golang.org/supported`, empty; cargo's `index/config.json`; a `maven-metadata.xml`'s `.sha1` or `.md5`, computed |
-| 400 | proxy | cargo's `index/config.json` asked with no `Host` |
+| 400 | proxy | the path has a `.` or `..` segment, which the upstream URL would remove; cargo's `index/config.json` asked with no `Host` |
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
-| 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
-| refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; the metadata does not list the version; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
-| 502 | proxy | the upstream could not be reached, or stalled before answering; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
+| 405 | proxy | an artifact or manifest asked with a method but GET or HEAD, in enforce mode; `Allow: GET, HEAD` |
+| 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact. A rewritten document's `If-None-Match` reaches the upstream only for a tag the proxy issued at this address under this policy and intel snapshot ([0018](engineering_decisions/0018-packument-tarball-url-rewriting.md)); a 304 is sent with that tag |
+| refusal status, 403 by default | proxy | the path is of no shape its adapter lists, such as a PyPI `.tgz` ([unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md)); the version's risk score reaches `risk_threshold`; its artifact is on an origin the proxy does not serve; no strong digest, while `no_strong_digest` weighs the threshold; under a cooldown, nothing dates the file, while `cooldown_unanswered` weighs the threshold; the metadata does not list the version; Go's checksum database holds no record of a `go.mod`'s version, while `no_strong_digest` weighs the threshold |
+| 502 | proxy | the upstream could not be reached, or stalled before answering; a metadata body failed; in enforce mode, a metadata body over `BYRLE_MAX_METADATA_BYTES` or undecodable, or in a media type its adapter does not read, or an npm packument or PyPI index that does not normalize or parse, or cannot be filtered or have its artifact URLs pointed at the proxy; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read; a Maven `.pom` or `.module` that is not the one its sidecar claims, or whose `.asc` does not verify |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` while a policy is set and intel has not loaded or has a gap |
 
 An artifact whose bytes do not match the digest has already been sent a 200. The last

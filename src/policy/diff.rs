@@ -8,7 +8,6 @@ use super::decide::{Check, Decision, Outcome};
 use super::enforce::{Unanswered, Unenforceable};
 use super::strictness::Strictness;
 use super::{Action, Policy, today};
-use crate::ecosystem::Clients;
 use crate::env::Env;
 use crate::intel::snapshot_intel;
 use crate::intel::store::{self, Intel};
@@ -118,6 +117,8 @@ pub struct Package {
     pub to_score: (u32, u32),
     /// Only the checks that answered differently.
     pub moved: Vec<Moved>,
+    /// Where its date was read from, and the one used.
+    pub dating: crate::dating::Dating,
 }
 
 impl Package {
@@ -191,6 +192,7 @@ pub fn package(
         from_score: (from_kept.score(), from_kept.threshold),
         to_score: (to_kept.score(), to_kept.threshold),
         moved,
+        dating: crate::dating::Dating::default(),
     }
 }
 
@@ -205,6 +207,8 @@ pub struct Report {
     pub evaluated: usize,
     /// Only the packages that moved.
     pub changed: Vec<Package>,
+    /// Each top-level setting and `signal_weights` key the two policies give otherwise.
+    pub settings: Vec<super::settings::Setting>,
 }
 
 impl Report {
@@ -236,17 +240,35 @@ impl Report {
     /// [`TIGHTENED`] if one got stricter, and [`ERROR`] if a listed version could not be
     /// read or none was judged, OR-ed.
     pub fn exit_bits(&self) -> u8 {
-        let loosened = !self.loosened().is_empty() || !self.incomparable().is_empty();
-        let tightened = !self.tightened().is_empty();
+        let setting = |s: Strictness| self.settings.iter().any(|m| m.strictness == s);
+        let loosened = !self.loosened().is_empty()
+            || !self.incomparable().is_empty()
+            || setting(Strictness::Looser);
+        let tightened = !self.tightened().is_empty() || setting(Strictness::Stricter);
         let failed = self.unread > 0 || self.judged_none();
         (if loosened { LOOSENED } else { 0 })
             | (if tightened { TIGHTENED } else { 0 })
             | (if failed { ERROR } else { 0 })
     }
 
-    /// Grouped by check and direction, which is what a person reads first.
+    /// The settings that moved, then the packages grouped by check and direction, which is
+    /// what a person reads first.
     pub fn render(&self) -> String {
-        let mut out = format!("{} packages evaluated\n", self.evaluated);
+        let mut out = String::new();
+        if !self.settings.is_empty() {
+            out.push_str(&format!("{} settings moved\n", self.settings.len()));
+            for s in &self.settings {
+                out.push_str(&format!(
+                    "    {}  {} -> {}  ({})\n",
+                    s.key,
+                    s.from,
+                    s.to,
+                    strictness(s.strictness)
+                ));
+            }
+            out.push('\n');
+        }
+        out.push_str(&format!("{} packages evaluated\n", self.evaluated));
         if self.unread > 0 {
             out.push_str(&format!("{} could not be read\n", self.unread));
         }
@@ -298,6 +320,15 @@ impl Report {
                     moved.to.as_str(),
                     strictness(moved.strictness)
                 ));
+            }
+            if !package.dating.reads.is_empty() {
+                let file = package
+                    .dating
+                    .file
+                    .as_deref()
+                    .map_or(String::new(), |file| format!(" for {file}"));
+                out.push_str(&format!("    dates{file}, * the one used:\n"));
+                out.push_str(&package.dating.lines("      "));
             }
         }
         out
@@ -364,13 +395,13 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
 
 /// [`run`] on what a running proxy holds: `policies`, the one in force then the candidate,
 /// each as of its `when`; the versions its audit log at `log` names and `sent` beside them;
-/// its intel store; and its clients.
+/// its intel store; and what it reads dates with.
 pub async fn run_on(
     policies: [Policy; 2],
     when: [Option<crate::cli::When>; 2],
     (log, sent): (Option<&std::path::Path>, Vec<crate::lockfile::Listed>),
     store: Option<std::sync::Arc<dyn Intel>>,
-    clients: Clients,
+    reader: crate::dating::Reader,
 ) -> Run {
     let mut out = Run::default();
     let dates = out.dates(when);
@@ -385,7 +416,7 @@ pub async fn run_on(
         Vec::from(policies),
         dates,
         listed,
-        (store, clients, true),
+        (store, reader, true),
         &mut out.notes,
     )
     .await;
@@ -400,7 +431,7 @@ struct Comparison {
     dates: [jiff::civil::Date; 2],
     versions: Vec<crate::lockfile::Reference>,
     store: Option<std::sync::Arc<dyn Intel>>,
-    clients: Clients,
+    reader: crate::dating::Reader,
     needs_times: bool,
     /// False with `--snapshot`, whose kept snapshot records no streams.
     streams_recorded: bool,
@@ -408,8 +439,8 @@ struct Comparison {
 
 /// What reading one listed version came to.
 enum Compared {
-    /// Each policy's decision and what it could not enforce, in [`Comparison::policies`] order.
-    Decided(Vec<(Decision, Vec<Unenforceable>)>),
+    /// Each policy's decision and unenforced checks, by [`Comparison::policies`]; its dates.
+    Decided(Vec<(Decision, Vec<Unenforceable>)>, crate::dating::Dating),
     /// The registry no longer publishes the version.
     Unpublished,
     /// Its metadata, publish times or intel could not be read.
@@ -440,18 +471,22 @@ impl Comparison {
         let store = open_store(args, environment, &versions)
             .await?
             .map(std::sync::Arc::from);
-        let clients = Clients::from_env(environment).map_err(|e| e.to_string())?;
+        let reader = crate::dating::Reader::from_env(environment).await?;
         let recorded = args.snapshot.is_none();
-        Ok(Self::new(policies, dates, listed, (store, clients, recorded), notes).await)
+        Ok(Self::new(policies, dates, listed, (store, reader, recorded), notes).await)
     }
 
-    /// `policies` as of `dates` over `listed`, with `store`, `clients`, and whether the
-    /// store records its streams. The intel snapshot is noted in `notes`.
+    /// `policies` as of `dates` over `listed`, with `store`, what `reader` reads, and
+    /// whether the store records its streams. The intel snapshot is noted in `notes`.
     async fn new(
         policies: Vec<Policy>,
         dates: [jiff::civil::Date; 2],
         listed: Vec<crate::lockfile::Listed>,
-        (store, clients, streams_recorded): (Option<std::sync::Arc<dyn Intel>>, Clients, bool),
+        (store, reader, streams_recorded): (
+            Option<std::sync::Arc<dyn Intel>>,
+            crate::dating::Reader,
+            bool,
+        ),
         notes: &mut Vec<String>,
     ) -> Self {
         if let Some(store) = &store
@@ -465,7 +500,7 @@ impl Comparison {
             dates,
             versions: crate::lockfile::references(listed),
             store,
-            clients,
+            reader,
             needs_times,
             streams_recorded,
         }
@@ -476,15 +511,19 @@ impl Comparison {
     async fn report(&self, mut out: Run) -> Run {
         let mut report = Report {
             listed: self.versions.len(),
+            settings: super::settings::compared(&self.policies[0], &self.policies[1]),
             ..Report::default()
         };
         for (purl, reference, version, at) in &self.versions {
             match self.compare(*at, reference, version).await {
-                Ok(Compared::Decided(decided)) => report.push(package(
-                    purl,
-                    (&decided[0].0, &decided[0].1),
-                    (&decided[1].0, &decided[1].1),
-                )),
+                Ok(Compared::Decided(decided, dating)) => report.push(Package {
+                    dating,
+                    ..package(
+                        purl,
+                        (&decided[0].0, &decided[0].1),
+                        (&decided[1].0, &decided[1].1),
+                    )
+                }),
                 Ok(Compared::Unpublished) => {
                     out.notes.push(format!("{purl}: no longer published"));
                 }
@@ -501,6 +540,15 @@ impl Comparison {
 
         out.report = report.render();
         let bits = report.exit_bits();
+        if !report.settings.is_empty() {
+            let count =
+                |s: Strictness| report.settings.iter().filter(|m| m.strictness == s).count();
+            out.summary.push(format!(
+                "settings: {} loosened, {} tightened",
+                count(Strictness::Looser),
+                count(Strictness::Stricter)
+            ));
+        }
         if bits != 0 {
             out.summary.push(format!(
                 "{} loosened, {} incomparable, {} tightened, {} could not be read",
@@ -531,24 +579,32 @@ impl Comparison {
         if let Err(e) = crate::ecosystem::askable(reference.key()) {
             return Ok(Compared::Unread(e));
         }
-        let metadata =
-            match crate::ecosystem::fetched(self.clients.metadata(at, reference.key()).await) {
-                Ok(metadata) => metadata,
-                Err(e) => return Ok(Compared::Unread(e)),
-            };
-        let record = match self.clients.version_of(at, &metadata, version).await {
-            Ok(Some(record)) => record,
+        let clients = &self.reader.clients;
+        let metadata = match crate::ecosystem::fetched(clients.metadata(at, reference.key()).await)
+        {
+            Ok(metadata) => metadata,
+            Err(e) => return Ok(Compared::Unread(e)),
+        };
+        let versioned = match clients
+            .version_of(at, &metadata, version, self.cooldown_start())
+            .await
+        {
+            Ok(Some(versioned)) => versioned,
             Ok(None) => return Ok(Compared::Unpublished),
             Err(e) => return Ok(Compared::Unread(e)),
         };
-        let times = if self.needs_times {
-            match self.clients.publish_times(at, reference.key()).await {
-                Ok(times) => times,
-                Err(e) => return Ok(Compared::Unread(e)),
-            }
-        } else {
-            None
+        let reading = crate::dating::Reading {
+            cooldown: self.needs_times,
+            every: true,
         };
+        let dated = self
+            .reader
+            .date(at, reference.key(), &versioned, reading)
+            .await;
+        if let Some(e) = dated.unread.filter(|_| self.needs_times) {
+            return Ok(Compared::Unread(e));
+        }
+        let (record, times) = (versioned.record, dated.times);
         let (ecosystem, name) = snapshot_intel::key_of(reference.key());
         let intel = match store::for_command(
             self.store.as_deref(),
@@ -578,7 +634,24 @@ impl Comparison {
                     )
                 })
                 .collect(),
+            dated.dating,
         ))
+    }
+
+    /// The earliest moment either policy's longest cooldown starts, as of its date: a Go
+    /// version is dated for it. `None` when neither waits.
+    fn cooldown_start(&self) -> Option<jiff::Timestamp> {
+        self.policies
+            .iter()
+            .zip(self.dates)
+            .filter_map(|(policy, as_of)| {
+                let midnight = as_of
+                    .to_zoned(jiff::tz::TimeZone::UTC)
+                    .expect("a civil date is a UTC instant")
+                    .timestamp();
+                policy.cooldown_start(midnight)
+            })
+            .min()
     }
 }
 
@@ -753,10 +826,18 @@ mod run_tests {
             "{}",
             run.report
         );
-        assert!(run.report.contains("cooldown_days"), "{}", run.report);
+        assert!(
+            run.report
+                .starts_with("1 settings moved\n    cooldown_days  0 -> 36500  (stricter)\n\n"),
+            "{}",
+            run.report
+        );
         assert_eq!(
             run.summary,
-            ["0 loosened, 0 incomparable, 1 tightened, 0 could not be read"]
+            [
+                "settings: 0 loosened, 1 tightened",
+                "0 loosened, 0 incomparable, 1 tightened, 0 could not be read"
+            ]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -780,7 +861,11 @@ mod run_tests {
             &with(&[(crate::env::UPSTREAM_NPM, &format!("http://{addr}"))]),
         )
         .await;
-        assert_eq!(run.code, ERROR);
+        assert_eq!(
+            run.code,
+            ERROR | TIGHTENED,
+            "cooldown_days 1 -> 2 is stricter"
+        );
         assert!(
             run.notes
                 .iter()
@@ -791,6 +876,7 @@ mod run_tests {
         assert_eq!(
             run.summary,
             [
+                "settings: 0 loosened, 1 tightened".to_owned(),
                 "0 loosened, 0 incomparable, 0 tightened, 1 could not be read".to_owned(),
                 "none of the 1 package versions listed was judged".to_owned()
             ]
@@ -859,28 +945,71 @@ mod run_tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// A Go version is dated for the earliest cooldown either policy starts, each as of its
+    /// own date, and for none when neither waits.
+    #[tokio::test]
+    async fn the_earliest_cooldown_start_dates_a_version() {
+        let comparison = |yaml: [&'static str; 2], dates: [jiff::civil::Date; 2]| async move {
+            Comparison {
+                policies: yaml.iter().map(|y| Policy::parse(y).unwrap()).collect(),
+                dates,
+                versions: Vec::new(),
+                store: None,
+                reader: crate::dating::Reader::from_env(&crate::env::testing::empty())
+                    .await
+                    .expect("reader"),
+                needs_times: true,
+                streams_recorded: true,
+            }
+        };
+        let (from, to) = (
+            jiff::civil::date(2026, 11, 1),
+            jiff::civil::date(2026, 11, 8),
+        );
+        let short = "version: 1\ncooldown_days: 7\n";
+        let long = "version: 1\ncooldown_days: 30\n";
+        let none = "version: 1\ncooldown_days: 0\n";
+        assert_eq!(
+            comparison([short, long], [to, to]).await.cooldown_start(),
+            Some("2026-10-09T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            comparison([short, short], [from, to])
+                .await
+                .cooldown_start(),
+            Some("2026-10-25T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            comparison([none, none], [to, to]).await.cooldown_start(),
+            None
+        );
+    }
+
     /// A Go version the list leaves out is decided on its own `.info`, and one whose
     /// `.info` answers an error is counted.
     #[tokio::test]
     async fn a_go_version_is_read_from_its_own_info() {
-        let (dir, mut args) = written(
-            "diff-go",
-            "version: 1\ncooldown_days: 0\n",
-            "version: 1\ncooldown_days: 36500\n",
-        );
+        let dir = crate::util::test_support::tempdir("diff-go");
         let sum = dir.join("go.sum");
         std::fs::write(
             &sum,
             "golang.org/x/text v0.0.0-20170915032832-14c0d48ead0c h1:x=\n",
         )
         .expect("writes");
-        args.lockfile = vec![sum];
+        let sent = crate::lockfile::listed(&sum).expect("reads");
         let info = crate::ecosystem::go::fixture("text-pseudo.info");
         let decided = scripted(vec![Answer::body("v0.3.0\n"), Answer::body(info)]).await;
-        let run_with = |addr: std::net::SocketAddr| {
-            with(&[(crate::env::UPSTREAM_GO, &format!("http://{addr}"))])
-        };
-        let decided = run(&args, &run_with(decided)).await;
+        async fn run_with(addr: std::net::SocketAddr, sent: Vec<crate::lockfile::Listed>) -> Run {
+            use crate::ecosystem::go::transport::tests::{clients, sumdb_of_quote};
+            let policies = [
+                Policy::parse("version: 1\ncooldown_days: 0\n").unwrap(),
+                Policy::parse("version: 1\ncooldown_days: 36500\n").unwrap(),
+            ];
+            let clients = clients(&format!("http://{addr}"), sumdb_of_quote().await);
+            let reader = crate::dating::testing::reader(clients, &[], None);
+            run_on(policies, [None, None], (None, sent), None, reader).await
+        }
+        let decided = run_with(decided, sent.clone()).await;
         assert_eq!(decided.code, TIGHTENED, "{:?}", decided.notes);
         assert!(
             decided.report.contains(
@@ -889,10 +1018,21 @@ mod run_tests {
             "{}",
             decided.report
         );
+        assert!(
+            decided.report.contains(
+                "    dates for v0.0.0-20170915032832-14c0d48ead0c.zip, * the one used:\n\
+                 \x20     * the .info Time                 2017-09-15T03:28:32Z\n\
+                 \x20       the checksum database          no record of this version\n\
+                 \x20       the full document's time       the ecosystem has no fuller document\n\
+                 \x20       the file host's Last-Modified  not asked: an earlier source dates it\n"
+            ),
+            "{}",
+            decided.report
+        );
 
         let failed = scripted(vec![Answer::body("v0.3.0\n"), Answer::Status(500)]).await;
-        let failed = run(&args, &run_with(failed)).await;
-        assert_eq!(failed.code, ERROR, "{:?}", failed.notes);
+        let failed = run_with(failed, sent).await;
+        assert_eq!(failed.code, ERROR | TIGHTENED, "{:?}", failed.notes);
         assert!(
             failed.notes[0].ends_with(".info answered 500"),
             "{:?}",
@@ -1084,7 +1224,9 @@ mod run_tests {
                 ("npm".to_owned(), "lodash".to_owned(), "4.17.21".to_owned()),
             )]),
             store: Some(std::sync::Arc::new(FixedIntel(Err(())))),
-            clients: Clients::from_env(&registry).expect("clients"),
+            reader: crate::dating::Reader::from_env(&registry)
+                .await
+                .expect("reader"),
             needs_times: false,
             streams_recorded: true,
         };
@@ -1116,7 +1258,9 @@ mod run_tests {
             store: Some(std::sync::Arc::new(
                 crate::intel::store::testing::knowing_nothing(),
             )),
-            clients: Clients::from_env(&registry).expect("clients"),
+            reader: crate::dating::Reader::from_env(&registry)
+                .await
+                .expect("reader"),
             needs_times: false,
             streams_recorded: true,
         };
@@ -1430,6 +1574,7 @@ mod tests {
 
         let mut report = Report::default();
         report.push(Package {
+            dating: crate::dating::Dating::default(),
             purl: "pkg:npm/x@1.0.0".to_owned(),
             from_verdict: Action::Allow,
             to_verdict: Action::Allow,
@@ -1553,6 +1698,33 @@ mod tests {
         let mut unmoved = Report::default();
         unmoved.push(diff("version: 1", "version: 1", &facts));
         assert_eq!(unmoved.exit_bits(), 0);
+    }
+
+    /// The review's case: `known_malware` weighed 0 over a package with no malware moves no
+    /// package, and the setting alone is a loosening. One weighed higher is a tightening.
+    #[test]
+    fn a_setting_that_moved_sets_its_bit_whatever_the_packages_did() {
+        let policy = |yaml: &str| crate::policy::Policy::parse(yaml).expect("parses");
+        let (default, zeroed) = (
+            policy("version: 1\n"),
+            policy("version: 1\nsignal_weights: { known_malware: 0 }\n"),
+        );
+        let mut report = Report {
+            settings: crate::policy::settings::compared(&default, &zeroed),
+            ..Report::default()
+        };
+        report.push(diff("version: 1", "version: 1", &facts()));
+        assert_eq!(report.exit_bits(), LOOSENED);
+        assert!(
+            report.render().starts_with(
+                "1 settings moved\n    signal_weights.known_malware  100 of 100 -> 0 of 100  \
+                 (LOOSER)\n\n1 packages evaluated\nnothing moved\n"
+            ),
+            "{}",
+            report.render()
+        );
+        report.settings = crate::policy::settings::compared(&zeroed, &default);
+        assert_eq!(report.exit_bits(), TIGHTENED);
     }
 
     #[test]

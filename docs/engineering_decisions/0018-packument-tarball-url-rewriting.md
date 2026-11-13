@@ -122,8 +122,11 @@ which is a capability worth not having. They stay as they are, and
   `dist.integrity` is never touched.
 - The forwarded body is no longer the upstream's bytes, so `Content-Length`,
   `Content-Encoding` and `ETag` are all set to describe what the proxy sends. The `ETag`
-  is marked with a tag derived from the proxy's own address.
-- **Only a tag this proxy issued at this address may revalidate.** A 304 authorises the
+  is marked with a tag derived from the proxy's own address, the policy's digest and the
+  intel snapshot the document was filtered with (`etag_view`, since 2026-11-08, for
+  finding 36 of the security review).
+- **Only a tag this proxy issued at this address, under this policy and snapshot, may
+  revalidate.** A 304 authorises the
   client to serve what it cached, which is safe only for a body the proxy produced here.
   Two cases are dropped so upstream sends a body to rewrite afresh:
   - A tag from this proxy at another address. A 304 would leave the client serving
@@ -134,8 +137,20 @@ which is a capability worth not having. They stay as they are, and
     configured registry so it still came through the proxy, but pnpm and yarn use the URL
     as written, so for them that cached copy sends every artifact to the origin registry.
 
+  - A tag issued under another policy or intel snapshot. A 304 would keep a document
+    filtered before a version was refused. Before the upstream is asked, a request whose
+    `If-None-Match` carries a tag this proxy issued reads its package's intel snapshot
+    (`current_view`); a lookup that fails drops the tag too.
+
+  The view does not cover a refusal from analysis the watcher finishes later, or from
+  provenance: a 304 can still keep a listing filtered before those. A cooldown that
+  expires errs toward hiding a version. In each case the pinned artifact fetch is still
+  decided.
+
   This costs a packument re-fetch the first time a client with a warm cache meets a
-  rewriting proxy. Tarball requests are unaffected, since tarballs are not rewritten and a
+  rewriting proxy, and after each policy change or intel refresh that touches the
+  package. A request carrying a marked tag costs one intel lookup before the upstream is
+  asked. Tarball requests are unaffected, since tarballs are not rewritten and a
   304 on one is harmless.
 - **The 304 response carries the marked tag, not the upstream's.** A 304 relays the
   upstream's `ETag`, and a client stores whatever comes back. Left alone that replaces the
@@ -143,7 +158,8 @@ which is a capability worth not having. They stay as they are, and
   and the client gets a full body. Four requests for lodash before the tag was marked on
   the 304 path: 200 (68,970 bytes), 304, 200, 304. After: 200, then 304 every time. The
   marked tag is byte-identical on both paths, because `mark_etag` is a function of the
-  upstream tag and the base, and a 304 by definition names the same upstream tag.
+  upstream tag and the view, a 304 by definition names the same upstream tag, and the 304
+  is marked with the view its request was checked against.
 - **While rewriting, `If-None-Match` is the only conditional forwarded.** `If-Match`,
   `If-Modified-Since`, `If-Unmodified-Since` and `If-Range` are dropped whole, because a
   304 earned by a date says nothing about which proxy rewrote the body the client holds.

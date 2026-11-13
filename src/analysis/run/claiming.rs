@@ -226,13 +226,10 @@ impl Analyser {
     /// `None` when the fetch or the spool failed, which is logged.
     async fn spool_hashed(&self, job: &ClaimJob) -> Option<Result<(Spooled, Sri), String>> {
         let response = self.fetch(&job.url).await?;
-        let claimed = response.content_length();
         let mut hasher = Sha256::new();
         let written = self
             .spool
-            .write(response.bytes_stream(), claimed, |chunk| {
-                hasher.update(chunk)
-            })
+            .write(response.bytes_stream(), |chunk| hasher.update(chunk))
             .await;
         match written {
             Ok(spooled) => Some(Ok((spooled, Sri::from_sha256(&hasher.finalize())))),
@@ -282,8 +279,8 @@ async fn signed(
         };
     };
     let signer = Arc::clone(signer);
-    let checked = tokio::task::spawn_blocking(move || {
-        let mut file = file?;
+    let checked = crate::util::blocking::run(move |stop| {
+        let mut file = stop.reading(file?);
         signer.verify(&material, &mut file)
     })
     .await
@@ -412,6 +409,60 @@ mod tests {
                 .clone()
                 .ok_or_else(|| std::io::Error::other("unreadable"))
         }
+    }
+
+    /// A signer whose check reads the file without end, saying in [`SAID`] why it stopped.
+    #[derive(Debug)]
+    struct Endless;
+
+    static SAID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    impl Signer for Endless {
+        fn verifier(&self) -> &'static str {
+            "endless 1"
+        }
+        fn material(
+            &self,
+        ) -> futures_util::future::BoxFuture<'_, Result<Option<Material>, String>> {
+            Box::pin(async { Ok(Some(material())) })
+        }
+        fn signed_before(
+            &self,
+        ) -> futures_util::future::BoxFuture<'_, Result<Option<(String, History)>, String>>
+        {
+            Box::pin(async { Ok(None) })
+        }
+        fn verify(
+            &self,
+            _: &Material,
+            file: &mut dyn crate::ecosystem::Source,
+        ) -> std::io::Result<Signature> {
+            crate::util::blocking::testing::read_endlessly(file, &SAID);
+            Err(std::io::Error::other("stopped"))
+        }
+    }
+
+    /// A signature check stops reading once the claim is past its deadline.
+    #[tokio::test]
+    async fn a_signature_check_past_its_deadline_stops_reading() {
+        let analyser = analyser("claim-endless", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_deadline(std::time::Duration::from_millis(200));
+        let addr = scripted(vec![Answer::body(zip())]).await;
+        let job = ClaimJob {
+            signer: Some(Arc::new(Endless)),
+            reads: None,
+            ..job(QUOTE, format!("http://{addr}/v1.5.2.zip"))
+        };
+        analyser
+            .start_claim(job)
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(
+            crate::util::blocking::testing::stopped(&SAID).await,
+            crate::util::blocking::STOPPED
+        );
+        assert_eq!(analyser.claim_known(QUOTE).await, ClaimKnown::Unknown);
     }
 
     fn material() -> Material {
@@ -691,7 +742,6 @@ mod tests {
             .spool
             .write(
                 futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(zip()))]),
-                None,
                 |_| {},
             )
             .await

@@ -191,9 +191,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn signer(base: &str, keys: &str) -> FileSigner {
-        let client = Client::new(reqwest::Client::new(), base, 1 << 20).with_key_servers(
-            super::super::keys::KeyServers::at(reqwest::Client::new(), &[keys]),
-        );
+        let client =
+            Client::new(crate::service::Connection::default(), base, 1 << 20).with_key_servers(
+                super::super::keys::KeyServers::at(crate::service::Connection::default(), &[keys]),
+            );
         FileSigner {
             client,
             key: PackageKey::from_registry_name(
@@ -275,12 +276,11 @@ pub(crate) mod tests {
         let (signed_base, _) =
             repository(Some("jakarta.annotation-api-2.1.1.jar.asc"), &[], &[]).await;
         let keyless = FileSigner {
-            client: Client::new(reqwest::Client::new(), &signed_base, 1 << 20).with_key_servers(
-                super::super::keys::KeyServers::at(
-                    reqwest::Client::new(),
+            client: Client::new(crate::service::Connection::default(), &signed_base, 1 << 20)
+                .with_key_servers(super::super::keys::KeyServers::at(
+                    crate::service::Connection::default(),
                     &[&format!("http://{addr}")],
-                ),
-            ),
+                )),
             ..keys_down
         };
         assert!(keyless.material().await.is_err());

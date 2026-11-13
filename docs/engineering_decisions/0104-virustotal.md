@@ -40,6 +40,17 @@ only. The proxy removes the client's `Authorization` before every upstream reque
 (`proxy::upstream_headers`), so it fetches no package that needs a credential. Up to 32 MB
 goes to `POST /files`; up to 650 MB through `/files/upload_url`; larger is looked up only.
 
+## Where the key is sent
+
+The key goes in `x-apikey`, which reqwest 0.13.5 keeps on a redirect to another host: it
+removes only `Authorization`, `Cookie`, `Proxy-Authorization` and `WWW-Authenticate`.
+Since 2026-11-05 VirusTotal has a service of its own, declaring `x-apikey`, which follows
+a redirect only on the first URL's origin
+([a-client-for-each-service](0133-a-client-for-each-service.md)): a 3xx elsewhere is a
+failed request. An upload URL
+`/files/upload_url` answers is used only on the API's scheme, host and port, and
+`BYRLE_VIRUSTOTAL_URL` must be `https`, or `http` to loopback.
+
 ## When it is asked again
 
 | Stored | Asked again after |

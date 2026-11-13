@@ -98,7 +98,7 @@ Unset `BYRLE_MODE` and restart the proxy. A changed policy file then takes effec
 | Watch | How |
 |---|---|
 | health | `GET /-/byrle/health`; `GET /-/byrle/ready` answers 200 once intel is loaded, for a readiness probe |
-| the intel | `byrle refresh` exits 0, or 1 when an optional stream did not load; anything else failed |
+| the intel | `byrle refresh` exits 0, or 1 when a stream did not load and its last load stays; anything else failed. A stream that parsed to under half its stored rows is one: check its bundle, then `byrle refresh --force <stream>` loads it |
 | what was refused and served | the audit log, or the console (quickstart §11) |
 | an install that must go ahead now | [break-glass](break-glass.md) |
 | a new release | verify its attestations as in §1 before running it |

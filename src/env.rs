@@ -109,6 +109,9 @@ pub const DEFAULT_MAX_TRAFFIC_CLIENTS: usize = 256;
 
 /// Default seconds between the watcher's passes over the packages the proxy has served.
 pub const DEFAULT_WATCH_INTERVAL_SECONDS: u64 = 900;
+pub const DEFAULT_WATCH_MAX_VERSIONS: usize = 4;
+/// Default ceiling on the indexes asked to find which project a PyPI file belongs to.
+pub const DEFAULT_MAX_INDEXES_PER_FILE: usize = 4;
 pub const DEFAULT_ALLOCATOR_PURGE_DELAY_MS: usize = 0;
 
 /// Default ceiling on one artifact written to the spool.
@@ -116,6 +119,9 @@ pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1 << 30;
 
 /// §5.5's ceiling on how far ahead a package entry may be dated.
 pub const DEFAULT_EXPIRY_CEILING_DAYS: i64 = 90;
+
+/// Default for [`MAX_DIFF_VERSIONS`].
+pub const DEFAULT_MAX_DIFF_VERSIONS: usize = 10_000;
 
 /// The default number of days an audit log file is kept.
 pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 365;
@@ -484,6 +490,12 @@ pub const EXPIRY_CEILING_DAYS: Var = runtime(
     &["how many days ahead a `packages` entry may be dated"],
 )
 .with_default(Default::Number(DEFAULT_EXPIRY_CEILING_DAYS as u64));
+pub const MAX_DIFF_VERSIONS: Var = runtime(
+    "BYRLE_MAX_DIFF_VERSIONS",
+    "",
+    &["package versions a remote `policy diff` may send"],
+)
+.with_default(Default::Number(DEFAULT_MAX_DIFF_VERSIONS as u64));
 pub const MAX_CONCURRENT_METADATA: Var = runtime(
     "BYRLE_MAX_CONCURRENT_METADATA",
     "",
@@ -526,6 +538,24 @@ pub const WATCH_INTERVAL: Var = runtime(
     ],
 )
 .with_default(Default::Number(DEFAULT_WATCH_INTERVAL_SECONDS));
+pub const WATCH_MAX_VERSIONS: Var = runtime(
+    "BYRLE_WATCH_MAX_VERSIONS",
+    "",
+    &[
+        "new versions of one package the watcher analyses in one pass, the highest",
+        "in version order; a client's request analyses any other",
+    ],
+)
+.with_default(Default::Number(DEFAULT_WATCH_MAX_VERSIONS as u64));
+pub const MAX_INDEXES_PER_FILE: Var = runtime(
+    "BYRLE_MAX_INDEXES_PER_FILE",
+    "",
+    &[
+        "indexes asked, one at a time, for the project a file fetched by a path naming",
+        "none belongs to, when its name fits several: PyPI's foo-1.0-1.tar.gz",
+    ],
+)
+.with_default(Default::Number(DEFAULT_MAX_INDEXES_PER_FILE as u64));
 pub const ALLOCATOR_PURGE_DELAY_MS: Var = runtime(
     "BYRLE_ALLOCATOR_PURGE_DELAY_MS",
     "",
@@ -698,6 +728,11 @@ pub const NPM_CORPUS_FULL: Var = other(
     "BYRLE_NPM_CORPUS_FULL",
     &["directory of full packuments for the ignored corpus test"],
 );
+pub const PYPI_CORPUS: Var = other(
+    Kind::Test,
+    "BYRLE_PYPI_CORPUS",
+    &["directory of simple indexes, .json and .html, for the ignored corpus test"],
+);
 pub const TEST_DATABASE_URL: Var = other(
     Kind::Test,
     "BYRLE_TEST_DATABASE_URL",
@@ -785,7 +820,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 96] = [
+pub const ALL: [Var; 100] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -833,12 +868,15 @@ pub const ALL: [Var; 96] = [
     LOG_RETENTION_DAYS,
     DECISION_RETENTION_DAYS,
     EXPIRY_CEILING_DAYS,
+    MAX_DIFF_VERSIONS,
     MAX_CONCURRENT_METADATA,
     SPOOL_DIR,
     MAX_ARTIFACT_BYTES,
     MAX_CONCURRENT_ANALYSES,
     MAX_TRAFFIC_CLIENTS,
     WATCH_INTERVAL,
+    WATCH_MAX_VERSIONS,
+    MAX_INDEXES_PER_FILE,
     ALLOCATOR_PURGE_DELAY_MS,
     SOURCE_ARCHIVES,
     DETECTORS,
@@ -865,6 +903,7 @@ pub const ALL: [Var; 96] = [
     BLESS,
     NPM_CORPUS,
     NPM_CORPUS_FULL,
+    PYPI_CORPUS,
     TEST_DATABASE_URL,
     TEST_SCHEMA_PER_PROCESS,
     HOME_DIR,
@@ -1317,6 +1356,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.count(ALLOCATOR_PURGE_DELAY_MS, DEFAULT_ALLOCATOR_PURGE_DELAY_MS)
     }
 
+    pub fn max_diff_versions(&self) -> Result<usize, EnvError> {
+        self.count(MAX_DIFF_VERSIONS, DEFAULT_MAX_DIFF_VERSIONS)
+    }
+
     pub fn max_concurrent_metadata(&self) -> Result<usize, EnvError> {
         self.count(MAX_CONCURRENT_METADATA, DEFAULT_MAX_CONCURRENT_METADATA)
     }
@@ -1382,6 +1425,16 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn max_concurrent_analyses(&self) -> Result<usize, EnvError> {
         self.count(MAX_CONCURRENT_ANALYSES, DEFAULT_MAX_CONCURRENT_ANALYSES)
+    }
+
+    /// At least one: a watcher analysing none would be off, which an interval of 0 says.
+    pub fn watch_max_versions(&self) -> Result<usize, EnvError> {
+        self.above_zero(WATCH_MAX_VERSIONS, DEFAULT_WATCH_MAX_VERSIONS)
+    }
+
+    /// At least one: the index the filename's last `-` names is asked today.
+    pub fn max_indexes_per_file(&self) -> Result<usize, EnvError> {
+        self.above_zero(MAX_INDEXES_PER_FILE, DEFAULT_MAX_INDEXES_PER_FILE)
     }
 
     /// [`crate::spool::default_dir`] when unset.
@@ -1452,6 +1505,11 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         };
         let positive = |v: &str| v.parse::<u32>().ok().filter(|n| *n > 0);
         let above_0 = "is not a whole number above 0";
+        let base = self.text_or(VIRUSTOTAL_URL, API)?;
+        if crate::http::trusted(&base).is_err() {
+            let why = "is not an https URL, or http to loopback";
+            return Err(EnvError::new(VIRUSTOTAL_URL, base, why));
+        }
         Ok(Some(Settings {
             key,
             mode: self.parsed(
@@ -1460,7 +1518,7 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
                 Mode::parse,
                 "is not `hash` or `upload`",
             )?,
-            base: self.text_or(VIRUSTOTAL_URL, API)?,
+            base,
             per_minute: self.parsed(VIRUSTOTAL_PER_MINUTE, PUBLIC_PER_MINUTE, positive, above_0)?,
             per_day: self.parsed(VIRUSTOTAL_PER_DAY, PUBLIC_PER_DAY, positive, above_0)?,
             uploads_from: PUBLIC_ORIGINS.map(str::to_owned).to_vec(),
@@ -1610,6 +1668,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn npm_corpus_full(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(NPM_CORPUS_FULL)
+    }
+
+    pub fn pypi_corpus(&self) -> Result<Option<PathBuf>, EnvError> {
+        self.path(PYPI_CORPUS)
     }
 
     pub fn test_database_url(&self) -> Result<Option<String>, EnvError> {
@@ -1827,10 +1889,19 @@ mod tests {
             env.max_concurrent_metadata().unwrap(),
             DEFAULT_MAX_CONCURRENT_METADATA
         );
+        assert_eq!(env.max_diff_versions().unwrap(), DEFAULT_MAX_DIFF_VERSIONS);
         assert_eq!(env.spool_dir().unwrap(), crate::spool::default_dir());
         assert_eq!(
             env.max_concurrent_analyses().unwrap(),
             DEFAULT_MAX_CONCURRENT_ANALYSES
+        );
+        assert_eq!(
+            env.watch_max_versions().unwrap(),
+            DEFAULT_WATCH_MAX_VERSIONS
+        );
+        assert_eq!(
+            env.max_indexes_per_file().unwrap(),
+            DEFAULT_MAX_INDEXES_PER_FILE
         );
         assert_eq!(
             env.watch_interval().unwrap(),
@@ -1892,6 +1963,7 @@ mod tests {
         assert!(!env.bless());
         assert_eq!(env.npm_corpus().unwrap(), None);
         assert_eq!(env.npm_corpus_full().unwrap(), None);
+        assert_eq!(env.pypi_corpus().unwrap(), None);
         assert_eq!(env.test_database_url().unwrap(), None);
         assert!(!env.test_schema_per_process().unwrap());
         assert_eq!(env.home().unwrap(), None);
@@ -1927,9 +1999,12 @@ mod tests {
             (MAX_VERIFIED, "20"),
             (CLAIM_RETRY_AFTER, "5"),
             (MAX_CONCURRENT_METADATA, "2"),
+            (MAX_DIFF_VERSIONS, "7"),
             (SPOOL_DIR, "/var/spool/byrle"),
             (MAX_ARTIFACT_BYTES, "4096"),
             (MAX_CONCURRENT_ANALYSES, "3"),
+            (WATCH_MAX_VERSIONS, "2"),
+            (MAX_INDEXES_PER_FILE, "3"),
             (MAX_TRAFFIC_CLIENTS, "12"),
             (PROVENANCE_HISTORY, "9"),
             (DATABASE_URL, "postgres://db"),
@@ -1949,6 +2024,7 @@ mod tests {
             (BLESS, "1"),
             (NPM_CORPUS, "abbrev"),
             (NPM_CORPUS_FULL, "full"),
+            (PYPI_CORPUS, "simple"),
             (TEST_DATABASE_URL, "postgres://test"),
             (TEST_SCHEMA_PER_PROCESS, "1"),
             (HOME_DIR, "/home/u"),
@@ -1982,9 +2058,12 @@ mod tests {
         assert_eq!(env.max_verified().unwrap(), 20);
         assert_eq!(env.claim_retry_after().unwrap(), 5);
         assert_eq!(env.max_concurrent_metadata().unwrap(), 2);
+        assert_eq!(env.max_diff_versions().unwrap(), 7);
         assert_eq!(env.spool_dir().unwrap(), PathBuf::from("/var/spool/byrle"));
         assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
         assert_eq!(env.max_concurrent_analyses().unwrap(), 3);
+        assert_eq!(env.watch_max_versions().unwrap(), 2);
+        assert_eq!(env.max_indexes_per_file().unwrap(), 3);
         assert_eq!(env.max_traffic_clients().unwrap(), 12);
         assert_eq!(env.provenance_history().unwrap(), 9);
         assert_eq!(
@@ -2013,6 +2092,7 @@ mod tests {
         assert!(env.bless());
         assert_eq!(env.npm_corpus().unwrap(), Some(PathBuf::from("abbrev")));
         assert_eq!(env.npm_corpus_full().unwrap(), Some(PathBuf::from("full")));
+        assert_eq!(env.pypi_corpus().unwrap(), Some(PathBuf::from("simple")));
         assert_eq!(
             env.test_database_url().unwrap().as_deref(),
             Some("postgres://test")
@@ -2056,6 +2136,7 @@ mod tests {
             (MAX_METADATA_BYTES, "-1"),
             (MAX_VERIFIED, "1e6"),
             (MAX_CONCURRENT_METADATA, "eight"),
+            (MAX_DIFF_VERSIONS, "many"),
             (EXPIRY_CEILING_DAYS, "-5"),
             (LOG_RETENTION_DAYS, "0"),
             (DECISION_RETENTION_DAYS, "0"),
@@ -2070,7 +2151,7 @@ mod tests {
             (MAX_TRAFFIC_CLIENTS, "0"),
             (PROVENANCE_HISTORY, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 17] = [
+        let cases: [(Result<(), EnvError>, &str); 18] = [
             (
                 env.max_records().map(drop),
                 "BYRLE_MAX_RECORDS: `5O000` is not a whole number",
@@ -2086,6 +2167,10 @@ mod tests {
             (
                 env.max_concurrent_metadata().map(drop),
                 "BYRLE_MAX_CONCURRENT_METADATA: `eight` is not a whole number",
+            ),
+            (
+                env.max_diff_versions().map(drop),
+                "BYRLE_MAX_DIFF_VERSIONS: `many` is not a whole number",
             ),
             (
                 env.expiry_ceiling_days().map(drop),
@@ -2337,7 +2422,7 @@ mod tests {
         let set = testing::with(&[
             (VIRUSTOTAL_API_KEY, "k"),
             (VIRUSTOTAL_MODE, "upload"),
-            (VIRUSTOTAL_URL, "http://vt.test"),
+            (VIRUSTOTAL_URL, "http://127.0.0.1:9"),
             (VIRUSTOTAL_PER_MINUTE, "1000"),
             (VIRUSTOTAL_PER_DAY, "300000"),
         ])
@@ -2346,7 +2431,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (set.mode, set.base.as_str()),
-            (Mode::Upload, "http://vt.test")
+            (Mode::Upload, "http://127.0.0.1:9")
         );
         assert_eq!((set.per_minute, set.per_day), (1000, 300_000));
         let refused = |var, value| {
@@ -2355,6 +2440,10 @@ mod tests {
                 .unwrap_err()
                 .to_string()
         };
+        assert_eq!(
+            refused(VIRUSTOTAL_URL, "http://vt.test"),
+            "BYRLE_VIRUSTOTAL_URL: `http://vt.test` is not an https URL, or http to loopback"
+        );
         assert_eq!(
             refused(VIRUSTOTAL_MODE, "all"),
             "BYRLE_VIRUSTOTAL_MODE: `all` is not `hash` or `upload`"

@@ -101,14 +101,21 @@ reached writes nothing, so a missing row means not yet verified.
 | `byrle explain`, `byrle policy diff` | the document only | dropped provenance |
 
 A pinned fetch whose attestations, or whose predecessor's, nothing has verified starts the
-analysis job and, under `provenance: block`, answers 503 until the retry finds the result
+analysis job and, under any `provenance` setting, answers 503 until the retry finds the result
 ([artifact-spool](0064-artifact-spool.md)). The job verifies each against the digest the
 packument published, so the previous version's tarball is never fetched. A registry that
 answers 5xx or 429, or cannot be reached, stores nothing and the next request tries again.
-Under `provenance: block` the version answers 503 for as long as that lasts, with no bound
-after which it is served unverified: fail closed, as a cold intel store does. Decided
-2026-09-26, and pinned by `unverified_attestations_are_waited_for_only_when_they_can_refuse`.
-A 404, a document that is not one, or a bundle that does not verify is stored as a failure.
+The version answers 503 for as long as that lasts, with no bound after which it is served
+unverified: fail closed, as a cold intel store does. Decided 2026-09-26, and pinned by
+`unverified_attestations_are_waited_for_under_any_policy`.
+A 404 for a version published less than `provenance_window_days` ago stores nothing, and
+the next request tries again: npm can answer 404 for a version's attestations just after it
+is published. That version answers 503 until npm serves them or the window passes
+(`analysis::attestation::recent`, finding 37 of the security review, 2026-11-08). Before,
+it was refused under `provenance: block` and served under `allow`. With `cooldown_days`
+at least `provenance_window_days`, the cooldown refuses it first. An older
+version's 404, a document that is not one, or a bundle that does not verify is stored as a
+failure. A 404 stored for a recent version before 2026-11-08 is kept.
 A stored result is read back only by the verifier that wrote it, the `sigstore-verify`
 version and a digest of its embedded root, so a failure a verifier upgrade fixes is not
 kept.

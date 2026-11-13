@@ -13,10 +13,7 @@ async fn main() {
     } else {
         names
     };
-    let http = reqwest::Client::builder()
-        .user_agent(concat!("byrle/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .expect("a client");
+    let http = byrle::service::Connection::default();
     let client = byrle::ecosystem::pypi::Client::new(http, byrle::ecosystem::pypi::INDEX);
 
     println!(

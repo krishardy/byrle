@@ -5,9 +5,9 @@
 
 #![cfg(not(coverage))]
 
-use byrle::analysis::InstallScripts;
 use byrle::analysis::postgres::PgAnalyses;
 use byrle::analysis::store::{Analyses, Analysis, Scripts};
+use byrle::analysis::{Anomaly, InstallScripts};
 use byrle::integrity::Sri;
 use byrle::intel::history::{Ingestion, NotLoaded};
 use byrle::intel::load::{self, Fetch};
@@ -20,7 +20,7 @@ use byrle::intel::snapshot_dir::SnapshotDir;
 use byrle::intel::snapshot_intel::SnapshotIntel;
 use byrle::intel::store::{Intel, IntelError, LoadedSnapshot, PackageIntel};
 use sqlx::PgPool;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
@@ -1191,10 +1191,12 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "artifact_attestation",
         "artifact_claim",
         "artifact_decision",
+        "artifact_first_seen",
         "artifact_install_script",
         "artifact_signature",
         "artifact_source",
         "artifact_virustotal",
+        "checksum_tree",
         "exploited_cve",
         "failure_count",
         "intel_ingestion",
@@ -1727,6 +1729,13 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         (loaded.unchanged, loaded.advisories, loaded.exploited),
         (1, 0, 3)
     );
+    let counted = |kev| {
+        BTreeMap::from([
+            (kev::STREAM.to_owned(), kev),
+            (osv::bundle::NPM_STREAM.to_owned(), rows.len() as u64),
+        ])
+    };
+    assert_eq!(intel.stored_rows().await.expect("query"), counted(3));
     assert_eq!(snapshots(&intel).await, before + 1);
     assert_eq!(
         loaded.manifest,
@@ -1765,6 +1774,7 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         .await
         .expect("load");
     assert_eq!((replaced.advisories, replaced.exploited), (0, 1));
+    assert_eq!(intel.stored_rows().await.expect("query"), counted(1));
     assert_eq!(
         exploitation(&intel, &name).await,
         (true, marked([false, false, true]))
@@ -1819,6 +1829,10 @@ async fn the_scripts_come_back_in_the_order_they_were_written() {
             ("install".to_owned(), "node-gyp-build".to_owned()),
             ("postinstall".to_owned(), "node install.js".to_owned()),
         ],
+        anomalies: vec![
+            Anomaly::GzipMembers(2),
+            Anomaly::Duplicate("package.json".to_owned()),
+        ],
     }));
 
     store.put(&sri(1), &written).await.expect("it writes");
@@ -1840,10 +1854,12 @@ async fn re_analysing_an_artifact_replaces_its_scripts() {
             ("preinstall".to_owned(), "echo one".to_owned()),
             ("postinstall".to_owned(), "echo two".to_owned()),
         ],
+        anomalies: vec![Anomaly::AfterEnd],
     }));
     let second = analysis(Scripts::Declared(InstallScripts {
         names: vec!["postinstall".to_owned()],
         bodies: vec![("postinstall".to_owned(), "echo two".to_owned())],
+        anomalies: Vec::new(),
     }));
 
     store.put(&sri(1), &first).await.expect("it writes");
@@ -2008,6 +2024,77 @@ async fn a_claim_s_digest_is_kept_under_the_claim() {
     store.put_claimed(claim, &sri(2)).await.expect("replaces");
     assert_eq!(store.claimed(claim).await.expect("answers"), Some(sri(2)));
     assert_eq!(store.claimed("h1:other=").await.expect("answers"), None);
+}
+
+/// A checksum database's tree is kept, replaced only by a larger one, and read back.
+#[tokio::test]
+async fn a_checksum_tree_is_kept_and_only_grows() {
+    use byrle::analysis::store::Trees as _;
+    let intel = skip_without_database!("t_checksum_tree");
+    let store = analyses(&intel);
+    assert_eq!(store.checksum_tree("sum.test").await.expect("reads"), None);
+    store
+        .keep_checksum_tree("sum.test", (300, [3; 32]))
+        .await
+        .expect("writes");
+    store
+        .keep_checksum_tree("sum.test", (200, [2; 32]))
+        .await
+        .expect("writes");
+    assert_eq!(
+        store.checksum_tree("sum.test").await.expect("reads"),
+        Some((300, [3; 32])),
+        "a smaller tree leaves the larger"
+    );
+    store
+        .keep_checksum_tree("sum.test", (400, [4; 32]))
+        .await
+        .expect("writes");
+    assert_eq!(
+        store.checksum_tree("sum.test").await.expect("reads"),
+        Some((400, [4; 32]))
+    );
+}
+
+/// A file's first sighting is recorded once: a second call, or one for the same file in
+/// parallel, reads the first time back, and another file of the version starts its own.
+#[tokio::test]
+async fn a_file_s_first_sighting_is_kept_once() {
+    let intel = skip_without_database!("t_first_seen");
+    let store = analyses(&intel);
+    let purl = "pkg:pypi/x@1.0";
+    assert_eq!(
+        store.sighted(purl, "x-1.0.tar.gz").await.expect("reads"),
+        None,
+        "reading records nothing"
+    );
+    assert_eq!(
+        store.sighted(purl, "x-1.0.tar.gz").await.expect("reads"),
+        None
+    );
+    let first = store
+        .first_seen(purl, "x-1.0.tar.gz")
+        .await
+        .expect("writes");
+    let (a, b) = tokio::join!(
+        store.first_seen(purl, "x-1.0.tar.gz"),
+        store.first_seen(purl, "x-1.0.tar.gz")
+    );
+    assert_eq!((a.expect("reads"), b.expect("reads")), (first, first));
+    assert_eq!(
+        store.sighted(purl, "x-1.0.tar.gz").await.expect("reads"),
+        Some(first)
+    );
+    let now = jiff::Timestamp::now();
+    assert!(
+        first <= now && now.duration_since(first).as_secs() < 60,
+        "{first}"
+    );
+    let wheel = store
+        .first_seen(purl, "x-1.0-py3-none-any.whl")
+        .await
+        .expect("writes");
+    assert!(wheel >= first);
 }
 
 /// A Maven claim of a SHA-512 sidecar, 135 characters, is kept.
@@ -2291,6 +2378,7 @@ async fn an_analysis_from_another_reader_is_not_read() {
     let found = analysis(Scripts::Declared(InstallScripts {
         names: vec!["install".to_owned()],
         bodies: vec![("install".to_owned(), "node-gyp rebuild".to_owned())],
+        anomalies: Vec::new(),
     }));
     store.put(&sri(1), &found).await.expect("writes");
     assert_eq!(
@@ -2384,6 +2472,7 @@ async fn a_script_with_no_command_keeps_its_name() {
         scripts: Scripts::Declared(InstallScripts {
             names: vec!["setup.py".to_owned()],
             bodies: Vec::new(),
+            anomalies: Vec::new(),
         }),
     };
 
@@ -2403,6 +2492,7 @@ async fn two_digests_of_one_package_are_two_analyses() {
     let runs = analysis(Scripts::Declared(InstallScripts {
         names: vec!["postinstall".to_owned()],
         bodies: vec![("postinstall".to_owned(), "node install.js".to_owned())],
+        anomalies: Vec::new(),
     }));
     let nothing = analysis(Scripts::Declared(InstallScripts::default()));
 

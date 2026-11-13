@@ -56,7 +56,7 @@ async fn explained(site: &Site, parts: &Parts) -> Result<Printed, Refused> {
         &target,
         policy.as_deref(),
         store.as_deref(),
-        proxy.clients(),
+        &proxy.date_reader(),
     )
     .await;
     Ok(Printed::of(
@@ -302,6 +302,7 @@ const SENT: &str = "the policy sent";
         (status = 400, description = "A body, date or repository that does not parse", body = Problem),
         (status = 401, description = "No session or token", body = Problem),
         (status = 403, description = "The caller's roles do not grant packages.read", body = Problem),
+        (status = 429, description = "Another policy diff is running", body = Problem),
         (status = 503, description = "No proxy to answer from", body = Problem),
     ),
 )]
@@ -319,6 +320,14 @@ async fn policy_diffed(site: &Site, body: &[u8]) -> Result<Printed, Refused> {
             .map_err(Refused::bad)
     };
     let dates = [when(asked.from_date)?, when(asked.to_date)?];
+    if asked.versions.len() > site.max_diff_versions() {
+        return Err(Refused::bad(format!(
+            "{} package versions were sent; {} allows {}",
+            asked.versions.len(),
+            crate::env::MAX_DIFF_VERSIONS,
+            site.max_diff_versions()
+        )));
+    }
     let sent = asked
         .versions
         .into_iter()
@@ -326,6 +335,11 @@ async fn policy_diffed(site: &Site, body: &[u8]) -> Result<Printed, Refused> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(Refused::bad)?;
     let proxy = super::config::beside(site)?;
+    let Ok(_running) = site.diffing.try_lock() else {
+        return Err(Refused::busy(
+            "another policy diff is running; send this one when it ends",
+        ));
+    };
     let stopped = |note: String| Printed::of("policy diff", &[note], String::new(), diff::ERROR);
     let Some(in_force) = proxy.policy() else {
         return Ok(stopped("the deployment has no policy in force".to_owned()));
@@ -339,7 +353,7 @@ async fn policy_diffed(site: &Site, body: &[u8]) -> Result<Printed, Refused> {
         dates,
         (site.audit_log(), sent),
         proxy.intel_store(),
-        proxy.clients().clone(),
+        proxy.date_reader(),
     )
     .await;
     let notes: Vec<String> = run.notes.into_iter().chain(run.summary).collect();
@@ -424,7 +438,7 @@ pub(crate) mod tests {
     /// A proxy with a policy, asking an npm registry that does not answer.
     fn policed() -> Proxy {
         let policy = crate::policy::Policy::parse("version: 1\ncooldown_days: 7\n").unwrap();
-        Proxy::new(reqwest::Client::new())
+        Proxy::new(crate::service::Connection::default())
             .with_upstream(
                 crate::identity::Ecosystem::Npm,
                 crate::util::test_support::NO_UPSTREAM,
@@ -803,7 +817,7 @@ pub(crate) mod tests {
             "{garbled:?}"
         );
 
-        let unpoliced = console_beside(Proxy::new(reqwest::Client::new())).await;
+        let unpoliced = console_beside(Proxy::new(crate::service::Connection::default())).await;
         let none = asking(&unpoliced, "carol")
             .post(
                 "policy diff",
@@ -817,6 +831,74 @@ pub(crate) mod tests {
                 diff::ERROR,
                 "byrle policy diff: the deployment has no policy in force\n"
             )
+        );
+    }
+
+    /// More package versions than [`crate::env::MAX_DIFF_VERSIONS`] allows are 400, and a
+    /// diff sent while another runs is 429, without either being compared.
+    #[tokio::test]
+    async fn a_diff_past_its_cap_or_beside_a_running_one_is_refused() {
+        let console = crate::console::Console {
+            url: "https://h/".into(),
+            mount: crate::mount::Mount::ROOT,
+            listen: None,
+            rp_key: None,
+            proxy_mount: crate::mount::Mount::ROOT,
+        };
+        let site =
+            crate::console::tests::unread(console, crate::console::login::tests::store().await)
+                .with_proxy(policed(), Vec::new(), "http://127.0.0.1:9".into())
+                .with_max_diff_versions(1);
+        let lodash = crate::remote::Sent {
+            repository: None,
+            ecosystem: "npm".to_owned(),
+            name: "lodash".to_owned(),
+            version: "4.17.21".to_owned(),
+        };
+        let body = |versions: usize| {
+            serde_json::to_vec(&crate::remote::DiffAsked {
+                policy: "version: 1\n".to_owned(),
+                versions: vec![lodash.clone(); versions],
+                ..crate::remote::DiffAsked::default()
+            })
+            .unwrap()
+        };
+        let Err(Refused(status, why)) = policy_diffed(&site, &body(2)).await else {
+            panic!("2 versions past a cap of 1");
+        };
+        assert_eq!(status, 400);
+        assert_eq!(
+            why,
+            format!(
+                "2 package versions were sent; {} allows 1",
+                crate::env::MAX_DIFF_VERSIONS
+            )
+        );
+        let running = site.diffing.lock().await;
+        let Err(Refused(status, _)) = policy_diffed(&site, &body(0)).await else {
+            panic!("another diff is running");
+        };
+        assert_eq!(status, 429);
+        drop(running);
+        assert!(policy_diffed(&site, &body(0)).await.is_ok());
+
+        let hanging = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = format!("http://{}", hanging.local_addr().unwrap());
+        let console = site.console.clone();
+        let waiting =
+            crate::console::tests::unread(console, crate::console::login::tests::store().await)
+                .with_proxy(
+                    policed().with_upstream(crate::identity::Ecosystem::Npm, &upstream),
+                    Vec::new(),
+                    "http://127.0.0.1:9".into(),
+                );
+        let one = body(1);
+        let mut first = Box::pin(policy_diffed(&waiting, &one));
+        let unanswered = std::time::Duration::from_millis(200);
+        assert!(tokio::time::timeout(unanswered, &mut first).await.is_err());
+        assert!(
+            waiting.diffing.try_lock().is_err(),
+            "a diff waiting on its registry holds the lock"
         );
     }
 
@@ -868,7 +950,7 @@ pub(crate) mod tests {
         );
         let twice = exported(&alone, &parts("/x?since=2026-01-01&since=2026-01-02")).await;
         assert!(matches!(twice, Err(Refused(status, _)) if status == 400));
-        let url = console_beside(Proxy::new(reqwest::Client::new())).await;
+        let url = console_beside(Proxy::new(crate::service::Connection::default())).await;
         let printed = asking(&url, "alice")
             .get("explain", crate::console::routes::EXPLAIN_PATH, &[])
             .await;

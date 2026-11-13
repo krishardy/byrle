@@ -5,7 +5,7 @@
 
 use super::Selector;
 use super::vers::{VersError, Versions};
-use crate::ecosystem::canonical_name;
+use crate::ecosystem::selector_name;
 use crate::intel::range::VersionOrder;
 use std::fmt;
 
@@ -60,8 +60,8 @@ impl NamePattern {
     fn canonical(self, ecosystem: &str) -> Self {
         match self {
             Self::Any => Self::Any,
-            Self::Prefix(p) => Self::Prefix(canonical_name(ecosystem, &p)),
-            Self::Exact(n) => Self::Exact(canonical_name(ecosystem, &n)),
+            Self::Prefix(p) => Self::Prefix(selector_name(ecosystem, &p)),
+            Self::Exact(n) => Self::Exact(selector_name(ecosystem, &n)),
         }
     }
 }
@@ -292,7 +292,7 @@ impl Canonical {
     /// `name` and `version` are read the ecosystem's way, as the selector's own were.
     pub fn matches(&self, ecosystem: &str, name: &str, version: &str, scripts: bool) -> bool {
         self.ecosystem == ecosystem
-            && self.name.matches(&canonical_name(ecosystem, name))
+            && self.name.matches(&selector_name(ecosystem, name))
             && self.version.as_ref().is_none_or(|versions| {
                 VersionOrder::of(ecosystem)
                     .and_then(|order| order.parse(version))
@@ -914,6 +914,29 @@ mod tests {
         let post = canon("pypi", Some("x"), Some("vers:pypi/>=1.0|<1.0.post2"), None);
         assert!(post.matches("pypi", "x", "1.0-1", false));
         assert!(!post.matches("pypi", "x", "1.0.post2", false));
+    }
+
+    /// A crate name compares as crates.io's `canon_crate_name` does: case and `-` against
+    /// `_` do not separate two names. An npm name keeps both.
+    #[test]
+    fn a_cargo_selector_reads_dash_and_underscore_as_one() {
+        let exact = canon("cargo", Some("Foo-Bar"), None, None);
+        assert_eq!(exact.name, NamePattern::Exact("foo_bar".to_owned()));
+        assert!(exact.matches("cargo", "foo-bar", "1.0.0", false));
+        assert!(exact.matches("cargo", "foo_bar", "1.0.0", false));
+        assert!(!exact.matches("cargo", "foobar", "1.0.0", false));
+
+        let prefix = canon("cargo", Some("foo-*"), None, None);
+        assert!(prefix.matches("cargo", "foo_bar", "1.0.0", false));
+        assert!(prefix.matches("cargo", "foo-bar", "1.0.0", false));
+        let bare = canon("cargo", Some("foo*"), None, None);
+        assert!(bare.matches("cargo", "foo_bar", "1.0.0", false));
+
+        let denial = Canonical::of_denial("pkg:cargo/foo_bar@1.0.0", None).expect("a crate");
+        assert!(denial.matches("cargo", "foo-bar", "1.0.0", false));
+
+        let npm = canon("npm", Some("foo_bar"), None, None);
+        assert!(!npm.matches("npm", "foo-bar", "1.0.0", false));
     }
 
     /// A Maven name is written `groupId:artifactId`, and a version compared in Maven's order.

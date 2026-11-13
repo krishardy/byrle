@@ -9,6 +9,7 @@ pub mod analysis;
 pub mod audit;
 pub mod cli;
 pub mod console;
+pub mod dating;
 /// Debug builds only: see the module docs.
 #[cfg(debug_assertions)]
 pub mod defer;
@@ -35,6 +36,7 @@ pub mod remote;
 pub mod reverse_proxy;
 pub mod rotation;
 pub mod route;
+pub mod service;
 pub mod signal;
 pub mod spool;
 pub mod startup;

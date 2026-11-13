@@ -2,6 +2,7 @@
 
 - **Number:** 0046
 - **Status:** Implemented and served. `src/ecosystem/pypi/`.
+- **Superseded by:** a version's publish time, by [0124-pypi-file-publish-times](0124-pypi-file-publish-times.md)
 - **Related:** [stage-structure](0014-stage-structure.md),
   [purl-identity-rules](0012-purl-identity-rules.md),
   [enforcement-tiers](0019-enforcement-tiers.md),
@@ -62,7 +63,8 @@ enforces it with a redirect, measured:
 spelling. A name that normalises to nothing is refused rather than turned into a path.
 A wheel writes `-` in a project name as `_`, so `zope_interface-...whl` is normalised to
 `zope-interface` too. A wheel's name and version are the first two of at least five fields;
-an sdist's name may contain `-`, so its version follows the last one.
+an sdist's name may contain `-`: [0135](0135-pypi-file-placed-by-listing-index.md) reads its
+version after the project's name, and places a file a path names no project for.
 
 ## Files a resolver would never fetch
 
@@ -335,6 +337,31 @@ pypi::sri gives      sha256-gTICrOTZMBo8AHQMcA4BL7nz+Mc93P4Cq1WKjfbxdf0=
 
 The last line round-trips through `integrity::Sri::parse` as `Algorithm::Sha256`, so the
 conversion reaches the verifier npm's digests already use.
+
+`real_indexes_are_served_without_skipping_anything` runs over a corpus on disk and is
+ignored by default. Each index is parsed, normalised, and filtered and repointed as the
+proxy serves it, refusing nothing and then its latest version. Fill a directory with
+`<project>.json` (PEP 691) and `<project>.html` (PEP 503) files and name it in
+`BYRLE_PYPI_CORPUS`:
+
+```text
+curl -H "Accept: application/vnd.pypi.simple.v1+json" \
+    https://pypi.org/simple/requests/ > corpus/requests.json
+curl -H "Accept: text/html" https://pypi.org/simple/requests/ > corpus/requests.html
+cargo test --lib real_indexes -- --ignored --nocapture
+```
+
+On 2026-11-05, 158 projects in both forms, 316 indexes, 49,066 versions and 394,354 files:
+none failed to parse or be served, and no version was skipped. 4,536 files in the JSON
+indexes, and the same in the HTML, stayed on `files.pythonhosted.org`, all of kinds `filename_parts` does not read and pip does not
+install:
+
+| Kind | Files | Projects, among them |
+|---|---|---|
+| `.exe` | 2,600 | billiard, coverage, gevent, lxml |
+| `.egg` | 1,897 | amqp, beautifulsoup4, greenlet |
+| `.msi` | 31 | gevent, mpmath, tqdm |
+| `.rpm` | 8 | setuptools |
 
 ## Transport, and what it does not share with npm
 

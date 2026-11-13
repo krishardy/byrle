@@ -9,7 +9,7 @@ use std::io::Read;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{MAX_MEMBER_BYTES, NPM_INSTALL_SCRIPTS, ReadError, walk};
+use super::{MAX_MEMBER_BYTES, NPM_INSTALL_SCRIPTS, ReadError, installed, walk_within};
 use crate::identity::Ecosystem;
 use crate::record::PackageRecord;
 
@@ -18,6 +18,27 @@ pub const COMPARER: &str = "source 1";
 
 /// The member sizes one archive may state, together.
 pub const MAX_SOURCE_BYTES: usize = 512 << 20;
+
+/// The most members, files or not, an archive read into a [`Tree`] may hold.
+pub const MAX_SOURCE_MEMBERS: usize = 200_000;
+
+/// Tar bytes a member may take beside its contents: headers, a long name, padding.
+const MEMBER_HEADER_BYTES: usize = 4096;
+
+/// What an archive read into a [`Tree`] may hold.
+#[derive(Debug, Clone, Copy)]
+pub struct Ceiling {
+    /// The member sizes the archive states, together.
+    pub bytes: usize,
+    /// Its members, files or not.
+    pub members: usize,
+}
+
+/// [`MAX_SOURCE_BYTES`] and [`MAX_SOURCE_MEMBERS`].
+pub const CEILING: Ceiling = Ceiling {
+    bytes: MAX_SOURCE_BYTES,
+    members: MAX_SOURCE_MEMBERS,
+};
 
 /// GitHub's archive host, which [`crate::env::SOURCE_ARCHIVES`] replaces.
 pub const ARCHIVES: &str = "https://codeload.github.com";
@@ -209,13 +230,22 @@ fn relative<'a>(path: &'a str, directory: &str) -> Option<&'a str> {
 }
 
 /// Read a gzipped tar into a [`Tree`]. The first path component is dropped: `package/` in an
-/// npm tarball, `{repo}-{commit}/` in GitHub's archive. `limit` bounds the member sizes the
-/// headers state, together.
-/// Errors when the bytes are not a gzipped tar, or state more than `limit`.
-pub fn tree(archive: &mut dyn Read, limit: usize) -> Result<Tree, ReadError> {
+/// npm tarball, `{repo}-{commit}/` in GitHub's archive.
+/// Errors when the bytes are not a gzipped tar, state more than `ceiling.bytes`, hold more
+/// than `ceiling.members` members, or decompress past both with 4 KiB of headers for each
+/// member.
+pub fn tree(archive: &mut dyn Read, ceiling: Ceiling) -> Result<Tree, ReadError> {
+    let Ceiling { bytes: limit, .. } = ceiling;
+    let unpacked = limit.saturating_add(ceiling.members.saturating_mul(MEMBER_HEADER_BYTES));
     let mut tree = Tree::default();
-    let mut stated = 0u64;
-    walk(archive, &mut |path, member| {
+    let (mut stated, mut members) = (0u64, 0usize);
+    walk_within(archive, unpacked, &mut |path, member| {
+        members += 1;
+        if members > ceiling.members {
+            return Err(ReadError::TooMany {
+                limit: ceiling.members,
+            });
+        }
         stated += member.size;
         if stated > limit as u64 {
             return Err(ReadError::TooLarge {
@@ -223,25 +253,30 @@ pub fn tree(archive: &mut dyn Read, limit: usize) -> Result<Tree, ReadError> {
                 limit,
             });
         }
-        let path = path.strip_prefix("./").unwrap_or(path);
-        let Some((_, path)) = path.split_once('/') else {
-            return Ok(false);
+        let Some(path) = installed(path).filter(|_| member.file) else {
+            return Ok(());
         };
-        if !member.file || path.is_empty() {
-            return Ok(false);
-        }
-        tree.add(path, member.bytes, path == "PKG-INFO")?;
-        Ok(false)
+        tree.add(&path, member.bytes, path == "PKG-INFO")
     })?;
     Ok(tree)
 }
 
-/// Read a wheel, a zip whose paths are where they install, into a [`Tree`]. `limit` bounds
-/// the sizes its entries state, together.
-/// Errors when the bytes are not a zip, or state more than `limit`.
-pub fn wheel_tree<R: Read + std::io::Seek>(archive: R, limit: usize) -> Result<Tree, ReadError> {
+/// Read a wheel, a zip whose paths are where they install, into a [`Tree`]. The zip reader
+/// refuses an entry that reads past the size it states.
+/// Errors when the bytes are not a zip, state more than `ceiling.bytes`, or hold more than
+/// `ceiling.members` entries.
+pub fn wheel_tree<R: Read + std::io::Seek>(
+    archive: R,
+    ceiling: Ceiling,
+) -> Result<Tree, ReadError> {
+    let Ceiling { bytes: limit, .. } = ceiling;
     let not_a_zip = |e: zip::result::ZipError| ReadError::NotAnArchive(e.to_string());
     let mut zip = zip::ZipArchive::new(archive).map_err(not_a_zip)?;
+    if zip.len() > ceiling.members {
+        return Err(ReadError::TooMany {
+            limit: ceiling.members,
+        });
+    }
     let mut tree = Tree::default();
     let mut stated = 0u64;
     for index in 0..zip.len() {
@@ -538,8 +573,13 @@ mod tests {
     use crate::identity::{Ecosystem, PackageKey};
     use crate::util::test_support::tarball;
 
+    /// [`CEILING`] with `bytes` in place of its own.
+    fn bytes(bytes: usize) -> Ceiling {
+        Ceiling { bytes, ..CEILING }
+    }
+
     fn read(files: &[(&str, &[u8])]) -> Tree {
-        tree(&mut &*tarball(files), 1 << 20).expect("a tarball")
+        tree(&mut &*tarball(files), bytes(1 << 20)).expect("a tarball")
     }
 
     /// Every form of `repository.url` the fixtures and npm's docs use, and hosts that are not
@@ -668,7 +708,7 @@ mod tests {
         );
         let big = tree(
             &mut &*tarball(&[("package/package.json", oversized.as_bytes())]),
-            MAX_SOURCE_BYTES,
+            CEILING,
         )
         .expect("a tarball");
         assert!(
@@ -692,7 +732,7 @@ mod tests {
             .unwrap();
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         std::io::Write::write_all(&mut gz, &builder.into_inner().unwrap()).unwrap();
-        let directories = tree(&mut &*gz.finish().unwrap(), 1 << 20).unwrap();
+        let directories = tree(&mut &*gz.finish().unwrap(), bytes(1 << 20)).unwrap();
         assert!(directories.files.is_empty(), "a directory is not a file");
     }
 
@@ -768,23 +808,62 @@ mod tests {
         );
     }
 
+    /// More members than the ceiling allows are refused, files or not; at it they are read.
+    /// A tar of empty members past its decompressed ceiling is refused for that.
+    #[test]
+    fn an_archive_of_more_members_than_its_ceiling_is_refused() {
+        let three: [(&str, &[u8]); 3] =
+            [("package/a", b""), ("package/b", b""), ("package/c", b"")];
+        let at = |members| Ceiling {
+            bytes: 1 << 20,
+            members,
+        };
+        let too_many = Err(ReadError::TooMany { limit: 2 });
+        assert_eq!(tree(&mut &*tarball(&three), at(2)), too_many);
+        assert_eq!(
+            tree(&mut &*tarball(&three), at(3)).map(|t| t.files.len()),
+            Ok(3)
+        );
+        let zipped = || std::io::Cursor::new(crate::util::test_support::zip_of(&three));
+        assert_eq!(wheel_tree(zipped(), at(2)), too_many);
+        assert_eq!(wheel_tree(zipped(), at(3)).map(|t| t.files.len()), Ok(3));
+        assert_eq!(
+            ReadError::TooMany { limit: 2 }.to_string(),
+            "the archive holds more than 2 members"
+        );
+        let headers = Ceiling {
+            bytes: 0,
+            members: 1,
+        };
+        let long = format!("package/{}", "a".repeat(super::MEMBER_HEADER_BYTES));
+        assert!(
+            matches!(
+                tree(&mut &*tarball(&[(&long, b"")]), headers),
+                Err(ReadError::TooLarge { .. })
+            ),
+            "an empty member whose name is past its header bytes"
+        );
+        let short = tree(&mut &*tarball(&[("package/a", b"")]), headers);
+        assert_eq!(short.map(|t| t.files.len()), Ok(1));
+    }
+
     #[test]
     fn an_archive_over_the_limit_or_not_an_archive_is_refused() {
         let big = tarball(&[("package/a", &[b'a'; 10]), ("package/b", &[b'b'; 10])]);
         assert_eq!(
-            tree(&mut &*big, 15),
+            tree(&mut &*big, bytes(15)),
             Err(ReadError::TooLarge {
                 member: "the archive".to_owned(),
                 limit: 15
             })
         );
         assert_eq!(
-            tree(&mut &*big, 20).map(|tree| tree.files.len()),
+            tree(&mut &*big, bytes(20)).map(|tree| tree.files.len()),
             Ok(2),
             "at the limit"
         );
         assert!(matches!(
-            tree(&mut &b"not gzip"[..], 15),
+            tree(&mut &b"not gzip"[..], bytes(15)),
             Err(ReadError::NotAnArchive(_))
         ));
         let noise: Vec<u8> = (0u32..65536)
@@ -792,7 +871,7 @@ mod tests {
             .collect();
         let whole = tarball(&[("package/a", &noise)]);
         assert!(matches!(
-            tree(&mut &whole[..whole.len() / 2], 1 << 20),
+            tree(&mut &whole[..whole.len() / 2], bytes(1 << 20)),
             Err(ReadError::NotAnArchive(_))
         ));
     }
@@ -888,7 +967,7 @@ mod tests {
     fn wheel(files: &[(&str, &[u8])]) -> Tree {
         wheel_tree(
             std::io::Cursor::new(crate::util::test_support::zip_of(files)),
-            1 << 20,
+            bytes(1 << 20),
         )
         .expect("a wheel")
     }
@@ -918,7 +997,7 @@ mod tests {
             .unwrap();
         let directory = writer.finish().unwrap().into_inner();
         assert!(
-            wheel_tree(std::io::Cursor::new(directory), 1 << 20)
+            wheel_tree(std::io::Cursor::new(directory), bytes(1 << 20))
                 .unwrap()
                 .files
                 .is_empty()
@@ -926,14 +1005,14 @@ mod tests {
 
         let big = crate::util::test_support::zip_of(&[("a", &[0; 10]), ("b", &[0; 10])]);
         assert_eq!(
-            wheel_tree(std::io::Cursor::new(big), 15),
+            wheel_tree(std::io::Cursor::new(big), bytes(15)),
             Err(ReadError::TooLarge {
                 member: "the archive".to_owned(),
                 limit: 15
             })
         );
         assert!(matches!(
-            wheel_tree(std::io::Cursor::new(b"not a zip".to_vec()), 15),
+            wheel_tree(std::io::Cursor::new(b"not a zip".to_vec()), bytes(15)),
             Err(ReadError::NotAnArchive(_))
         ));
         let good = crate::util::test_support::zip_of(&[("a", b"hello")]);
@@ -941,9 +1020,22 @@ mod tests {
         no_header[0] = b'X';
         let mut bad_crc = good.clone();
         bad_crc[31] ^= 0xff;
+        let mut understated = good.clone();
+        let central = understated
+            .windows(4)
+            .position(|w| w == b"PK\x01\x02")
+            .unwrap();
+        understated[central + 24..central + 28].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(
+            wheel_tree(std::io::Cursor::new(understated), bytes(1 << 20)),
+            Err(ReadError::NotAnArchive(
+                "File is larger than its declared uncompressed size".to_owned()
+            )),
+            "the zip reader stops an entry at the size it states"
+        );
         for broken in [no_header, bad_crc] {
             assert!(matches!(
-                wheel_tree(std::io::Cursor::new(broken), 1 << 20),
+                wheel_tree(std::io::Cursor::new(broken), bytes(1 << 20)),
                 Err(ReadError::NotAnArchive(_))
             ));
         }

@@ -475,22 +475,49 @@ Items that I've added that are not stage-bound.
     structures could change to make queries faster or rows smaller, such as `TEXT` where
     a bounded type would do. Raised 2026-10-19.
     Reviewed 2026-10-19 in [postgres-review](docs/postgres-review.md). Sections 1 to 4 done
-    2026-10-19, decision 0121.
+    2026-10-19, decision 0121. Closed 2026-10-26: section 5's smaller types are not worth
+    a migration at today's sizes.
     A disposition by version reads every decision; a package's intel is one row per
     affected version; a refresh rewrites every row; three indexes are never read.
 49. Full logic flow diagrams: every entry point, each request to a backend, how the risk
     vector is built, the risk score, the decision and the response. Raised 2026-10-19.
     Done 2026-10-19: [logic-flow](docs/logic-flow.md), and `request-flow.md` corrected
     against the code at `3ade87d`.
-50. Step-wise security reviews of each step in #49's diagrams. For each step: is it
+50. [x] Step-wise security reviews of each step in #49's diagrams. For each step: is it
     vulnerable, what does abnormal data do there, can a malicious package be coaxed
     through, and can malicious input make a score ignored or overridden. After #49.
     Raised 2026-10-19.
+    Reviewed 2026-10-26. Done 2026-11-08: [security-review](docs/security-review.md), every
+    finding resolved.
 51. `make strip-claude`, `make unsigned` and `make signed-off` become one `make
     commit-fixup`. It rewinds to the oldest failing commit and fixes each commit from there
     forward. Raised 2026-10-20. Done 2026-10-20: per commit it removes the Claude credit
     lines, adds the author's sign-off, then signs. CI's `signed-off` job runs it with
     `CHECKS=sign-off`.
+52. Documentation of what each signal means: for every `signal_weights` key, what fires
+    it, what it says about the version, an example of its detail, and why its default
+    weight is what it is. Raised 2026-10-29.
+53. [x] `byrle explain` and `byrle policy diff` date a Go version by its record, as the proxy
+    does since decision 0125. They pass `before: None` to `Clients::version_of` today, so
+    they read the `.info` `Time`, and `explain` reports a backdated version as allowed
+    while the proxy refuses it. Their clients are built from the environment, which names
+    no index or checksum database, so their tests cannot keep off the network. Add a
+    setting for both: a `BYRLE_*` URL for the index, and for the checksum database a
+    `GOSUMDB`-style name, key and URL. Raised 2026-10-30.
+    Neither reads a file's first sighting either, which dates an undated pinned fetch
+    since decision 0129, so both report an undated version as having no date. Added
+    2026-11-03.
+    Done 2026-11-08: [dates-reported](docs/engineering_decisions/0137-dates-reported.md).
+    Both call the proxy's `dating::date`, pass a cooldown start, read a first sighting
+    without recording one, and print every date read and the one used. The Go tests set the
+    index and checksum database through `Clients::with`, so no setting was added.
+54. [x] Opengrep for SAST: add it to `make sast` beside semgrep or in its place, with a
+    `scripts/make/opengrep.sh`, the same rules and `// nosemgrep:` suppressions, and a CI
+    step. Raised 2026-11-05.
+    Done 2026-11-13: [opengrep-trial](docs/engineering_decisions/0138-opengrep-trial.md).
+    Tried in `make sast` and removed from it. `make opengrep` stays, sharing
+    `scripts/make/lib/semgrep_scan.sh` with `make semgrep`. No CI step: CI runs no
+    `make sast` job.
 
 ## Architecture Refactor
 

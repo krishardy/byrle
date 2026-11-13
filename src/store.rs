@@ -159,6 +159,18 @@ impl RecordStore {
         }
     }
 
+    /// Whether the document held for `key` lists `filename`. Does not count as a use: the
+    /// lookup that follows does.
+    pub fn lists(&self, at: Repository, key: &PackageKey, filename: &str) -> bool {
+        self.entries.get(&(at, key.clone())).is_some_and(|entry| {
+            entry
+                .metadata
+                .records
+                .iter()
+                .any(|r| r.artifact_named(filename).is_some())
+        })
+    }
+
     /// The version of this package published before `version`, from the document held for
     /// it. [`Previous::Unknown`] when no document is held. Does not count as a use: the
     /// lookup for `version` just did.

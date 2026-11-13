@@ -122,6 +122,7 @@ fn version_record(
             integrity: dist.integrity.clone(),
             legacy_sha1: dist.shasum.clone(),
             attestation_url: dist.attestations.as_ref().and_then(|a| a.url.clone()),
+            published_at: None,
             file_count: dist.file_count,
             unpacked_size: dist.unpacked_size,
         }],
@@ -839,6 +840,7 @@ mod tests {
         let mut packages = 0usize;
         let mut versions = 0usize;
         let mut rewrote = 0usize;
+        let mut served = 0usize;
         let mut failures = Vec::new();
 
         for entry in std::fs::read_dir(dir).expect("corpus directory should be readable") {
@@ -873,7 +875,7 @@ mod tests {
                             .url
                             .split_once("://")
                             .and_then(|(_, rest)| rest.split_once('/'))
-                            .map(|(_, p)| format!("/{p}"))
+                            .map(|(_, p)| format!("{}{p}", super::super::PREFIX))
                             .unwrap_or_default();
                         assert_eq!(
                             bypassing_origin(
@@ -926,13 +928,53 @@ mod tests {
                     }
                     Err(e) => failures.push(format!("{}: rewrite failed: {e}", path.display())),
                 }
+                served += served_as_the_proxy_serves(&body, &p, &path, &mut failures);
             }
         }
 
         println!("{dir}: normalised {versions} versions across {packages} packages ({detail:?})");
         println!("{dir}: rewrote and restored {rewrote} documents byte for byte");
+        println!("{dir}: filtered and repointed {served} documents as the proxy serves them");
         assert!(packages > 0, "corpus at {dir} held no .json files");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// 1 when `rewrite_packument` repoints `body` with nothing refused, and filters it with its
+    /// latest version refused, as the proxy does; each `Err` is a failure, as it answers 502.
+    #[cfg(not(coverage))]
+    fn served_as_the_proxy_serves(
+        body: &[u8],
+        packument: &PackageMetadata,
+        path: &std::path::Path,
+        failures: &mut Vec<String>,
+    ) -> usize {
+        let origins = crate::origin::OriginPolicy::new(default_origins(), std::iter::empty())
+            .expect("valid policy");
+        let latest = packument
+            .records
+            .last()
+            .map(|r| r.package.version().to_owned());
+        let refusals = [
+            std::collections::HashSet::new(),
+            latest.into_iter().collect(),
+        ];
+        let mut served = 1;
+        for refused_by_policy in &refusals {
+            let out = super::super::rewrite_packument(super::super::Rewrite {
+                decoded: body,
+                packument,
+                base: Some("http://127.0.0.1:8080/npm"),
+                origins: &origins,
+                refused_by_policy,
+                refuse_unservable: true,
+                path: "/npm/corpus",
+            });
+            if let Err(why) = out {
+                failures.push(format!("{}: would answer 502: {why}", path.display()));
+                served = 0;
+            }
+        }
+        served
     }
 
     /// `event-stream@0.9.1`, from 2012, carries only `dist.shasum` and no `integrity`.

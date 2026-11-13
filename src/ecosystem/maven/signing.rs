@@ -15,7 +15,7 @@ use super::transport::Client;
 /// The detector for `repository`, at `upstream`. Always made: its signatures are on the
 /// repository itself, and each is read once.
 pub fn made(
-    http: &reqwest::Client,
+    http: &crate::service::Connection,
     repository: Repository,
     upstream: &str,
     _: &crate::env::ApiSetting,
@@ -263,9 +263,10 @@ mod tests {
     }
 
     fn detector(base: &str, keys: &str) -> Signing {
-        let client = Client::new(reqwest::Client::new(), base, 1 << 20).with_key_servers(
-            super::super::keys::KeyServers::at(reqwest::Client::new(), &[keys]),
-        );
+        let client =
+            Client::new(crate::service::Connection::default(), base, 1 << 20).with_key_servers(
+                super::super::keys::KeyServers::at(crate::service::Connection::default(), &[keys]),
+            );
         Signing {
             client,
             repository: Repository::of(Ecosystem::Maven),
@@ -417,7 +418,7 @@ mod tests {
         unnamed.name = "no-group".to_owned();
         assert!(detector(&base, &down).detect(&unnamed).await.is_err());
         let made = made(
-            &reqwest::Client::new(),
+            &crate::service::Connection::default(),
             Repository::of(Ecosystem::Maven),
             &base,
             &crate::env::ApiSetting::Unset,

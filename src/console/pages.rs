@@ -201,7 +201,7 @@ fn login_form(site: &Site, why: Option<&str>) -> Markup {
 }
 
 /// A page saying `why`, with `status`.
-fn refusal(site: &Site, status: StatusCode, why: &str) -> Response {
+pub(super) fn refusal(site: &Site, status: StatusCode, why: &str) -> Response {
     sent(
         status,
         layout(
@@ -292,9 +292,6 @@ struct Credentials {
 /// `POST login`, from the form: 303 home with the session cookie, or the form again.
 pub async fn login(site: Arc<Site>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    if site.foreign(&parts.headers) {
-        return refusal(&site, StatusCode::FORBIDDEN, "a login from another site");
-    }
     let credentials = axum::body::to_bytes(body, super::api::MAX_BODY)
         .await
         .ok()
@@ -342,9 +339,6 @@ pub async fn login(site: Arc<Site>, request: Request) -> Response {
 /// `POST logout`, from the form with the session's CSRF token: 303 to the login form.
 pub async fn logout(site: Arc<Site>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    if site.foreign(&parts.headers) {
-        return refusal(&site, StatusCode::FORBIDDEN, "a logout from another site");
-    }
     #[derive(Deserialize)]
     struct Sent {
         csrf: Option<String>,
@@ -1310,7 +1304,7 @@ mod tests {
         ))));
         let policy =
             Arc::new(crate::policy::Policy::parse("version: 1\ncooldown_days: 3\n").unwrap());
-        let proxy = crate::proxy::Proxy::new(reqwest::Client::new())
+        let proxy = crate::proxy::Proxy::new(crate::service::Connection::default())
             .with_policy(Some(policy))
             .with_intel(Some(intel));
         let settings = crate::env::testing::with(&[(crate::env::GITHUB_TOKEN, "ghp_x")]).settings();
@@ -1610,7 +1604,7 @@ mod tests {
     async fn too_many_failed_oidc_logins_from_an_address_are_429() {
         let down = crate::console::oidc::Provider::new(
             crate::console::oidc::tests::at("http://127.0.0.1:9"),
-            reqwest::Client::new(),
+            &crate::service::Connection::default(),
         );
         let (site, _, _) = oidc_site(Some(down), "pages-oidc-limited").await;
         let from = |address: [u8; 4]| {
@@ -1649,7 +1643,10 @@ mod tests {
         let (issuer, held) = provider().await;
         let (signing, jwk) = key("k1");
         held.lock().unwrap().keys = vec![jwk];
-        let oidc = crate::console::oidc::Provider::new(at(&issuer), reqwest::Client::new());
+        let oidc = crate::console::oidc::Provider::new(
+            at(&issuer),
+            &crate::service::Connection::default(),
+        );
         let (base, log) = with_oidc(Some(oidc), "pages-oidc").await;
 
         let (_, form) = page(&base, HOME_PATH, None).await;
@@ -1762,7 +1759,7 @@ mod tests {
         assert!(!form.contains("oidc/login"), "{form}");
         let down = crate::console::oidc::Provider::new(
             crate::console::oidc::tests::at("http://127.0.0.1:9"),
-            reqwest::Client::new(),
+            &crate::service::Connection::default(),
         );
         let (base, _) = with_oidc(Some(down), "pages-oidc-down").await;
         assert_eq!(page(&base, OIDC_LOGIN_PATH, None).await.0, 502);
@@ -1790,7 +1787,10 @@ mod tests {
         let (issuer, held) = provider().await;
         let (signing, jwk) = key("k1");
         held.lock().unwrap().keys = vec![jwk];
-        let oidc = crate::console::oidc::Provider::new(at(&issuer), reqwest::Client::new());
+        let oidc = crate::console::oidc::Provider::new(
+            at(&issuer),
+            &crate::service::Connection::default(),
+        );
         let (_, base, log) = oidc_site_over(accounts, Some(oidc), label).await;
         let begun = client()
             .get(format!("{base}/admin{OIDC_LOGIN_PATH}"))

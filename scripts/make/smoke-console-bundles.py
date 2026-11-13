@@ -2,7 +2,8 @@
 """OSV bundles for `make smoke-console`: npm.zip and pypi.zip in the directory argv[1].
 
 Each holds one MAL record for a package nobody installs, so a refresh loads a snapshot.
-With argv[2] "yes", npm.zip holds MAL-2099-2 for is-number 7.0.0 as well.
+With argv[2] "yes", npm.zip holds MAL-2099-2 for is-number 7.0.0 as well. With "empty",
+npm.zip holds no entries.
 """
 
 import json
@@ -34,10 +35,11 @@ def write(path, records):
 
 def main():
     directory = Path(sys.argv[1])
-    with_is_number = sys.argv[2] == "yes"
     npm = [record("MAL-2099-1", "npm", "byrle-smoke-nobody", ["0.0.1"])]
-    if with_is_number:
+    if sys.argv[2] == "yes":
         npm.append(record("MAL-2099-2", "npm", "is-number", ["7.0.0"]))
+    elif sys.argv[2] == "empty":
+        npm = []
     write(directory / "npm.zip", npm)
     write(directory / "pypi.zip", [record("MAL-2099-3", "PyPI", "byrle-smoke-nobody", ["0.0.1"])])
 

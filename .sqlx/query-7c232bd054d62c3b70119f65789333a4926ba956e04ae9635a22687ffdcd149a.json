@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT floor(EXTRACT(EPOCH FROM first_seen))::bigint AS \"seen!\"\n            FROM artifact_first_seen WHERE purl = $1 AND filename = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seen!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7c232bd054d62c3b70119f65789333a4926ba956e04ae9635a22687ffdcd149a"
+}

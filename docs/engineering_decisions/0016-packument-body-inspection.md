@@ -26,6 +26,13 @@ Decompression is capped, default 64 MiB since 2026-09-26 (32 MiB before, which v
 38.9 MB full packument exceeded), settable with `BYRLE_MAX_METADATA_BYTES`.
 Past the cap the body is forwarded whole and not parsed.
 
+Amended 2026-11-05, for the security review: in enforce mode a body past the cap, or one
+that cannot be decoded, is answered 502. Forwarded, its artifact URLs stay on the origin,
+and pnpm, yarn, bun and pip fetched them from there. Observe mode still forwards it. An
+npm packument or PyPI index that does not normalize or parse, or cannot be filtered or
+repointed, is answered the same way: see
+[adapter-interface](0047-adapter-interface.md).
+
 ## Rationale
 
 **Why rewrite `Accept-Encoding`.** registry.npmjs.org answers brotli whenever br is

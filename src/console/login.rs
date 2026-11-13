@@ -28,13 +28,17 @@ pub struct Limits {
 /// Passwords hashed at once, each on a blocking thread, off those answering requests.
 const HASHING: usize = 2;
 
-/// Accounts and addresses whose failures are kept; the least recently failed are dropped.
+/// Addresses whose failures are kept; the least recently failed are dropped.
 const TRACKED: usize = 10_000;
+
+/// The buckets account names are counted in, which nothing evicts; names in one share it.
+const ACCOUNT_BUCKETS: u64 = 1 << 16;
 
 /// What failures are counted against.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Key {
-    Account(String),
+    /// The bucket an account's name hashes to, under a key random to this process.
+    Account(u16),
     /// An IPv4 address, or an IPv6 address's /64, which one client usually holds whole.
     Address(IpAddr),
 }
@@ -48,27 +52,57 @@ impl Key {
     }
 }
 
+/// The failures counted: accounts' apart from addresses', so neither drops the other's.
+struct Failures {
+    accounts: std::collections::HashMap<u16, Vec<Instant>>,
+    addresses: Lru<IpAddr, Vec<Instant>>,
+}
+
+impl Failures {
+    fn get(&mut self, key: &Key) -> Option<&Vec<Instant>> {
+        match key {
+            Key::Account(bucket) => self.accounts.get(bucket),
+            Key::Address(address) => self.addresses.get(address),
+        }
+    }
+
+    fn insert(&mut self, key: Key, times: Vec<Instant>) {
+        match key {
+            Key::Account(bucket) => {
+                self.accounts.insert(bucket, times);
+            }
+            Key::Address(address) => self.addresses.insert(address, times),
+        }
+    }
+}
+
 /// Failed logins in the last window, by account and by address, in this process.
 pub struct Limiter {
     limits: Limits,
-    failures: Mutex<Lru<Key, Vec<Instant>>>,
+    /// Hashes an account's name to its bucket.
+    buckets: std::collections::hash_map::RandomState,
+    failures: Mutex<Failures>,
 }
 
 impl Limiter {
     pub fn new(limits: Limits) -> Self {
+        Self::tracking(limits, TRACKED)
+    }
+
+    /// The same, keeping the failures of at most `addresses` addresses.
+    fn tracking(limits: Limits, addresses: usize) -> Self {
         Self {
             limits,
-            failures: Mutex::new(Lru::new(TRACKED)),
+            buckets: std::collections::hash_map::RandomState::new(),
+            failures: Mutex::new(Failures {
+                accounts: std::collections::HashMap::new(),
+                addresses: Lru::new(addresses),
+            }),
         }
     }
 
     /// The failures against `key` within the window of `now`.
-    fn recent(
-        &self,
-        failures: &mut Lru<Key, Vec<Instant>>,
-        key: &Key,
-        now: Instant,
-    ) -> Vec<Instant> {
+    fn recent(&self, failures: &mut Failures, key: &Key, now: Instant) -> Vec<Instant> {
         failures
             .get(key)
             .map(|times| {
@@ -81,8 +115,14 @@ impl Limiter {
             .unwrap_or_default()
     }
 
+    fn account(&self, account: &str) -> Key {
+        use std::hash::BuildHasher;
+        let bucket = self.buckets.hash_one(account) % ACCOUNT_BUCKETS;
+        Key::Account(u16::try_from(bucket).expect("a bucket is under 2^16"))
+    }
+
     fn keys(&self, account: &str, address: Option<IpAddr>) -> Vec<(Key, usize)> {
-        std::iter::once((Key::Account(account.to_owned()), self.limits.per_account))
+        std::iter::once((self.account(account), self.limits.per_account))
             .chain(address.map(|address| (Key::address(address), self.limits.per_address)))
             .collect()
     }
@@ -96,40 +136,61 @@ impl Limiter {
     }
 
     /// Whether each of `keys` is under its limit at `now`.
-    fn under(&self, keys: &[(Key, usize)], now: Instant) -> bool {
-        let mut failures = self.failures.lock().expect("limiter lock");
+    fn under(&self, failures: &mut Failures, keys: &[(Key, usize)], now: Instant) -> bool {
         keys.iter()
-            .all(|(key, limit)| self.recent(&mut failures, key, now).len() < *limit)
+            .all(|(key, limit)| self.recent(failures, key, now).len() < *limit)
     }
 
-    /// Count a failure at `now` against each of `keys`.
-    fn count(&self, keys: Vec<(Key, usize)>, now: Instant) {
-        let mut failures = self.failures.lock().expect("limiter lock");
+    /// Count a failure at `now` for each of `keys`.
+    fn count(&self, failures: &mut Failures, keys: Vec<(Key, usize)>, now: Instant) {
         for (key, _) in keys {
-            let mut times = self.recent(&mut failures, &key, now);
+            let mut times = self.recent(failures, &key, now);
             times.push(now);
             failures.insert(key, times);
         }
     }
 
-    /// Whether a login as `account` from `address` may be checked at `now`.
-    pub fn allows(&self, account: &str, address: Option<IpAddr>, now: Instant) -> bool {
-        self.under(&self.keys(account, address), now)
+    fn lock(&self) -> std::sync::MutexGuard<'_, Failures> {
+        self.failures.lock().expect("limiter lock")
     }
 
-    /// Count a failed login as `account` from `address` at `now`.
-    pub fn failed(&self, account: &str, address: Option<IpAddr>, now: Instant) {
-        self.count(self.keys(account, address), now);
+    /// Whether a login as `account` from `address` may be checked at `now`. One that may is
+    /// counted as a failure under the same lock, before it is checked, so logins sent at
+    /// once are each counted before the next is let in. [`Limiter::forgive`] takes it back.
+    pub fn admits(&self, account: &str, address: Option<IpAddr>, now: Instant) -> bool {
+        let keys = self.keys(account, address);
+        let mut failures = self.lock();
+        let admitted = self.under(&mut failures, &keys, now);
+        if admitted {
+            self.count(&mut failures, keys, now);
+        }
+        admitted
+    }
+
+    /// Take back the failure [`Limiter::admits`] counted at `now`, for a login that did not
+    /// fail.
+    pub fn forgive(&self, account: &str, address: Option<IpAddr>, now: Instant) {
+        let mut failures = self.lock();
+        for (key, _) in self.keys(account, address) {
+            let found = failures.get(&key).and_then(|times| {
+                let at = times.iter().position(|at| *at == now)?;
+                Some((times.clone(), at))
+            });
+            if let Some((mut times, at)) = found {
+                times.remove(at);
+                failures.insert(key, times);
+            }
+        }
     }
 
     /// Whether an OIDC login from `address` may go on at `now`.
     pub fn allows_from(&self, address: Option<IpAddr>, now: Instant) -> bool {
-        self.under(&self.from(address), now)
+        self.under(&mut self.lock(), &self.from(address), now)
     }
 
     /// Count a failed OIDC login from `address` at `now`.
     pub fn failed_from(&self, address: Option<IpAddr>, now: Instant) {
-        self.count(self.from(address), now);
+        self.count(&mut self.lock(), self.from(address), now);
     }
 }
 
@@ -189,22 +250,27 @@ impl Login {
     /// Log in as `account` with `password`, from `source`.
     pub async fn attempt(&self, account: &str, password: &str, source: Option<IpAddr>) -> Attempt {
         let now = Instant::now();
-        if !self.limiter.allows(account, source, now) {
+        if !self.limiter.admits(account, source, now) {
             return Attempt::Limited;
         }
         let name = Name::parse(account).ok();
         let hash = match &name {
             Some(name) => match self.store.password(name).await {
                 Ok(hash) => hash,
-                Err(_) => return Attempt::Unanswered,
+                Err(_) => {
+                    self.limiter.forgive(account, source, now);
+                    return Attempt::Unanswered;
+                }
             },
             None => None,
         };
         let verified = self.verify(password, hash.as_deref()).await;
         match name.filter(|_| verified && hash.is_some()) {
-            Some(name) => self.start(name, source).await,
+            Some(name) => {
+                self.limiter.forgive(account, source, now);
+                self.start(name, source).await
+            }
             None => {
-                self.limiter.failed(account, source, now);
                 self.record(AccountEvent::by_console(
                     Action::LoginFailed,
                     account,
@@ -346,18 +412,47 @@ pub(crate) mod tests {
         let limiter = Limiter::new(limits());
         let start = Instant::now();
         for n in 0..limits().per_account {
-            assert!(limiter.allows("alice", None, start), "failure {n}");
-            limiter.failed("alice", None, start);
+            assert!(limiter.admits("alice", None, start), "failure {n}");
         }
-        assert!(!limiter.allows("alice", None, start));
-        assert!(!limiter.allows("alice", address("192.0.2.1"), start));
-        assert!(limiter.allows("bob", None, start));
-        assert!(!limiter.allows(
+        assert!(!limiter.admits("alice", None, start));
+        assert!(!limiter.admits("alice", address("192.0.2.1"), start));
+        assert!(limiter.admits("bob", None, start));
+        assert!(!limiter.admits(
             "alice",
             None,
             start + limits().window - Duration::from_secs(1)
         ));
-        assert!(limiter.allows("alice", None, start + limits().window));
+        limiter.forgive("alice", None, start);
+        assert!(limiter.admits("alice", None, start), "one taken back");
+        assert!(!limiter.admits("alice", None, start));
+        limiter.forgive("alice", None, start + Duration::from_secs(1));
+        assert!(
+            !limiter.admits("alice", None, start),
+            "none at that instant"
+        );
+        limiter.forgive("carol", None, start);
+        assert!(limiter.admits("alice", None, start + limits().window));
+    }
+
+    /// An account's count outlasts failures from more addresses, under more names, than the
+    /// addresses kept: no failure evicts it.
+    #[test]
+    fn an_account_s_count_is_kept_through_a_flood_of_other_failures() {
+        let kept = 100;
+        let limiter = Limiter::tracking(limits(), kept);
+        let now = Instant::now();
+        for _ in 0..limits().per_account {
+            assert!(limiter.admits("alice", None, now));
+        }
+        for n in 0..2 * kept as u64 {
+            let from: IpAddr = std::net::Ipv6Addr::from(u128::from(n) << 64).into();
+            limiter.admits(&format!("user{n}"), Some(from), now);
+        }
+        assert!(
+            !limiter.admits("alice", None, now),
+            "alice is still limited"
+        );
+        assert!(limiter.lock().accounts.len() <= ACCOUNT_BUCKETS as usize);
     }
 
     /// An address is limited across accounts; an IPv6 address by its /64.
@@ -367,12 +462,11 @@ pub(crate) mod tests {
         let now = Instant::now();
         for n in 0..limits().per_address {
             let tried = format!("user{n}");
-            assert!(limiter.allows(&tried, address("2001:db8:0:1::1"), now));
-            limiter.failed(&tried, address("2001:db8:0:1::1"), now);
+            assert!(limiter.admits(&tried, address("2001:db8:0:1::1"), now));
         }
-        assert!(!limiter.allows("other", address("2001:db8:0:1:ffff::9"), now));
-        assert!(limiter.allows("other", address("2001:db8:0:2::1"), now));
-        assert!(limiter.allows("other", address("192.0.2.1"), now));
+        assert!(!limiter.admits("other", address("2001:db8:0:1:ffff::9"), now));
+        assert!(limiter.admits("other", address("2001:db8:0:2::1"), now));
+        assert!(limiter.admits("other", address("192.0.2.1"), now));
         assert_eq!(
             Key::address("192.0.2.1".parse().unwrap()),
             Key::Address("192.0.2.1".parse().unwrap())
@@ -476,6 +570,38 @@ pub(crate) mod tests {
         ));
     }
 
+    /// Logins sent at once are each counted before the next is checked: past the limit the
+    /// rest are not checked. A login that succeeds is not counted.
+    #[tokio::test]
+    async fn logins_sent_at_once_are_limited_and_a_success_is_not_counted() {
+        let login = login(store().await, None);
+        let at_once = (0..limits().per_account + 3)
+            .map(|_| login.attempt("alice", "wrong horse battery", None));
+        let attempts = futures_util::future::join_all(at_once).await;
+        let refused = attempts.iter().filter(|a| **a == Attempt::Refused).count();
+        assert_eq!(refused, limits().per_account);
+        assert_eq!(attempts.len() - refused, 3);
+        assert!(
+            attempts[limits().per_account..]
+                .iter()
+                .all(|a| *a == Attempt::Limited)
+        );
+
+        let login = super::tests::login(store().await, None);
+        for _ in 1..limits().per_account {
+            login.attempt("alice", "wrong horse battery", None).await;
+        }
+        assert!(matches!(
+            login.attempt("alice", PASSWORD, None).await,
+            Attempt::Started(_)
+        ));
+        assert_eq!(
+            login.attempt("alice", "wrong horse battery", None).await,
+            Attempt::Refused,
+            "the success was not the fifth failure"
+        );
+    }
+
     /// A store that cannot answer is said so, whether it fails reading the password or
     /// starting the session.
     #[tokio::test]
@@ -486,10 +612,13 @@ pub(crate) mod tests {
             limits(),
             None,
         );
-        assert_eq!(
-            down.attempt("alice", PASSWORD, None).await,
-            Attempt::Unanswered
-        );
+        for _ in 0..=limits().per_account {
+            assert_eq!(
+                down.attempt("alice", PASSWORD, None).await,
+                Attempt::Unanswered,
+                "an unanswered login is not counted"
+            );
+        }
         for fails in ["roles", "create_session"] {
             let failing = crate::account::testing::Failing {
                 inner: store().await,

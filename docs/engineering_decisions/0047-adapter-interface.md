@@ -75,6 +75,22 @@ the same name.
 | A version order that is not total | every order was | `VersionOrder::Maven`, Maven's `ComparableVersion`. A range's events are sorted by insertion |
 | A file holding the digest of a document the proxy rewrites | forwarded as it came | `Registry::sidecar`: Maven's `maven-metadata.xml.sha1` and `.md5` are the digests of the body the proxy serves. Added 2026-10-17 |
 
+## Amended 2026-11-05: a document the row could not read or rewrite
+
+For the security review. `Registry::read` returns `Result<Option<Box<dyn Document>>,
+String>` and `Document::rewrite` returns `Result<Option<Vec<u8>>, String>`. `Ok(None)`
+forwards the document as it came. `Err` says why a change the proxy needed failed, and
+`proxy::unchecked_document` answers it 502, or forwards it in observe mode.
+
+| Row | `Err` from `read` | `Err` from `rewrite` |
+|---|---|---|
+| npm | the packument did not normalize | it could not be filtered; the versions kept, or its artifacts, could not be pointed at the proxy |
+| PyPI | the index did not parse | it could not be filtered; its files could not be pointed at the proxy |
+| cargo, Go, Maven | never | never: their files are fetched at the proxy and decided there |
+
+A packument that escapes the slashes in its tarball URLs normalizes, and was forwarded with
+those URLs on the origin.
+
 ## Decision
 
 No `trait Adapter`. Four modules hold what both ecosystems answer the same way. Of those,

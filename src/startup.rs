@@ -64,7 +64,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let listen = environment.listen()?;
     let console = crate::console::Console::from_env(environment, &listen)?;
     let upstreams = environment.upstreams()?;
-    let client = upstream_client(environment)?;
+    let connection = connection(environment)?;
     let max_metadata_bytes = environment.max_metadata_bytes()?;
     let max_records = environment.max_records()?;
     let max_verified = environment.max_verified()?;
@@ -93,18 +93,18 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let spool = open_spool(environment)?;
 
     let analyser = Analyser::new(
-        client.clone(),
+        connection.clone(),
         spool.clone(),
         analyses,
         environment.max_concurrent_analyses()?,
         max_verified,
     )
     .with_sources(environment.source_archives()?)
-    .with_detectors(detectors(environment, &client, &upstreams).await?)
+    .with_detectors(detectors(environment, &connection, &upstreams).await?)
     .with_virustotal(virustotal(environment)?.as_ref());
     analyser.forget_decisions_daily(environment.decision_retention_days()?);
 
-    let proxy = Proxy::new(client.clone())
+    let proxy = Proxy::new(connection.clone())
         .with_upstreams(upstreams)
         .with_intel(intel)
         .with_spool(Some(spool))
@@ -121,6 +121,8 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .map_err(|e| StartupError::Unusable(format!("origin configuration: {e}")))?
         .with_max_concurrent_documents(max_concurrent)
         .with_max_traffic_clients(environment.max_traffic_clients()?)
+        .with_watch_max_versions(environment.watch_max_versions()?)
+        .with_max_indexes_per_file(environment.max_indexes_per_file()?)
         .with_policy(policy)
         .with_audit_log(audit)
         .with_usage(usage)
@@ -133,8 +135,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     #[cfg(debug_assertions)]
     let proxy = proxy.with_defer_test(defer_test);
     let oidc = environment.oidc()?;
-    let provider =
-        oidc.map(|settings| crate::console::oidc::Provider::new(settings, client.clone()));
+    let provider = oidc.map(|settings| crate::console::oidc::Provider::new(settings, &connection));
     let console = beside(console, &proxy, environment, (&listen, provider));
 
     let watch = environment.watch_interval()?;
@@ -206,7 +207,8 @@ fn site<L: Fn(&str) -> Option<OsString>>(
     Ok(Some(
         crate::console::Site::new(console, accounts, login, events)
             .with_usage(usage)
-            .with_logs(audit_log, event_log),
+            .with_logs(audit_log, event_log)
+            .with_max_diff_versions(environment.max_diff_versions()?),
     ))
 }
 
@@ -260,15 +262,15 @@ fn gate<L: Fn(&str) -> Option<OsString>>(
     Ok(Some(crate::account::gate::Gate::new(accounts)))
 }
 
-/// The client every upstream request goes through, trusting [`env::CA_BUNDLE`]'s roots
-/// too when it is set, or only them with [`env::CA_BUNDLE_EXCLUSIVE`].
+/// How each upstream service's client connects, trusting [`env::CA_BUNDLE`]'s roots too
+/// when it is set, or only them with [`env::CA_BUNDLE_EXCLUSIVE`].
 /// Errors when a bundle is named and does not load.
-fn upstream_client<L: Fn(&str) -> Option<OsString>>(
+pub(crate) fn connection<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
-) -> Result<reqwest::Client, StartupError> {
-    let builder = crate::http::client_builder(crate::http::READ_TIMEOUT);
+) -> Result<crate::service::Connection, StartupError> {
+    let connection = crate::service::Connection::default();
     let Some(path) = environment.ca_bundle()? else {
-        return Ok(builder.build().expect("the TLS backend initialises"));
+        return Ok(connection);
     };
     let exclusive = environment.ca_bundle_exclusive()?;
     let mode = if exclusive {
@@ -287,7 +289,8 @@ fn upstream_client<L: Fn(&str) -> Option<OsString>>(
     if exclusive {
         info!("public roots are NOT trusted for the upstream connection");
     }
-    tls::build(tls::apply(builder, certificates, mode), &path)
+    connection
+        .trusting(certificates, mode, &path)
         .map_err(|e| StartupError::Unusable(e.to_string()))
 }
 
@@ -444,7 +447,7 @@ async fn warn_enforcement(store: Option<&dyn Intel>) {
 /// one does not parse or does not print a version.
 async fn detectors<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
-    client: &reqwest::Client,
+    client: &crate::service::Connection,
     upstreams: &crate::ecosystem::Upstreams,
 ) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
     let mut configured = publishers(environment, client, upstreams)?;
@@ -465,7 +468,7 @@ async fn detectors<L: Fn(&str) -> Option<OsString>>(
 /// Each registry's detector asking its API who published a version, logged on or off.
 fn publishers<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
-    client: &reqwest::Client,
+    client: &crate::service::Connection,
     upstreams: &crate::ecosystem::Upstreams,
 ) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
     let (setting, interval) = environment.crates_api()?;
@@ -759,7 +762,7 @@ mod tests {
                 .is_none()
         );
         let running = site(&with(&vars), console(), Some((accounts.clone(), kept()))).unwrap();
-        let proxy = Proxy::new(reqwest::Client::new());
+        let proxy = Proxy::new(crate::service::Connection::default());
         let running =
             beside(running, &proxy, &with(&vars), ("0.0.0.0:8080", None)).expect("a console");
         assert_eq!(running.console.mount.to_string(), "/admin/");
@@ -800,7 +803,11 @@ mod tests {
             panic!("an unreadable audit log path stops the console");
         };
         assert_eq!(e.var, env::AUDIT_LOG.name);
-        for bad in [(env::ARGON2_PASSES, "0"), (env::SESSION_HOURS, "0")] {
+        for bad in [
+            (env::ARGON2_PASSES, "0"),
+            (env::SESSION_HOURS, "0"),
+            (env::MAX_DIFF_VERSIONS, "-1"),
+        ] {
             let accounts: Arc<dyn crate::account::Accounts> =
                 Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
             let Err(StartupError::Env(e)) =
@@ -1018,6 +1025,34 @@ mod tests {
         assert!(log.contains("watcher off"), "{log}");
     }
 
+    /// VirusTotal's client follows no redirect to another origin, so its key stays on its own.
+    #[tokio::test]
+    async fn virustotal_s_key_follows_no_redirect_elsewhere() {
+        use crate::util::test_support::{Answer, recorded};
+        let (elsewhere, asked) = recorded(vec![Answer::body("{}")]).await;
+        let to = format!("http://{elsewhere}/files/x");
+        let redirect = axum::Router::new().fallback(move || {
+            let to = to.clone();
+            async move {
+                (
+                    axum::http::StatusCode::TEMPORARY_REDIRECT,
+                    [(axum::http::header::LOCATION, to)],
+                )
+            }
+        });
+        let base = crate::proxy::testing::serve(redirect).await;
+        let environment = with(&[(env::VIRUSTOTAL_API_KEY, "k"), (env::VIRUSTOTAL_URL, &base)]);
+        let settings = virustotal(&environment).unwrap().expect("on");
+        let connection = connection(&environment).unwrap();
+        let client = crate::analysis::virustotal::Client::new(&connection, &settings);
+        let answer = client.lookup("x").await.unwrap_err().to_string();
+        assert_eq!(answer, "VirusTotal: answered 307");
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "the redirect is not followed"
+        );
+    }
+
     /// VirusTotal is said to be off without a key, and on with its mode and limits with one;
     /// a setting that does not parse refuses the start. The key is never logged.
     #[tokio::test]
@@ -1142,7 +1177,7 @@ mod tests {
         let dir = crate::util::test_support::tempdir("startup-reload");
         let path = dir.join("policy.yaml");
         let file = path.to_str().unwrap();
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_policy(Some(Arc::new(Policy::parse(DENY).unwrap())));
 
         std::fs::write(&path, ALLOW).unwrap();
@@ -1194,7 +1229,7 @@ mod tests {
         let dir = crate::util::test_support::tempdir("startup-hangup");
         let path = dir.join("policy.yaml");
         std::fs::write(&path, ALLOW).unwrap();
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_policy(Some(Arc::new(Policy::parse(DENY).unwrap())));
         tokio::spawn(reload_on_hangup(
             proxy.clone(),
@@ -1333,6 +1368,8 @@ mod tests {
             (vec![(env::SPOOL_DIR, &spool)], env::SOURCE_ARCHIVES),
             (vec![(env::SPOOL_DIR, &spool)], env::DETECTORS),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_TRAFFIC_CLIENTS),
+            (vec![(env::SPOOL_DIR, &spool)], env::WATCH_MAX_VERSIONS),
+            (vec![(env::SPOOL_DIR, &spool)], env::MAX_INDEXES_PER_FILE),
             (vec![(env::SPOOL_DIR, &spool)], env::WATCH_INTERVAL),
         ];
         if cfg!(debug_assertions) {
@@ -1423,7 +1460,7 @@ mod tests {
         let dir = crate::util::test_support::tempdir("startup-reload-each");
         let path = dir.join("policy.yaml");
         std::fs::write(&path, ALLOW).unwrap();
-        let proxy = Proxy::new(reqwest::Client::new());
+        let proxy = Proxy::new(crate::service::Connection::default());
         let environment = with(&[(env::POLICY, path.to_str().unwrap())]);
         reload_each(proxy.clone(), environment, futures_util::stream::iter([()])).await;
         assert_eq!(digest(&proxy), Some(crate::policy::digest_of(ALLOW)));

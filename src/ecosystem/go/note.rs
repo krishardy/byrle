@@ -54,6 +54,11 @@ impl Verifier {
         Ok(verifier)
     }
 
+    /// The name the key signs as, such as `sum.golang.org`.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// The text of `note` when one of its signatures is this key's and verifies. Errors
     /// with why not.
     pub fn open<'a>(&self, note: &'a str) -> Result<&'a str, String> {

@@ -119,6 +119,11 @@ fn filter_listed(
             Disposition::Refused(_) => allowed += 1,
         }
     }
+    for version in refused_by_policy {
+        if listed(version) && !removed.contains(version) {
+            removed.push(version.clone());
+        }
+    }
 
     let gone: HashSet<&str> = removed.iter().map(String::as_str).collect();
     let tags = top.get("dist-tags").and_then(Members::of);
@@ -206,12 +211,17 @@ pub struct Rewrite<'a> {
 /// Point a packument's artifacts at the proxy, or explain why it was left alone.
 ///
 /// Returns `None` when the document is forwarded as it came, which always means some
-/// artifacts for this package will be fetched without the proxy seeing them.
-pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
+/// artifacts for this package will be fetched without the proxy seeing them. `Err` when
+/// it could not be filtered, or its artifacts not pointed at `base`.
+pub fn rewrite_packument(r: Rewrite<'_>) -> Result<Option<Vec<u8>>, String> {
     let (allowed_direct, refused) = r.packument.unserved_origins(r.origins);
     warn_allowed_direct(r.path, &allowed_direct);
-    if !r.refused_by_policy.is_empty() || (r.refuse_unservable && !refused.is_empty()) {
-        return filtered(&r, &refused);
+    let unread = &r.packument.skipped;
+    if !r.refused_by_policy.is_empty()
+        || !unread.is_empty()
+        || (r.refuse_unservable && !refused.is_empty())
+    {
+        return filtered(&r, &refused).map(Some);
     }
     warn_unserved(r.path, &refused, r.packument.records.len());
     repointed(&r)
@@ -230,11 +240,14 @@ fn warn_allowed_direct(path: &str, allowed_direct: &BTreeMap<String, usize>) {
     );
 }
 
-/// The document with the versions the policy refuses, and those on an origin the proxy
-/// does not serve, removed. `refused` is those origins, with their version counts.
-/// Returns `None` when the document cannot be filtered.
-fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Option<Vec<u8>> {
+/// The document with the versions the policy refuses, those that did not normalise, and those
+/// on an origin the proxy does not serve, removed. `refused` is those origins, with their
+/// version counts.
+/// `Err` when the document cannot be filtered, or the versions kept pointed at the proxy.
+fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Result<Vec<u8>, String> {
     let origins: Vec<&String> = refused.keys().collect();
+    let unread = r.packument.skipped.iter().map(|s| s.version.clone());
+    let removing: HashSet<String> = r.refused_by_policy.iter().cloned().chain(unread).collect();
     let artifacts = r.packument.records.iter().filter_map(|record| {
         Some((
             record.package.version().to_owned(),
@@ -245,30 +258,30 @@ fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Option<Vec<u8
         r.decoded,
         artifacts,
         r.origins,
-        r.refused_by_policy,
+        &removing,
         r.refuse_unservable,
         r.base,
     ) {
         Ok(filtered) => {
             if let Some(why) = &filtered.unrepointed {
-                warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %why, "UNINSPECTED: the versions kept could not be pointed at the proxy");
+                return Err(format!(
+                    "the versions kept could not be pointed at the proxy: {why}"
+                ));
             }
             warn!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
                 byrle.package.removed = filtered.removed.len(),
                 byrle.package.removed_by_policy = r.refused_by_policy.len(),
+                byrle.package.removed_unread = r.packument.skipped.len(),
                 byrle.package.kept = filtered.rewritten,
                 byrle.package.allowed_direct = filtered.allowed,
                 byrle.package.origins = ?origins,
                 "REFUSED versions removed from the document so the resolver picks \
                  another"
             );
-            Some(filtered.body)
+            Ok(filtered.body)
         }
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %e, "UNINSPECTED: packument could not be filtered");
-            None
-        }
+        Err(e) => Err(format!("the packument could not be filtered: {e}")),
     }
 }
 
@@ -299,20 +312,20 @@ fn warn_unserved(path: &str, refused: &BTreeMap<String, usize>, records: usize) 
 }
 
 /// The document with its artifact URLs pointed at the proxy.
-/// Returns `None` when URLs are not repointed, nothing was, or the rewrite failed.
-fn repointed(r: &Rewrite<'_>) -> Option<Vec<u8>> {
-    let base = r.base?;
+/// Returns `None` when URLs are not repointed or nothing was, and `Err` when the rewrite
+/// failed.
+fn repointed(r: &Rewrite<'_>) -> Result<Option<Vec<u8>>, String> {
+    let Some(base) = r.base else {
+        return Ok(None);
+    };
     let artifacts = r
         .packument
         .records
         .iter()
         .filter_map(|record| Some(record.artifact()?.url.as_str()));
     match rewrite_artifact_origins(r.decoded, artifacts, r.origins.reachable(), base) {
-        Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %e, "UNINSPECTED: packument could not be rewritten");
-            None
-        }
+        Ok(rewritten) => Ok((rewritten.rewritten > 0).then_some(rewritten.body)),
+        Err(e) => Err(format!("the packument could not be rewritten: {e}")),
     }
 }
 
@@ -506,6 +519,19 @@ mod tests {
         refused_by_policy: &HashSet<String>,
         refuse_unservable: bool,
     ) -> Option<serde_json::Value> {
+        rewrite_result(json, origins, base, refused_by_policy, refuse_unservable)
+            .expect("the packument rewrites")
+            .map(|body| serde_json::from_slice(&body).expect("json"))
+    }
+
+    /// `rewrite_packument` over `json`, its failure included.
+    fn rewrite_result(
+        json: &str,
+        origins: &OriginPolicy,
+        base: Option<&str>,
+        refused_by_policy: &HashSet<String>,
+        refuse_unservable: bool,
+    ) -> Result<Option<Vec<u8>>, String> {
         let packument = normalize_packument(json.as_bytes(), DocumentDetail::Abbreviated)
             .expect("should normalise");
         rewrite_packument(Rewrite {
@@ -517,7 +543,6 @@ mod tests {
             refuse_unservable,
             path: "/npm/w",
         })
-        .map(|body| serde_json::from_slice(&body).expect("json"))
     }
 
     const ON_REGISTRY: &str = r#"{"name":"w","versions":{
@@ -1017,8 +1042,31 @@ mod tests {
         );
     }
 
+    /// A version that does not normalise is removed, with the tags naming it, whether or not
+    /// artifacts are pointed at the proxy: its tarball URL would not be.
+    #[test]
+    fn a_version_that_does_not_normalise_is_removed_with_its_tags() {
+        let json = r#"{"name":"w","dist-tags":{"latest":"1.0.1","stable":"1.0.0"},"versions":{
+            "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}},
+            "1.0.1":{"version":"1.0.1","scripts":{"n":1},"dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.1.tgz"}}}}"#;
+        let packument = normalize_packument(json.as_bytes(), DocumentDetail::Abbreviated)
+            .expect("should normalise");
+        assert_eq!(packument.skipped.len(), 1, "{:?}", packument.skipped);
+        for base in [Some(PROXY), None] {
+            let body = rewrite_document(json, &policy(&[], &[]), base, &HashSet::new(), true)
+                .expect("the unread version is removed");
+            assert!(body["versions"].get("1.0.1").is_none(), "{body}");
+            assert!(body["dist-tags"].get("latest").is_none(), "{body}");
+            assert_eq!(body["dist-tags"]["stable"], "1.0.0");
+            let tarball = body["versions"]["1.0.0"]["dist"]["tarball"]
+                .as_str()
+                .unwrap();
+            assert_eq!(tarball.starts_with(PROXY), base.is_some(), "{tarball}");
+        }
+    }
+
     /// A record with no file is skipped, and a body that cannot be filtered or rewritten
-    /// is forwarded as it came.
+    /// is an error.
     #[test]
     fn records_with_no_file_and_bodies_that_cannot_be_changed() {
         let mut packument =
@@ -1040,19 +1088,27 @@ mod tests {
             })
         };
         assert!(
-            rewrite(ON_REGISTRY.as_bytes(), &refused).is_some(),
+            rewrite(ON_REGISTRY.as_bytes(), &refused).is_ok_and(|body| body.is_some()),
             "filtered"
         );
         assert_eq!(
             rewrite(ON_REGISTRY.as_bytes(), &none),
-            None,
+            Ok(None),
             "nothing to point"
         );
-        assert_eq!(rewrite(b"not json", &refused), None, "cannot be filtered");
-        assert_eq!(
-            rewrite(b"\xff", &HashSet::new()),
-            None,
-            "cannot be rewritten"
+        let unfiltered = rewrite(b"not json", &refused);
+        assert!(
+            unfiltered
+                .as_ref()
+                .is_err_and(|why| why.contains("could not be filtered")),
+            "{unfiltered:?}"
+        );
+        let unrewritten = rewrite(b"\xff", &HashSet::new());
+        assert!(
+            unrewritten
+                .as_ref()
+                .is_err_and(|why| why.contains("could not be rewritten")),
+            "{unrewritten:?}"
         );
         let packument = normalize_packument(ON_REGISTRY.as_bytes(), DocumentDetail::Abbreviated)
             .expect("should normalise");
@@ -1065,7 +1121,7 @@ mod tests {
             refuse_unservable: true,
             path: "/npm/w",
         });
-        assert_eq!(rewritten, None, "not UTF-8");
+        assert!(rewritten.is_err(), "not UTF-8");
     }
 
     /// A listed version the document does not carry, and a document with no versions,
@@ -1209,15 +1265,18 @@ mod tests {
             body["versions"]["1.0.0"]["dist"]["tarball"],
             "https://registry.npmjs.org/w/-/w-1.0.0.tgz"
         );
+        let unrepointed = rewrite_result(
+            json,
+            &policy(&[], &[]),
+            Some(PROXY),
+            &refusing(&["1.0.1"]),
+            true,
+        );
         assert!(
-            rewrite_document(
-                json,
-                &policy(&[], &[]),
-                Some(PROXY),
-                &refusing(&["1.0.1"]),
-                true
-            )
-            .is_some()
+            unrepointed
+                .as_ref()
+                .is_err_and(|why| why.contains("could not be pointed at the proxy")),
+            "{unrepointed:?}"
         );
     }
 }
