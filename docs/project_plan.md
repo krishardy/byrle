@@ -802,7 +802,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | 11 | [Config format](engineering_decisions/0001-config-format-yaml-serde-saphyr.md) | YAML via `serde-saphyr`; schema forbids `#[serde(untagged)]` |
 | 12 | [HTTP stack](engineering_decisions/0004-http-stack-axum-reqwest.md) | axum + reqwest; no fetch trait in Stage 1 |
 | 14 | [Storage](engineering_decisions/0025-storage-sqlx-postgres.md) | sqlx over Postgres, no ORM; compile-time checked SQL with a checked-in `.sqlx/` cache |
-| n/a | [sqlx version and `rsa` advisory](engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md) | sqlx held at 0.8 until kani bundles rustc 1.94; RUSTSEC-2023-0071 ignored only while `rsa` is not compiled |
+| n/a | [sqlx version and `rsa` advisory](engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md) | sqlx 0.9 since 2026-11-13, with kani 0.68.0; RUSTSEC-2023-0071 ignored only while `rsa` is not compiled |
 | n/a | [OSV malware load](engineering_decisions/0027-osv-malware-load.md) | npm `MAL-` records via `byrle refresh`; `all.zip` read in memory; delete by source and `COPY` in one transaction |
 | n/a | [Intel in decisions](engineering_decisions/0026-intel-in-decisions.md) | One store query per package; a store that cannot answer is a 503 |
 | n/a | [Alias matching](engineering_decisions/0039-alias-matching.md) | an enrichment or exception naming any alias applies; records sharing aliases are not merged |

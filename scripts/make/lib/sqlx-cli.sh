@@ -11,7 +11,7 @@
 
 # Pinned to the sqlx minor in Cargo.toml. An installed CLI of another minor is replaced
 # rather than kept.
-byrle_sqlx_minor="0.8"
+byrle_sqlx_minor="0.9"
 
 byrle_install_sqlx_cli() {
     echo "==> sqlx-cli $byrle_sqlx_minor (offline query cache, used by 'make sqlx-prepare')"

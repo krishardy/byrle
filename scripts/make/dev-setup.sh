@@ -187,9 +187,9 @@ else
     echo "    See https://semgrep.dev/docs/getting-started/"
 fi
 
-# Pinned: kani 0.68.0 panics compiling this crate, at kani-compiler/src/intrinsics.rs:243.
+# Pinned: sqlx 0.9 needs the rustc 1.94 or later that kani 0.68.0 bundles.
 # See docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md.
-kani_version="0.67.0"
+kani_version="0.68.0"
 echo "==> kani $kani_version (formal verification, used by 'make verify')"
 if [[ "$(cargo kani --version 2>/dev/null)" == "cargo-kani $kani_version" ]]; then
     echo "    already installed"

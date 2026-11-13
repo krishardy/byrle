@@ -1,8 +1,10 @@
-# sqlx held at 0.8, and RUSTSEC-2023-0071 accepted while `rsa` is not built
+# sqlx held at 0.8 until kani 0.68.0, and RUSTSEC-2023-0071 accepted while `rsa` is not built
 
 - **Number:** 0028
-- **Status:** Implemented. Amended 2026-10-17: `rsa` is built for `pgp`
-- **Where:** `Cargo.toml` (sqlx `0.8`), `scripts/make/dev-setup.sh` (sqlx-cli `0.8`),
+- **Status:** Implemented. Amended 2026-10-17: `rsa` is built for `pgp`. Amended 2026-11-13:
+  sqlx is on 0.9, with kani 0.68.0
+- **Where:** `Cargo.toml` (sqlx `0.9`), `scripts/make/lib/sqlx-cli.sh` (sqlx-cli `0.9`),
+  `scripts/make/dev-setup.sh` (kani `0.68.0`),
   `scripts/make/check-deps.sh` (the ignore and its premise check)
 - **Related:** [storage-sqlx-postgres](0025-storage-sqlx-postgres.md)
 
@@ -59,6 +61,25 @@ When a kani release bundles rustc 1.94 or later:
 4. If `rsa` has left `Cargo.lock`, remove the RUSTSEC-2023-0071 block from `check-deps.sh`.
 5. `make sqlx-prepare`, then `make verify`, `make test-integration`, `make sqlx-prepare
    ARGS=--check`, `make check-deps`.
+
+### Amended 2026-11-13: hold lifted with kani 0.68.0
+
+kani 0.68.0 is still the newest release. On 2026-11-13 it compiled this crate:
+`Complete - 30 successfully verified harnesses, 0 failures, 30 total.` The panic at
+`intrinsics.rs:243` did not recur. Rust stable is 1.100.0 and the repository pins no toolchain;
+`make verify` compiles with kani's bundled `nightly-2026-08-21`.
+
+| Step | State |
+|---|---|
+| 1. `kani_version="0.68.0"` | Done |
+| 2. sqlx `0.9`, `byrle_sqlx_minor="0.9"` | Done. sqlx-cli 0.9.0 installed |
+| 3. `AssertSqlSafe` in `tests/postgres.rs` | Done: the four in `fresh` and `connect`, the `raw_sql` in the range check, and the `UPDATE artifact_source` |
+| 3a. `AssertSqlSafe` in `src/intel/postgres.rs` | Done: the two statements in `write_advisories`, which format in `load::ADVISORY_COLUMNS` |
+| 4. Remove the RUSTSEC-2023-0071 block | Not done. `rsa` is built for `pgp` (amended 2026-10-17) |
+| 5. `make sqlx-prepare`, `make test-integration` | Not run. No Postgres on the machine that made the change |
+
+`make lint`, `make verify` and `make test` pass. `libsqlite3-sys` 0.30.1 stays in `Cargo.lock`
+under `sqlx-sqlite` 0.9.0, which is not built, and RUSTSEC-2026-0459 still fails `make check-deps`.
 
 ## RUSTSEC-2023-0071
 

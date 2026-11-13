@@ -19,7 +19,7 @@ use byrle::intel::rows::{self, Rows};
 use byrle::intel::snapshot_dir::SnapshotDir;
 use byrle::intel::snapshot_intel::SnapshotIntel;
 use byrle::intel::store::{Intel, IntelError, LoadedSnapshot, PackageIntel};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The database to test against, or nothing, in which case the test is skipped.
@@ -55,15 +55,17 @@ async fn fresh(name: &'static str) -> Option<PgIntel> {
     );
     let pool = PgPool::connect(&url()?).await.expect("should connect");
     let name = schema(name);
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS {name} CASCADE"))
-        .execute(&pool)
-        .await
-        .expect("should drop");
-    sqlx::query(&format!("CREATE SCHEMA {name}"))
+    sqlx::query(AssertSqlSafe(format!(
+        "DROP SCHEMA IF EXISTS {name} CASCADE"
+    )))
+    .execute(&pool)
+    .await
+    .expect("should drop");
+    sqlx::query(AssertSqlSafe(format!("CREATE SCHEMA {name}")))
         .execute(&pool)
         .await
         .expect("should create");
-    sqlx::query(&format!("SET search_path TO {name}"))
+    sqlx::query(AssertSqlSafe(format!("SET search_path TO {name}")))
         .execute(&pool)
         .await
         .expect("should set");
@@ -81,7 +83,7 @@ async fn connect(name: &str) -> Option<PgPool> {
         .after_connect(move |conn, _| {
             let name = schema.clone();
             Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO {name}"))
+                sqlx::query(AssertSqlSafe(format!("SET search_path TO {name}")))
                     .execute(&mut *conn)
                     .await?;
                 Ok(())
@@ -1124,7 +1126,10 @@ async fn a_range_row_with_both_ends_or_neither_is_refused_by_the_schema() {
              SELECT id, 'npm', 'p', {values} FROM advisory WHERE publisher_id = 'GHSA-c'"
         );
         assert!(
-            sqlx::raw_sql(&sql).execute(intel.pool()).await.is_err(),
+            sqlx::raw_sql(AssertSqlSafe(sql))
+                .execute(intel.pool())
+                .await
+                .is_err(),
             "{values}"
         );
     }
@@ -1998,7 +2003,7 @@ async fn a_source_comparison_is_kept_under_its_digest() {
 
     for (column, value) in [("comparer", "source 0"), ("result", "not json")] {
         store.put_sourced(&sri(3), &compared).await.expect("writes");
-        sqlx::query(&format!("UPDATE artifact_source SET {column} = $1 WHERE id = (SELECT max(id) FROM artifact_source)"))
+        sqlx::query(AssertSqlSafe(format!("UPDATE artifact_source SET {column} = $1 WHERE id = (SELECT max(id) FROM artifact_source)")))
             .bind(value)
             .execute(intel.pool())
             .await
