@@ -39,7 +39,7 @@ Implemented means it is in the code, and the file names where.
 | 0025 | [Storage: sqlx over Postgres, no ORM](0025-storage-sqlx-postgres.md) | Implemented |  |
 | 0026 | [Intel in decisions: one lookup per package, fail closed](0026-intel-in-decisions.md) | Implemented |  |
 | 0027 | [Loading OSV malware records](0027-osv-malware-load.md) | Implemented |  |
-| 0028 | [sqlx held at 0.8, and RUSTSEC-2023-0071 accepted while `rsa` is not built](0028-sqlx-0-8-and-rsa-advisory.md) | Implemented |  |
+| 0028 | [sqlx held at 0.8 until kani 0.68.0, and RUSTSEC-2023-0071 accepted while `rsa` is not built](0028-sqlx-0-8-and-rsa-advisory.md) | Implemented |  |
 | 0029 | [OSV version ranges and CVSS scores](0029-osv-ranges-and-scores.md) | Implemented |  |
 | 0030 | [Policy schema version 1 is frozen](0030-policy-schema-v1-frozen.md) | Decided 2026-09-13 |  |
 | 0031 | [Intel schema: surrogate keys and sized types](0031-intel-schema-keys-and-types.md) | Implemented 2026-09-13 | the identity key of `advisory_affected` and `advisory_range`, by [0121](0121-advisory-rows-unkeyed.md) |

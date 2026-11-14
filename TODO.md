@@ -3063,8 +3063,9 @@ role gets 403 from every endpoint except `GET health`.
   - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, is the same tradeoff
         from the other side: asking OSV about one package leaks that package. It stays
         opt-in and documented, and a mirror is the answer for anyone who cannot accept it.
-- [ ] Move to sqlx 0.9 once a kani release bundles rustc 1.94 or later. kani 0.67.0 bundles
-      1.93.0-nightly and sqlx 0.9 requires 1.94. Steps are in
+- [x] Move to sqlx 0.9 once a kani release bundles rustc 1.94 or later. Done 2026-11-13 with
+      kani 0.68.0: `Cargo.toml` is on 0.9, `make verify` passes, `.sqlx/` is regenerated and
+      `make test-integration` passes 61 of 61. Steps are in
       `docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md`. Moved from Stage 2: it
       waits on an upstream release, and RUSTSEC-2023-0071 is accepted meanwhile only while
       `rsa` is not compiled.

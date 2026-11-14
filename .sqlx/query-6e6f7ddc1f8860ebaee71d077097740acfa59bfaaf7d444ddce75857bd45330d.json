@@ -6,12 +6,24 @@
       {
         "ordinal": 0,
         "name": "source",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "intel_source",
+            "name": "source"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "digest",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "intel_source",
+            "name": "digest"
+          }
+        }
       }
     ],
     "parameters": {
