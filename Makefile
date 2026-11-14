@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup install-shellcheck install-opengrep install-java install-gradle ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
@@ -43,6 +43,8 @@ help:
 	@echo "  duplicates     repeated code blocks and string literals (docs/duplication-catalogue.md)"
 	@echo "  commit-fixup   list unpushed commits that credit Claude, are unsigned or not signed off;"
 	@echo "                 FIX=1 [KEY=<id>] rewrites them; BASE=<commit>, ALL=1, CHECKS=<names>"
+	@echo "  pr-signatures  PR=<number> [REPO=<owner>/<name>]: each commit in a pull request has a"
+	@echo "                 signature GitHub verified"
 	@echo "  install-shellcheck  the pinned shellcheck into ~/.local/bin, or SHELLCHECK_DEST"
 	@echo "  install-opengrep    the pinned opengrep into ~/.local/bin, or OPENGREP_DEST"
 	@echo "  install-java   the pinned JDK and Maven into ~/.local, linked in ~/.local/bin"
@@ -183,6 +185,9 @@ duplicates:
 
 commit-fixup:
 	@FIX="$(FIX)" KEY="$(KEY)" BASE="$(BASE)" ALL="$(ALL)" CHECKS="$(CHECKS)" scripts/make/commit-fixup.sh
+
+pr-signatures:
+	@PR="$(PR)" REPO="$(REPO)" scripts/make/pr-signatures.py
 
 install-shellcheck:
 	@scripts/make/install-shellcheck.sh

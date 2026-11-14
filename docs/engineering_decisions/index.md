@@ -150,3 +150,4 @@ Implemented means it is in the code, and the file names where.
 | 0136 | [A policy selector compares a crate name as crates.io does, `-` as `_`](0136-crate-names-compared-as-crates-io-does.md) | Implemented 2026-11-08 |  |
 | 0137 | [`explain` and `policy diff` date a version as the proxy does, and print each date read](0137-dates-reported.md) | Implemented 2026-11-08 |  |
 | 0138 | [Opengrep tried beside semgrep in `make sast`, and kept out of it](0138-opengrep-trial.md) | Trial ended 2026-11-13 |  |
+| 0139 | [Each commit in a pull request has a signature GitHub verified](0139-pr-commit-signatures.md) | Implemented 2026-11-14 |  |

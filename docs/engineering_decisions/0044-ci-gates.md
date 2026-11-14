@@ -3,12 +3,13 @@
 - **Number:** 0044
 - **Status:** Implemented. `.github/workflows/ci.yml`.
 - **Related:** [storage-sqlx-postgres](0025-storage-sqlx-postgres.md),
+  [pr-commit-signatures](0139-pr-commit-signatures.md),
   [sqlx-0-8-and-rsa-advisory](0028-sqlx-0-8-and-rsa-advisory.md)
 
 ## Decision
 
-Four jobs, each one `make` target. The first three run on push to `main` and on every pull
-request, `signed-off` on pull requests only:
+Five jobs, each one `make` target. The first three run on push to `main` and on every pull
+request, `signed-off` and `signatures` on pull requests only:
 
 | Job | Target | Gates |
 |---|---|---|
@@ -16,6 +17,7 @@ request, `signed-off` on pull requests only:
 | `test` | `make test` | the unit tests |
 | `sqlx` | `make sqlx-prepare ARGS=--check` | `.sqlx/` against the migrations |
 | `signed-off` | `make commit-fixup BASE=origin/<base branch> CHECKS=sign-off` | each commit the pull request adds, but a merge, has a `Signed-off-by:` with its author's email, as [CONTRIBUTING](../../CONTRIBUTING.md) asks. Added 2026-10-19, TODO.md ad-hoc #46. `make signed-off` until 2026-10-20, ad-hoc #51 |
+| `signatures` | `make pr-signatures PR=<number>` | each commit in the pull request has a signature GitHub verified. Added 2026-11-14, [pr-commit-signatures](0139-pr-commit-signatures.md) |
 
 A job runs a `make` target and nothing else, so what CI checks is what a contributor runs.
 The logic stays in `scripts/make/`, per CLAUDE.md.
@@ -33,6 +35,7 @@ Each job's tools come from `make ci-setup JOB=<job>` (`scripts/make/ci-setup.sh`
 | `test` | Rust |
 | `sqlx` | Rust, and sqlx-cli |
 | `signed-off` | nothing: git only, with the whole history fetched |
+| `signatures` | nothing: the runner's python3 |
 
 `rust-cache` restores before `ci-setup` runs, so a cached sqlx-cli is found rather than
 built again.
