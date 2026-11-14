@@ -182,7 +182,10 @@ pub struct Proxy {
 /// What the builders set. Nothing here changes once the proxy is serving.
 #[derive(Clone)]
 struct Config {
-    client: reqwest::Client,
+    /// How each upstream service's client connects.
+    connection: crate::service::Connection,
+    /// The client requests are forwarded with.
+    upstream: crate::service::Service,
     /// Fetches the metadata a client never asked for. See [`lookup_or_fetch`].
     clients: Clients,
     /// Which origins this proxy serves, and which it permits a client to fetch directly.
@@ -194,6 +197,10 @@ struct Config {
     mode: Mode,
     /// Established versions a version's provenance identity is compared with.
     provenance_history: usize,
+    /// See [`crate::env::WATCH_MAX_VERSIONS`].
+    watch_max_versions: usize,
+    /// See [`crate::env::MAX_INDEXES_PER_FILE`].
+    max_indexes_per_file: usize,
     /// Seconds a client is told to wait while a file's claim is checked.
     claim_retry_after: u64,
     /// Origins the operator added, kept so a later upstream change can rebuild `origins`.
@@ -230,7 +237,7 @@ struct Config {
 
 impl Proxy {
     /// A proxy for each ecosystem's public registry. `with_upstream` points one elsewhere.
-    pub fn new(client: reqwest::Client) -> Self {
+    pub fn new(connection: crate::service::Connection) -> Self {
         let proxy = Self {
             config: Arc::new(Config {
                 origins: OriginPolicy::new(
@@ -242,11 +249,12 @@ impl Proxy {
                 served_origins: Vec::new(),
                 allowed_direct: Vec::new(),
                 clients: Clients::new(
-                    client.clone(),
+                    connection.clone(),
                     &Upstreams::defaults(),
                     DEFAULT_MAX_METADATA_BYTES,
                 ),
-                client,
+                upstream: crate::service::Service::new(UPSTREAM, &connection),
+                connection,
                 upstreams: Upstreams::defaults(),
                 policy: None,
                 audit: None,
@@ -263,6 +271,8 @@ impl Proxy {
                 refuse_unservable: true,
                 mode: Mode::Enforce,
                 provenance_history: attestation::DEFAULT_HISTORY,
+                watch_max_versions: crate::env::DEFAULT_WATCH_MAX_VERSIONS,
+                max_indexes_per_file: crate::env::DEFAULT_MAX_INDEXES_PER_FILE,
                 claim_retry_after: crate::env::DEFAULT_CLAIM_RETRY_AFTER,
                 #[cfg(debug_assertions)]
                 defer_test: None,
@@ -351,6 +361,16 @@ impl Proxy {
 
     pub fn with_provenance_history(mut self, history: usize) -> Self {
         self.config_mut().provenance_history = history;
+        self
+    }
+
+    pub fn with_watch_max_versions(mut self, limit: usize) -> Self {
+        self.config_mut().watch_max_versions = limit.max(1);
+        self
+    }
+
+    pub fn with_max_indexes_per_file(mut self, limit: usize) -> Self {
+        self.config_mut().max_indexes_per_file = limit.max(1);
         self
     }
 
@@ -611,6 +631,16 @@ impl Proxy {
 
     pub fn with_analyser(mut self, analyser: Option<Arc<Analyser>>) -> Self {
         self.config_mut().analyser = analyser;
+        self.kept()
+    }
+
+    /// The clients, keeping what must outlast a restart in the analyser's store.
+    fn kept(mut self) -> Self {
+        if let Some(store) = self.analyses() {
+            let trees: Arc<dyn crate::analysis::store::Trees> = store;
+            let clients = self.config.clients.clone().keeping(&trees);
+            self.config_mut().clients = clients;
+        }
         self
     }
 
@@ -629,7 +659,7 @@ impl Proxy {
     /// does not matter.
     fn rebuilt(mut self) -> Self {
         let clients = Clients::new(
-            self.config.client.clone(),
+            self.config.connection.clone(),
             &self.config.upstreams,
             self.config.max_metadata_bytes,
         );
@@ -639,7 +669,7 @@ impl Proxy {
         let config = self.config_mut();
         config.clients = clients;
         config.origins = origins;
-        self
+        self.kept()
     }
 
     /// The configuration, for a builder to change. Builders run before the proxy serves, so
@@ -653,11 +683,18 @@ impl Proxy {
         served: &[String],
         allowed_direct: &[String],
     ) -> Result<OriginPolicy, crate::origin::OriginError> {
-        let reachable = ReachableOrigins::new(
-            self.config.upstreams.bases(),
-            served.iter().map(String::as_str),
-        )?;
-        OriginPolicy::new(reachable, allowed_direct.iter().map(String::as_str))
+        origin_policy(&self.config.upstreams, served, allowed_direct)
+    }
+
+    /// What `byrle explain` reads dates with on this proxy: its clients, file hosts,
+    /// origins and first sightings.
+    pub fn date_reader(&self) -> crate::dating::Reader {
+        crate::dating::Reader::new(
+            self.config.clients.clone(),
+            self.config.upstream.clone(),
+            self.config.origins.clone(),
+            self.analyses(),
+        )
     }
 
     pub fn upstreams(&self) -> &Upstreams {
@@ -670,6 +707,16 @@ impl Proxy {
             .route("/", axum::routing::any(handle))
             .with_state(self)
     }
+}
+
+/// The origins served for `upstreams` and `served`, and the ones `allowed_direct`.
+pub(crate) fn origin_policy(
+    upstreams: &Upstreams,
+    served: &[String],
+    allowed_direct: &[String],
+) -> Result<OriginPolicy, crate::origin::OriginError> {
+    let reachable = ReachableOrigins::new(upstreams.bases(), served.iter().map(String::as_str))?;
+    OriginPolicy::new(reachable, allowed_direct.iter().map(String::as_str))
 }
 
 type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>>;
@@ -930,6 +977,104 @@ async fn lookup_or_fetch(
         .lookup(at, key, version, filename)
 }
 
+/// `target` keyed by the package whose document lists its file, when its filename fits
+/// several: [`ecosystem::Registry::filename_projects`]. The key the path gave is tried first.
+/// The documents held are read, then up to `max_indexes_per_file` of the others are asked in
+/// turn, and the one that lists the file is kept. `target` unchanged when none does.
+async fn placed(proxy: &Proxy, at: Repository, target: RequestTarget, path: &str) -> RequestTarget {
+    let RequestTarget::Artifact {
+        key,
+        claimed_version,
+        filename,
+    } = target
+    else {
+        return target;
+    };
+    let mut projects = (at.registry().filename_projects)(&filename);
+    if let Some(given) = projects.iter().position(|(project, _)| *project == key) {
+        projects[..=given].rotate_right(1);
+    }
+    let unheld = match held_listing(proxy, at, &projects, &filename) {
+        Ok(project) => return artifact(filename, project),
+        Err(unheld) => unheld,
+    };
+    if unheld.is_empty() {
+        return artifact(filename, (key, claimed_version));
+    }
+    let Some(asked) = asked_listing(proxy, at, &unheld, &filename, path).await else {
+        return artifact(filename, (key, claimed_version));
+    };
+    let project = projects
+        .into_iter()
+        .find(|(candidate, _)| *candidate == unheld[asked])
+        .expect("every key asked is a candidate");
+    artifact(filename, project)
+}
+
+/// The first of `projects` whose held document lists `filename`. Errors with those of them
+/// not held, up to `max_indexes_per_file`, to be asked.
+fn held_listing(
+    proxy: &Proxy,
+    at: Repository,
+    projects: &[(PackageKey, String)],
+    filename: &str,
+) -> Result<(PackageKey, String), Vec<PackageKey>> {
+    let store = proxy.store.lock().expect("record store lock");
+    if let Some(project) = projects
+        .iter()
+        .find(|(project, _)| store.lists(at, project, filename))
+    {
+        return Ok(project.clone());
+    }
+    Err(projects
+        .iter()
+        .map(|(project, _)| project)
+        .filter(|project| !store.holds(at, project))
+        .take(proxy.config.max_indexes_per_file)
+        .cloned()
+        .collect())
+}
+
+/// Which of `unheld` has the document listing `filename`, asked of the registry in turn. Its
+/// document is kept. `None` when none lists it or the registry failed, which is logged.
+async fn asked_listing(
+    proxy: &Proxy,
+    at: Repository,
+    unheld: &[PackageKey],
+    filename: &str,
+    path: &str,
+) -> Option<usize> {
+    let url_path = crate::http::url_path(path);
+    match proxy.config.clients.listing(at, unheld, filename).await {
+        Ok(Some((asked, metadata))) => {
+            info!(url.path = %url_path, byrle.package.purl = %unheld[asked], "the file is listed by this project's index");
+            proxy
+                .store
+                .lock()
+                .expect("record store lock")
+                .insert(at, metadata);
+            Some(asked)
+        }
+        Ok(None) => {
+            info!(url.path = %url_path, byrle.package.indexes = unheld.len(), "no index asked lists the file");
+            None
+        }
+        Err(e) => {
+            warn!(url.path = %url_path, error.message = %e, "the indexes that could list the file were not read");
+            None
+        }
+    }
+}
+
+/// The request for `filename` as `key` at `version`.
+fn artifact(filename: String, (key, version): (PackageKey, String)) -> RequestTarget {
+    RequestTarget::Artifact {
+        key,
+        claimed_version: version,
+        filename,
+    }
+}
+
 /// Fetch the metadata document the client did not ask for from `at`, and keep its records.
 /// A failure is logged, and the artifact request is answered 502.
 async fn fetch_and_store(proxy: &Proxy, at: Repository, key: &PackageKey, path: &str) {
@@ -1060,12 +1205,62 @@ fn upstream_response_headers(upstream: &HeaderMap) -> HeaderMap {
     headers
 }
 
+/// What a rewritten document is made for, which its `ETag` is marked with: the proxy's
+/// address, the policy's digest and the intel snapshot it was filtered with. A tag issued
+/// for another view is not sent upstream, so a 304 cannot keep a document filtered before
+/// a new policy or snapshot. See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
+fn etag_view(proxy: &Proxy, base: &str, snapshot: Option<&str>) -> String {
+    let policy = proxy
+        .config
+        .policy
+        .as_deref()
+        .map_or("-", |p| p.digest.as_str());
+    format!(
+        "{}\n{policy}\n{}",
+        base.trim_end_matches('/'),
+        snapshot.unwrap_or("-")
+    )
+}
+
+/// The view a client's marked `If-None-Match` is checked against: [`etag_view`] with the
+/// snapshot the package's intel is in now. `None`, and the conditional dropped, when the
+/// request is not one the proxy rewrites, carries no tag it issued, or its intel cannot be
+/// read.
+async fn current_view(
+    proxy: &Proxy,
+    target: &RequestTarget,
+    negotiation: &Negotiation,
+    client: &HeaderMap,
+    path: &str,
+) -> Option<String> {
+    let RequestTarget::Metadata(key) = target else {
+        return None;
+    };
+    let marked = client
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(crate::http::carries_mark);
+    let (true, Some(base)) = (
+        negotiation.rewriting && marked,
+        negotiation.rewrite_base.as_deref(),
+    ) else {
+        return None;
+    };
+    let intel = intel_for(proxy, key, path).await.ok()?;
+    Some(etag_view(
+        proxy,
+        base,
+        intel.as_ref().map(|intel| intel.snapshot.as_str()),
+    ))
+}
+
 /// A 304 for a metadata document: refill the store if its records are gone, and mark the
-/// `ETag` the client is told to keep.
+/// `ETag` the client is told to keep with `view`, the one its request was checked against.
 async fn revalidated(
     proxy: &Proxy,
     target: &RequestTarget,
     negotiation: &Negotiation,
+    view: Option<&str>,
     headers: &mut HeaderMap,
     path: &str,
 ) {
@@ -1088,12 +1283,11 @@ async fn revalidated(
         }
     }
 
-    if negotiation.rewriting
-        && let Some(base) = negotiation.rewrite_base.as_deref()
+    if let Some(view) = view
         && let Some(marked) = headers
             .get(header::ETAG)
             .and_then(|v| v.to_str().ok())
-            .map(|etag| mark_etag(etag, base))
+            .map(|etag| mark_etag(etag, view))
         && let Ok(value) = HeaderValue::from_str(&marked)
     {
         headers.insert(header::ETAG, value);
@@ -1125,8 +1319,12 @@ async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphore
 #[derive(Default)]
 struct Refused {
     versions: HashSet<String>,
+    /// PyPI files refused alone, by filename, in a version that is not.
+    files: Vec<String>,
     /// Each check that removed at least one version, in name order.
     checks: Vec<String>,
+    /// The intel snapshot the versions were decided with, `None` with no intel.
+    snapshot: Option<String>,
 }
 
 /// What the proxy does with a metadata document it has read.
@@ -1139,6 +1337,37 @@ enum DocumentStep {
         body: Option<Vec<u8>>,
         refused: Refused,
     },
+}
+
+/// The 502 for the metadata document at `path`, which the proxy could not read, filter or
+/// rewrite because of `why`. `None` in observe mode, where it is forwarded as the upstream
+/// wrote it. Logged as UNINSPECTED either way.
+fn unchecked_document(proxy: &Proxy, path: &str, why: &str) -> Option<Response> {
+    proxy.uninspected.fetch_add(1, Ordering::Relaxed);
+    let url_path = crate::http::url_path(path);
+    if proxy.config.mode == Mode::Observe {
+        warn!(url.path = %url_path, url.query = crate::http::url_query(path), byrle.reason = %why, "UNINSPECTED: metadata document not checked, forwarded in observe mode");
+        return None;
+    }
+    warn!(url.path = %url_path, url.query = crate::http::url_query(path), byrle.reason = %why, "UNINSPECTED: metadata document not checked, refused");
+    Some(
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("byrle: the upstream's document at {url_path} is not served, as {why}\n"),
+        )
+            .into_response(),
+    )
+}
+
+/// [`unchecked_document`] as a step: the 502, or the upstream's body forwarded.
+fn unchecked_step(proxy: &Proxy, path: &str, why: &str) -> DocumentStep {
+    match unchecked_document(proxy, path, why) {
+        Some(refused) => DocumentStep::Answer(refused),
+        None => DocumentStep::Forward {
+            body: None,
+            refused: Refused::default(),
+        },
+    }
 }
 
 /// Decode, read, filter by policy and rewrite a metadata document. Its refusals are
@@ -1158,14 +1387,7 @@ async fn filtered_document(
     let decoded = match decode_for_parsing(body, content_encoding, proxy.config.max_metadata_bytes)
     {
         Ok(decoded) => decoded,
-        Err(e) => {
-            proxy.uninspected.fetch_add(1, Ordering::Relaxed);
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: metadata body could not be decoded");
-            return DocumentStep::Forward {
-                body: None,
-                refused: Refused::default(),
-            };
-        }
+        Err(e) => return unchecked_step(proxy, path, &format!("it could not be decoded: {e}")),
     };
 
     let at = negotiation.repository;
@@ -1184,11 +1406,15 @@ async fn filtered_document(
         parse_started,
         path,
     });
-    let Some(read) = read else {
-        return DocumentStep::Forward {
-            body: None,
-            refused: Refused::default(),
-        };
+    let read = match read {
+        Ok(Some(read)) => read,
+        Ok(None) => {
+            return DocumentStep::Forward {
+                body: None,
+                refused: Refused::default(),
+            };
+        }
+        Err(why) => return unchecked_step(proxy, path, &why),
     };
     report_undated(proxy, read.as_ref(), path);
     let dated = dated_versions(proxy, at, read.metadata(), path).await;
@@ -1241,17 +1467,21 @@ async fn filtered_document(
         .then_some(negotiation.rewrite_base.as_deref())
         .flatten();
 
-    let body = read.rewrite(&ecosystem::Rewriting {
+    let rewritten = read.rewrite(&ecosystem::Rewriting {
         decoded: &decoded,
         base,
         origins: &proxy.config.origins,
         refused_by_policy: &refused_by_policy.versions,
+        refused_files: &refused_by_policy.files,
         refuse_unservable: refuses_unservable(proxy),
         path,
     });
-    DocumentStep::Forward {
-        body,
-        refused: refused_by_policy,
+    match rewritten {
+        Ok(body) => DocumentStep::Forward {
+            body,
+            refused: refused_by_policy,
+        },
+        Err(why) => unchecked_step(proxy, path, &why),
     }
 }
 
@@ -1262,11 +1492,17 @@ fn refuses_unservable(proxy: &Proxy) -> bool {
         && crate::policy::decide::weighs(proxy.config.policy.as_deref(), &["unservable".to_owned()])
 }
 
-/// A cooldown longer than this, a century, dates a document as this one does.
-const MAX_COOLDOWN_DAYS: u32 = 36_500;
+/// [`Policy::cooldown_start`] now, under the policy in force.
+fn cooldown_start(proxy: &Proxy) -> Option<jiff::Timestamp> {
+    proxy
+        .config
+        .policy
+        .as_deref()?
+        .cooldown_start(jiff::Timestamp::now())
+}
 
-/// `metadata` with a publish time on each version its client dated, for an ecosystem whose
-/// documents carry none, when the policy waits on any: [`ecosystem::Fetch::dated`]. `None`
+/// `metadata` with a publish time on each version its client dated, in place of any its
+/// document carries, when the policy waits on any: [`ecosystem::Fetch::dated`]. `None`
 /// when nothing was asked, or when the times could not be read: undated, `cooldown_days` is
 /// not enforced on the document, and each artifact is decided on its own time.
 async fn dated_versions(
@@ -1276,9 +1512,7 @@ async fn dated_versions(
     path: &str,
 ) -> Option<PackageMetadata> {
     let metadata = metadata?;
-    let days = Some(proxy.config.policy.as_deref()?.longest_cooldown()).filter(|days| *days > 0)?;
-    let wait = jiff::SignedDuration::from_hours(24 * i64::from(days.min(MAX_COOLDOWN_DAYS)));
-    let before = jiff::Timestamp::now() - wait;
+    let before = cooldown_start(proxy)?;
     let times = match proxy.config.clients.dated(at, metadata, before).await {
         Ok(times) => times?,
         Err(e) => {
@@ -1288,9 +1522,10 @@ async fn dated_versions(
     };
     let mut dated = metadata.clone();
     for record in &mut dated.records {
-        record.published_at = record
-            .published_at
-            .or_else(|| times.get(record.package.version()).copied());
+        record.published_at = times
+            .get(record.package.version())
+            .copied()
+            .or(record.published_at);
     }
     info!(url.path = %crate::http::url_path(path), byrle.package.versions = dated.records.len(), byrle.package.dated = times.len(), "versions dated for the cooldown");
     Some(dated)
@@ -1403,13 +1638,19 @@ fn report_uninspected(
     }
 }
 
-/// The only client headers a registry is sent. Any other stops at the proxy.
-const FORWARDED: [header::HeaderName; 4] = [
-    header::ACCEPT,
-    header::ACCEPT_ENCODING,
-    header::IF_NONE_MATCH,
-    header::IF_MODIFIED_SINCE,
+/// The only client headers a registry is sent, which the negotiation also sets.
+const FORWARDED: [&str; 4] = [
+    "accept",
+    "accept-encoding",
+    "if-none-match",
+    "if-modified-since",
 ];
+
+/// The headers a request is forwarded upstream with: [`FORWARDED`].
+pub(crate) const UPSTREAM: crate::service::Declared = crate::service::Declared {
+    name: "the upstream registries",
+    headers: &FORWARDED,
+};
 
 /// The headers sent upstream: the client's in [`FORWARDED`], less those the negotiation
 /// replaces, with the encoding, `Accept` and `If-None-Match` the negotiation needs.
@@ -1425,10 +1666,16 @@ fn asked_for(mut headers: HeaderMap, artifact: &ArtifactFetch) -> HeaderMap {
     headers
 }
 
-fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -> HeaderMap {
+/// `view` is [`current_view`]'s: a marked `If-None-Match` is sent only for a tag issued for it.
+fn upstream_headers(
+    client: &HeaderMap,
+    negotiation: &Negotiation,
+    view: Option<&str>,
+    path: &str,
+) -> HeaderMap {
     let mut outbound = HeaderMap::new();
     for (name, value) in client {
-        if !FORWARDED.contains(name) {
+        if !FORWARDED.contains(&name.as_str()) {
             continue;
         }
         if negotiation.read_metadata && name == header::ACCEPT_ENCODING {
@@ -1454,15 +1701,17 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
         && let Some(inm) = client
             .get(header::IF_NONE_MATCH)
             .and_then(|v| v.to_str().ok())
-        && let Some(base) = negotiation.rewrite_base.as_deref()
     {
-        match unmark_if_none_match(inm, base).map(|v| HeaderValue::from_str(&v)) {
+        match view
+            .and_then(|view| unmark_if_none_match(inm, view))
+            .map(|v| HeaderValue::from_str(&v))
+        {
             Some(Ok(value)) => {
                 outbound.append(header::IF_NONE_MATCH, value);
             }
             _ => info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                "dropped a conditional request for a body this proxy did not rewrite"
+                "dropped a conditional request for a body this proxy did not rewrite for this policy and intel snapshot"
             ),
         }
     }
@@ -1551,16 +1800,25 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     let (record, claiming) = deciding.checked(record, claim).await;
     let pending = matches!(claiming, Some(Claiming::Pending(_)));
     let (fetch, unservable) = deciding.fetch_plan(&record, pending);
-    let dated = deciding.dated(&record).await;
+    let dated = deciding.dated(&record, unservable.is_some()).await;
     let sourced = deciding.sourced(&fetch).await;
     let scanned = deciding.scanned(&fetch).await;
     let detected = deciding.detected(&record).await;
+    let described = dated.describing(&record).clone();
+    let times = dated.times;
+    let Analysed {
+        record: analysed,
+        provenance,
+        state,
+        anomalies,
+    } = deciding.analysed(&record, &fetch, times.as_ref()).await;
     let detections = deciding.detections(
         &record,
         dated.full.as_ref(),
         &Beside {
             sourced: sourced.as_ref(),
             scanned: scanned.as_ref(),
+            anomalies: anomalies.as_deref(),
             detected: &detected,
         },
     );
@@ -1570,15 +1828,13 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         &detections,
         scanned.as_ref(),
     );
-    let described = dated.describing(&record).clone();
-    let times = dated.times;
-    let Analysed {
-        record,
-        provenance,
-        state,
-    } = deciding.analysed(&record, &fetch, times.as_ref()).await;
+    let record = analysed;
     let today = crate::policy::today();
-    let own = deciding.own_signals(unservable.as_ref(), &fetch, (claiming.as_ref(), &state));
+    let own = deciding.own_signals(
+        (unservable.as_ref(), dated.undated),
+        &fetch,
+        (claiming.as_ref(), &state),
+    );
     let weighing = match deciding
         .refusal(
             &record,
@@ -1655,6 +1911,8 @@ struct Dated {
     times: Option<facts::PublishTimes>,
     /// The full document's records, for the heuristics.
     full: Option<PackageMetadata>,
+    /// Under a cooldown, neither the registry, the file host nor a first sighting dates it.
+    undated: bool,
 }
 
 /// Whether `refusal` blocks the version, which does not lapse, so it is never served and
@@ -1683,8 +1941,12 @@ impl Dated {
     }
 }
 
+/// Why `cooldown_unanswered` fires, in its signal and its refusal.
+const UNDATED: &str = "no publish time could be read and no first sighting stored, so \
+                       `cooldown_days` cannot be answered";
+
 /// The purl of `key` at `version`, as log lines and answers name it.
-fn purl_of(key: &PackageKey, version: &str) -> String {
+pub(crate) fn purl_of(key: &PackageKey, version: &str) -> String {
     key.at_version(version)
         .map(|r| r.to_string())
         .unwrap_or_else(|_| format!("{key}@{version}"))
@@ -1739,9 +2001,16 @@ impl<'a> Deciding<'a> {
                 scanned,
             )
         });
+        let archive = beside.anomalies.map(|anomalies| {
+            (
+                crate::analysis::detector::archive::NAME.to_owned(),
+                crate::analysis::detector::archive::detection(anomalies),
+            )
+        });
         std::iter::once(metadata)
             .chain(source)
             .chain(virustotal)
+            .chain(archive)
             .chain(beside.detected.iter().cloned())
             .collect()
     }
@@ -1976,7 +2245,7 @@ impl<'a> Deciding<'a> {
     /// once no claim is being checked.
     fn own_signals(
         &self,
-        unservable: Option<&String>,
+        (unservable, undated): (Option<&String>, bool),
         fetch: &ArtifactFetch,
         (claiming, state): (Option<&Claiming>, &AnalysisState),
     ) -> Vec<Signal> {
@@ -2007,10 +2276,12 @@ impl<'a> Deciding<'a> {
                 "its bytes are not the ones its digest or claim names".to_owned(),
             )
         });
+        let unanswered = undated.then(|| own("cooldown_unanswered", UNDATED.to_owned()));
         unservable
             .into_iter()
             .chain(undigested)
             .chain(mismatched)
+            .chain(unanswered)
             .collect()
     }
 
@@ -2030,10 +2301,15 @@ impl<'a> Deciding<'a> {
             .proxy
             .config
             .clients
-            .version(self.request.repository, key, claimed_version)
+            .version(
+                self.request.repository,
+                key,
+                claimed_version,
+                cooldown_start(self.proxy),
+            )
             .await
         {
-            Ok(Some(alone)) => Lookup::Found(Box::new(alone)),
+            Ok(Some(alone)) => Lookup::Found(Box::new(alone.record)),
             Ok(None) => {
                 let at = self.request.repository;
                 lookup_or_fetch(self.proxy, at, key, claimed_version, filename, path).await
@@ -2262,21 +2538,50 @@ impl<'a> Deciding<'a> {
     }
 
     /// For a record whose document carried no publish time: the full document, and the
-    /// publish times from it or from the file host's `Last-Modified`.
-    async fn dated(&self, record: &PackageRecord) -> Dated {
-        if record.published_at.is_some() {
-            return Dated::default();
+    /// publish times from it, the file host's `Last-Modified` or the file's first sighting,
+    /// as [`crate::dating::date`] reads them. The file host is not asked when the file is
+    /// `unservable`, on an origin the proxy does not serve.
+    async fn dated(&self, record: &PackageRecord, unservable: bool) -> Dated {
+        let cooldown = (self.proxy.config.policy.as_deref()).is_some_and(Policy::uses_cooldown);
+        let sources = Sourcing {
+            deciding: self,
+            unservable,
+        };
+        let found = crate::dating::date(
+            record,
+            &purl_of(self.request.key, record.package.version()),
+            crate::dating::RecordDates::of(record),
+            &sources,
+            crate::dating::Reading {
+                cooldown,
+                every: false,
+            },
+        )
+        .await;
+        Dated {
+            undated: cooldown && found.dating.used.is_none(),
+            times: found.times,
+            full: found.full,
         }
-        let at = self.request.repository;
-        let (times, full) = match full_document(self.proxy, at, self.request.key).await {
-            Some(FullDocument { times, metadata }) => (Some(times), metadata.ok()),
-            None => (None, None),
+    }
+
+    /// When the proxy first decided the file `filename` of `purl`, recording now on the
+    /// first time. Errors with no analysis store, or when it errors.
+    async fn first_seen(&self, purl: &str, filename: &str) -> Result<jiff::Timestamp, String> {
+        let path = self.request.path;
+        let Some(store) = self.proxy.analyses() else {
+            return Err("not read: no analysis store".to_owned());
         };
-        let times = match times {
-            Some(times) => Some(times),
-            None => dated_by_host(self.proxy, record, self.request.path).await,
-        };
-        Dated { times, full }
+        match store.first_seen(purl, filename).await {
+            Ok(seen) => {
+                info!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, byrle.package.published = %seen, "no publish time: dated by the file's first sighting");
+                Ok(seen)
+            }
+            Err(e) => {
+                warn!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, error.message = %e, "no publish time, and its first sighting could not be read");
+                Err(format!("not read: {e}"))
+            }
+        }
     }
 
     /// [`analysed`] for this request, logging a return after a deferral once the
@@ -2332,6 +2637,12 @@ impl<'a> Deciding<'a> {
         }
         if let Some(origin) = unservable.filter(|_| own.answers("unservable")) {
             return (audit::Answered::Unservable, self.unservable(&origin));
+        }
+        if own.answers("cooldown_unanswered") {
+            return (
+                audit::Answered::Undated,
+                self.unassessable(self.refusal_status(), UNDATED),
+            );
         }
         match held.claiming {
             Some(Claiming::Failed(why)) if own.answers("digest_mismatch") => {
@@ -2670,6 +2981,8 @@ struct Analysed {
     /// What its attestations say against the version published before it.
     provenance: Provenance,
     state: AnalysisState,
+    /// What the stored analysis found in the tarball's shape, `None` when none was read.
+    anomalies: Option<Vec<crate::analysis::Anomaly>>,
 }
 
 enum AnalysisState {
@@ -2699,17 +3012,19 @@ async fn analysed(
     let analyser = proxy.config.analyser.as_deref();
     let (provenance, attestations) = attested(proxy, at, analyser, &record, digest, times).await;
     let reader = crate::analysis::reader(key.ecosystem(), filename);
-    let decided = |record, provenance| Analysed {
+    let decided = |record, provenance, anomalies| Analysed {
         record,
         provenance,
         state: AnalysisState::Decided,
+        anomalies,
     };
     let Some(analyser) = analyser else {
-        return decided(record, provenance);
+        return decided(record, provenance, None);
     };
     let Some(digest) = digest else {
-        return decided(record, provenance);
+        return decided(record, provenance, None);
     };
+    let mut anomalies = None;
     let reads = match reader {
         None => None,
         Some(reader) => match analyser.known(digest).await {
@@ -2728,6 +3043,7 @@ async fn analysed(
                         .map(|name| (name.clone(), String::new()))
                         .collect()
                 });
+                anomalies = analysis.scripts.anomalies().map(<[_]>::to_vec);
                 None
             }
             Known::Mismatched(mismatch) => {
@@ -2735,13 +3051,14 @@ async fn analysed(
                     record,
                     provenance,
                     state: AnalysisState::Mismatched(mismatch),
+                    anomalies,
                 };
             }
             Known::Unknown => Some(reader),
         },
     };
     if reads.is_none() && attestations.is_empty() {
-        return decided(record, provenance);
+        return decided(record, provenance, anomalies);
     }
     let job = Job {
         digest: digest.clone(),
@@ -2756,6 +3073,7 @@ async fn analysed(
         record,
         provenance,
         state: AnalysisState::Pending(job),
+        anomalies,
     }
 }
 
@@ -2829,18 +3147,19 @@ async fn attested(
         None => None,
         Some(to_verify) => result_of(analyser, to_verify).await,
     };
-    let priors: Vec<_> = match &previous {
+    let (priors, priors_published): (Vec<_>, Vec<_>) = match &previous {
         attestation::Previous::Known(priors, _) => priors
             .iter()
             .map(|prior| {
-                verifiable(
+                let to_verify = verifiable(
                     &prior.attestation_url,
                     prior.integrity.as_deref().and_then(|i| Sri::parse(i).ok()),
                     "it publishes no strong digest",
-                )
+                );
+                (to_verify, prior.published)
             })
-            .collect(),
-        attestation::Previous::Unknown => Vec::new(),
+            .unzip(),
+        attestation::Previous::Unknown => (Vec::new(), Vec::new()),
     };
     let mut prior_results = Vec::with_capacity(priors.len());
     for to_verify in &priors {
@@ -2853,7 +3172,9 @@ async fn attested(
             this: this_needed,
             priors: priors_needed,
         } => {
-            let needed = |to_verify: &Result<(String, Sri), String>| {
+            let now = jiff::Timestamp::now();
+            let needed = |to_verify: &Result<(String, Sri), String>,
+                          published: Option<jiff::Timestamp>| {
                 let (url, digest) = to_verify
                     .as_ref()
                     .expect("an attestation still needed can be verified");
@@ -2861,11 +3182,20 @@ async fn attested(
                     digest: digest.clone(),
                     url: url.clone(),
                     bundle,
+                    recent: published.is_some_and(|t| attestation::recent(t, window, now)),
                 }
             };
-            let mut work: Vec<Attestation> =
-                this.iter().filter(|_| this_needed).map(needed).collect();
-            work.extend(priors_needed.into_iter().map(|i| needed(&priors[i])));
+            let this_published = attestation::published(record, times);
+            let mut work: Vec<Attestation> = this
+                .iter()
+                .filter(|_| this_needed)
+                .map(|to_verify| needed(to_verify, this_published))
+                .collect();
+            work.extend(
+                priors_needed
+                    .into_iter()
+                    .map(|i| needed(&priors[i], Some(priors_published[i]))),
+            );
             (Provenance::NOT_VERIFIED, work)
         }
     }
@@ -3079,6 +3409,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-")
         .to_string();
+    if crate::route::rewritten_by_url_parser(requested) {
+        return rewritten(requested, &client);
+    }
     if let Some(response) = own_endpoint(&proxy, &path).await {
         return response;
     }
@@ -3107,6 +3440,11 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     {
         return defer_response(status, retry_after, &method, &path, &client, started);
     }
+    let target = if decided(&method, repository) {
+        placed(&proxy, repository, target, &path).await
+    } else {
+        target
+    };
     let negotiation = negotiate(&proxy, repository, &target, &method, req.headers());
     let exchange = Exchange {
         proxy: &proxy,
@@ -3220,7 +3558,8 @@ async fn sidecar(
 }
 
 /// The document at `document_path` from upstream, for the sidecar at `path`: its body,
-/// `Content-Type` and `Content-Encoding`. `None` when it could not be fetched whole.
+/// `Content-Type` and `Content-Encoding`, the body cut one byte past the limit so the check
+/// that follows refuses it. `None` when it could not be fetched.
 async fn sidecar_document(
     proxy: &Proxy,
     repository: Repository,
@@ -3228,7 +3567,7 @@ async fn sidecar_document(
     path: &str,
 ) -> Option<(Bytes, Option<String>, Option<String>)> {
     let url = upstream_url(proxy, repository, document_path, None);
-    let fetched = match proxy.config.client.get(&url).send().await {
+    let fetched = match proxy.config.upstream.get(&url).send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
             warn!(url.path = %crate::http::url_path(path), http.response.status_code = response.status().as_u16(), "the sidecar's document was refused upstream; the sidecar is forwarded");
@@ -3250,8 +3589,9 @@ async fn sidecar_document(
         header_of(header::CONTENT_TYPE),
         header_of(header::CONTENT_ENCODING),
     );
-    let body = fetched.bytes().await.ok()?;
-    Some((body, content_type, content_encoding))
+    let limit = proxy.config.max_metadata_bytes;
+    let body = crate::http::body_to_limit(fetched, limit).await.ok()?;
+    Some((body.into(), content_type, content_encoding))
 }
 
 /// A request for a path outside the one the proxy answers under: 404, naming that path.
@@ -3266,6 +3606,20 @@ fn outside_mount(mount: &Mount, requested: &str) -> Response {
         format!(
             "byrle: {} is outside the proxy's path, {mount}\n",
             crate::http::url_path(requested)
+        ),
+    )
+        .into_response()
+}
+
+/// 400 for a path [`crate::route::rewritten_by_url_parser`] finds, in every mode: the
+/// upstream would be asked for a path other than the one classified.
+fn rewritten(requested: &str, client: &str) -> Response {
+    let url_path = crate::http::url_path(requested);
+    warn!(url.path = %url_path, user_agent.original = %client, "a `.` or `..` segment in the path: 400");
+    (
+        StatusCode::BAD_REQUEST,
+        format!(
+            "byrle: {url_path} has a `.` or `..` segment, which the upstream URL would not keep\n"
         ),
     )
         .into_response()
@@ -3363,6 +3717,12 @@ async fn own_endpoint(proxy: &Proxy, path: &str) -> Option<Response> {
     }
 }
 
+/// Whether a file asked with `method` is decided: a GET, and a HEAD where `at`'s row decides
+/// one.
+fn decided(method: &Method, at: Repository) -> bool {
+    method == Method::GET || method == Method::HEAD && at.registry().decides_head
+}
+
 /// One request forwarded upstream, and what [`handle`] knows about it.
 struct Exchange<'a> {
     proxy: &'a Proxy,
@@ -3388,6 +3748,8 @@ struct Upstream {
     content_encoding: Option<String>,
     /// The metadata document the body is, when the proxy reads it.
     document: Option<DocumentKind>,
+    /// The view the request's `If-None-Match` was checked against: [`current_view`].
+    view: Option<String>,
     length: Option<u64>,
     body: ByteStream,
 }
@@ -3418,8 +3780,10 @@ impl Exchange<'_> {
     /// and the claim a manifest GET is checked against. Any other request is fetched with
     /// no digest.
     async fn artifact_fetch(&self) -> ArtifactStep {
-        let decided_head = self.method == Method::HEAD && self.repository.registry().decides_head;
-        if self.method != Method::GET && !decided_head {
+        if let Some(response) = self.method_not_allowed() {
+            return ArtifactStep::Answer(response);
+        }
+        if !decided(&self.method, self.repository) {
             return ArtifactStep::Fetch(ArtifactFetch::default());
         }
         match &self.target {
@@ -3450,6 +3814,34 @@ impl Exchange<'_> {
             | RequestTarget::Other
             | RequestTarget::Unrecognised => ArtifactStep::Fetch(ArtifactFetch::default()),
         }
+    }
+
+    /// 405 for an artifact or manifest asked with a method but GET or HEAD, which no check
+    /// reads and an upstream may answer with the file. `None` in observe mode, where it is
+    /// forwarded. Logged at WARN either way.
+    fn method_not_allowed(&self) -> Option<Response> {
+        let file = matches!(
+            self.target,
+            RequestTarget::Artifact { .. } | RequestTarget::Manifest { .. }
+        );
+        if !file || self.method == Method::GET || self.method == Method::HEAD {
+            return None;
+        }
+        let url_path = crate::http::url_path(&self.path);
+        let method = &self.method;
+        if self.proxy.config.mode == Mode::Observe {
+            warn!(url.path = %url_path, http.request.method = %method, user_agent.original = %self.client, "a file asked with {method}: forwarded in observe mode");
+            return None;
+        }
+        warn!(url.path = %url_path, http.request.method = %method, user_agent.original = %self.client, "a file asked with {method}: 405");
+        Some(
+            (
+                StatusCode::METHOD_NOT_ALLOWED,
+                [(header::ALLOW, "GET, HEAD")],
+                format!("byrle: {url_path} is a file, served to GET and HEAD only\n"),
+            )
+                .into_response(),
+        )
     }
 
     /// The claim a manifest's body is checked against. Answers 503 when the database does
@@ -3602,13 +3994,21 @@ impl Exchange<'_> {
             &self.path,
             artifact.origin.as_deref(),
         );
+        let view = current_view(
+            self.proxy,
+            &self.target,
+            &self.negotiation,
+            headers,
+            &self.path,
+        )
+        .await;
         let response = self
             .proxy
             .config
-            .client
+            .upstream
             .request(self.method.clone(), &url)
             .headers(asked_for(
-                upstream_headers(headers, &self.negotiation, &self.path),
+                upstream_headers(headers, &self.negotiation, view.as_deref(), &self.path),
                 artifact,
             ))
             .send()
@@ -3640,6 +4040,7 @@ impl Exchange<'_> {
             headers,
             content_encoding,
             document,
+            view,
             length: response.content_length(),
             body: Box::pin(response.bytes_stream()),
         })
@@ -3649,10 +4050,12 @@ impl Exchange<'_> {
     /// artifact verified, anything else as it came.
     async fn respond(&self, mut upstream: Upstream, artifact: ArtifactFetch) -> Response {
         if upstream.status == reqwest::StatusCode::NOT_MODIFIED {
+            let view = upstream.view.take();
             revalidated(
                 self.proxy,
                 &self.target,
                 &self.negotiation,
+                view.as_deref(),
                 &mut upstream.headers,
                 &self.path,
             )
@@ -3664,12 +4067,29 @@ impl Exchange<'_> {
             artifact.manifest.clone(),
         ) {
             (Some(document), _) => self.forward_document(document, upstream).await,
-            (None, Some(claim)) if upstream.status == reqwest::StatusCode::OK => {
+            (None, Some(claim)) if upstream.status.is_success() => {
                 self.forward_manifest(upstream, &claim, &artifact.purl)
                     .await
             }
-            (None, _) => self.forward_artifact(upstream, artifact),
+            (None, _) => {
+                if read && let Some(refused) = self.unread_media_type(&upstream) {
+                    return refused;
+                }
+                self.forward_artifact(upstream, artifact)
+            }
         }
+    }
+
+    /// [`unchecked_document`] for a metadata document answered 2xx in a media type the
+    /// adapter does not read: 502 in enforce mode, forwarded unfiltered in observe mode.
+    fn unread_media_type(&self, upstream: &Upstream) -> Option<Response> {
+        let content_type = upstream
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("none");
+        let why = format!("it is served as `{content_type}`, a media type the proxy does not read");
+        unchecked_document(self.proxy, &self.path, &why)
     }
 
     /// A manifest's body, read whole and sent on only when it is the one `claim` names.
@@ -3727,7 +4147,7 @@ impl Exchange<'_> {
             .into_response()
     }
 
-    /// Forward a body the proxy does not read, verifying a 200 against `artifact`'s digest
+    /// Forward a body the proxy does not read, verifying a 2xx against `artifact`'s digest
     /// when it has one.
     fn forward_artifact(&self, upstream: Upstream, artifact: ArtifactFetch) -> Response {
         let Upstream {
@@ -3742,7 +4162,7 @@ impl Exchange<'_> {
         let Some(sri) = artifact.digest else {
             return (forward_status, headers, Body::from_stream(body)).into_response();
         };
-        if status != reqwest::StatusCode::OK {
+        if !status.is_success() {
             if status == reqwest::StatusCode::NOT_MODIFIED {
                 self.proxy.revalidated.fetch_add(1, Ordering::Relaxed);
                 info!(
@@ -3768,7 +4188,7 @@ impl Exchange<'_> {
     }
 
     /// Read a metadata document, filter it by policy and rewrite it. One over
-    /// `max_metadata_bytes` is forwarded as it came.
+    /// `max_metadata_bytes` is refused, or forwarded as it came in observe mode.
     async fn forward_document(&self, document: DocumentKind, upstream: Upstream) -> Response {
         let Upstream {
             status,
@@ -3783,12 +4203,13 @@ impl Exchange<'_> {
         let body = match buffer_to_limit(body, limit).await {
             Buffered::Complete(body) => body,
             Buffered::Oversized { prefix, rest } => {
-                self.proxy.uninspected.fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
-                    byrle.metadata.limit = limit,
-                    "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
+                let why = format!(
+                    "it is over {limit} bytes, the limit {} sets",
+                    crate::env::MAX_METADATA_BYTES
                 );
+                if let Some(refused) = unchecked_document(self.proxy, &self.path, &why) {
+                    return refused;
+                }
                 self.log_proxied(status, length.unwrap_or(0));
                 let spliced = stream::iter(std::iter::once(Ok(prefix))).chain(rest);
                 return (forward_status, headers, Body::from_stream(spliced)).into_response();
@@ -3819,16 +4240,22 @@ impl Exchange<'_> {
             DocumentStep::Answer(response) => return response,
             DocumentStep::Forward { body, refused } => {
                 mark_filtered(&mut headers, &refused);
-                body
+                (body, refused.snapshot)
             }
         };
+        let (forwarded, snapshot) = forwarded;
+        let view = self
+            .negotiation
+            .rewrite_base
+            .as_deref()
+            .map(|base| etag_view(self.proxy, base, snapshot.as_deref()));
         finish(
             forwarded,
             body,
             headers,
             forward_status,
             self.negotiation.encoding,
-            self.negotiation.rewrite_base.as_deref(),
+            view.as_deref(),
             &|bytes| self.log_proxied(status, bytes),
         )
     }
@@ -3942,7 +4369,7 @@ fn finish(
     mut headers: HeaderMap,
     forward_status: StatusCode,
     chosen_encoding: RequestedEncoding,
-    rewrite_base: Option<&str>,
+    view: Option<&str>,
     log_proxied: &dyn Fn(u64),
 ) -> Response {
     let body = match forwarded {
@@ -3964,7 +4391,7 @@ fn finish(
             if let Some(etag) = headers
                 .get(header::ETAG)
                 .and_then(|v| v.to_str().ok())
-                .map(|etag| mark_etag(etag, rewrite_base.unwrap_or_default()))
+                .map(|etag| mark_etag(etag, view.unwrap_or_default()))
                 && let Ok(value) = HeaderValue::from_str(&etag)
             {
                 headers.insert(header::ETAG, value);
@@ -4018,15 +4445,20 @@ fn defer_response(
 
 /// The full packument for a package whose client asked for less, logged either way.
 /// Fetched now and never kept: see docs/engineering_decisions/0056-no-metadata-cache.md.
-/// `None` for an ecosystem whose records carry publish times, or when it cannot be read.
-async fn full_document(proxy: &Proxy, at: Repository, key: &PackageKey) -> Option<FullDocument> {
+/// `Ok(None)` for an ecosystem whose records carry publish times. Errors when it cannot be
+/// read.
+async fn full_document(
+    proxy: &Proxy,
+    at: Repository,
+    key: &PackageKey,
+) -> Result<Option<FullDocument>, String> {
     let started = Instant::now();
     let full = match proxy.config.clients.full_document(at, key).await {
         Ok(Some(full)) => full,
-        Ok(None) => return None,
+        Ok(None) => return Ok(None),
         Err(e) => {
             warn!(byrle.package.purl = %key, error.message = %e, "no full packument for this package");
-            return None;
+            return Err(e);
         }
     };
     if let Err(e) = &full.metadata {
@@ -4038,11 +4470,11 @@ async fn full_document(proxy: &Proxy, at: Repository, key: &PackageKey) -> Optio
         byrle.metadata.fetch_ms = started.elapsed().as_millis() as u64,
         "full packument read"
     );
-    Some(full)
+    Ok(Some(full))
 }
 
 /// Say when a cooldown cannot be answered while filtering this document, because a PEP 503
-/// page carries no publish time, and that [`dated_by_host`] answers it on the artifact.
+/// page carries no publish time, and that [`crate::dating::date`] answers it on the artifact.
 fn report_undated(proxy: &Proxy, read: &dyn ecosystem::Document, path: &str) {
     if !proxy
         .config
@@ -4072,58 +4504,62 @@ fn report_undated(proxy: &Proxy, read: &dyn ecosystem::Document, path: &str) {
     );
 }
 
-/// The publish time from the file host's `Last-Modified`, for a record whose index gave
-/// none. One `HEAD`, on the pinned path only.
-/// See docs/engineering_decisions/0060-pep-503-html-index.md.
-/// Returns `None` when the host gives no date.
-async fn dated_by_host(
-    proxy: &Proxy,
-    record: &PackageRecord,
-    path: &str,
-) -> Option<facts::PublishTimes> {
-    if !proxy
-        .config
-        .policy
-        .as_deref()
-        .is_some_and(Policy::uses_cooldown)
-    {
-        return None;
-    }
-    let started = Instant::now();
-    let artifact = record.artifact().expect("a pinned record names its file");
-    let last_modified = head_last_modified(proxy, &artifact.url, path).await?;
-    info!(
-        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-        byrle.package.published = %last_modified,
-        byrle.metadata.fetch_ms = started.elapsed().as_millis() as u64,
-        "publish time read from the file's Last-Modified"
-    );
-    Some(
-        [(record.package.version().to_owned(), last_modified)]
-            .into_iter()
-            .collect(),
-    )
+/// Where [`Deciding::dated`] reads the sources past the record's own, each logged.
+struct Sourcing<'d, 'a> {
+    deciding: &'d Deciding<'a>,
+    /// The file is on an origin the proxy does not serve, so its host is not asked.
+    unservable: bool,
 }
 
-/// The `Last-Modified` a HEAD of `url` answers, for the request at `path`.
-/// Returns `None` when the host refuses the HEAD, cannot be asked, or sends no date.
-async fn head_last_modified(proxy: &Proxy, url: &str, path: &str) -> Option<jiff::Timestamp> {
-    let response = match proxy.config.client.head(url).send().await {
-        Ok(response) if response.status().is_success() => response,
-        Ok(response) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), http.response.status_code = response.status().as_u16(), "no publish time: the file host refused a HEAD");
-            return None;
-        }
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "no publish time: the file host could not be asked");
-            return None;
-        }
-    };
-    response
-        .headers()
-        .get(header::LAST_MODIFIED)
-        .and_then(|value| value.to_str().ok())
-        .and_then(crate::http::http_date)
+impl crate::dating::Sources for Sourcing<'_, '_> {
+    fn full(&self) -> futures_util::future::BoxFuture<'_, Result<Option<FullDocument>, String>> {
+        let deciding = self.deciding;
+        Box::pin(async move {
+            full_document(
+                deciding.proxy,
+                deciding.request.repository,
+                deciding.request.key,
+            )
+            .await
+        })
+    }
+
+    fn last_modified<'s>(
+        &'s self,
+        url: &'s str,
+    ) -> futures_util::future::BoxFuture<'s, Result<jiff::Timestamp, String>> {
+        Box::pin(async move {
+            if self.unservable {
+                return Err(
+                    "not asked: the file is on an origin the proxy does not serve".to_owned(),
+                );
+            }
+            let path = self.deciding.request.path;
+            let started = Instant::now();
+            let read =
+                crate::dating::last_modified(&self.deciding.proxy.config.upstream, url).await;
+            match &read {
+                Ok(last_modified) => info!(
+                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
+                    byrle.package.published = %last_modified,
+                    byrle.metadata.fetch_ms = started.elapsed().as_millis() as u64,
+                    "publish time read from the file's Last-Modified"
+                ),
+                Err(why) => {
+                    warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.reason = %why, "no publish time from the file host")
+                }
+            }
+            read
+        })
+    }
+
+    fn first_seen<'s>(
+        &'s self,
+        purl: &'s str,
+        filename: &'s str,
+    ) -> futures_util::future::BoxFuture<'s, Result<Option<jiff::Timestamp>, String>> {
+        Box::pin(async move { self.deciding.first_seen(purl, filename).await.map(Some) })
+    }
 }
 
 /// JSON about the proxy itself, marked not to be cached: it reports the state at this moment.
@@ -4151,6 +4587,8 @@ pub struct Watched {
     pub new_versions: usize,
     /// Analyses started for those versions' preferred files.
     pub started: usize,
+    /// New versions past [`crate::env::WATCH_MAX_VERSIONS`] for their package, not analysed.
+    pub left: usize,
 }
 
 impl Proxy {
@@ -4182,12 +4620,15 @@ impl Proxy {
                 .expect("record store lock")
                 .refresh(at, metadata);
             watched.new_versions += new.len();
-            let files = new
-                .iter()
+            let (newest, left) = highest(at, &new, self.config.watch_max_versions);
+            watched.left += left;
+            let files = newest
+                .into_iter()
                 .filter_map(|r| r.artifact().map(|file| (r, file)));
             for (record, file) in files {
-                if self.watch_version(at, record, file).await {
+                if let Some(analysis) = self.watch_version(at, record, file).await {
                     watched.started += 1;
+                    let _ = analysis.await;
                 }
             }
         }
@@ -4195,25 +4636,22 @@ impl Proxy {
             byrle.watch.packages = watched.packages,
             byrle.watch.new_versions = watched.new_versions,
             byrle.watch.started = watched.started,
+            byrle.watch.left = watched.left,
             "watcher pass"
         );
         watched
     }
 
     /// Start analysing `record`'s preferred file, `artifact`, as a client's request would.
-    /// Returns whether an analysis started: not for a file on an origin the proxy does not
-    /// serve, with no strong digest, or already analysed.
+    /// Returns the analysis started: none for a file on an origin the proxy does not serve,
+    /// with no strong digest, or already analysed.
     async fn watch_version(
         &self,
         at: Repository,
         record: &PackageRecord,
         artifact: &crate::record::Artifact,
-    ) -> bool {
-        let Some(path) =
-            crate::origin::reachable_path(&artifact.url, self.config.origins.reachable())
-        else {
-            return false;
-        };
+    ) -> Option<tokio::task::JoinHandle<crate::analysis::run::Timings>> {
+        let path = crate::origin::reachable_path(&artifact.url, self.config.origins.reachable())?;
         let path = path.split('#').next().unwrap_or_default().to_owned();
         let narrowed = record.narrowed_to(&artifact.filename);
         let record = narrowed.as_ref().unwrap_or(record);
@@ -4231,8 +4669,8 @@ impl Proxy {
                 account: None,
             },
         );
-        let (fetch, _) = deciding.fetch_plan(record, false);
-        let dated = deciding.dated(record).await;
+        let (fetch, unservable) = deciding.fetch_plan(record, false);
+        let dated = deciding.dated(record, unservable.is_some()).await;
         let analysed = deciding
             .analysed(record, &fetch, dated.times.as_ref())
             .await;
@@ -4269,10 +4707,24 @@ impl Proxy {
         }
         let (AnalysisState::Pending(job), Some(analyser)) = (analysed.state, &self.config.analyser)
         else {
-            return false;
+            return None;
         };
-        analyser.start(job).is_some()
+        analyser.start(job)
     }
+}
+
+/// The `limit` highest of `records` in `at`'s version order, and how many were left out.
+/// A version the order does not read sorts lowest.
+fn highest(
+    at: Repository,
+    records: &[PackageRecord],
+    limit: usize,
+) -> (Vec<&PackageRecord>, usize) {
+    let order = at.registry().versions;
+    let mut sorted: Vec<&PackageRecord> = records.iter().collect();
+    sorted.sort_by_cached_key(|record| order.parse(record.package.version()));
+    let left = sorted.len().saturating_sub(limit);
+    (sorted.split_off(left), left)
 }
 
 /// What a download waits on: the artifact's analysis, then the detectors named.
@@ -4296,6 +4748,8 @@ enum Claiming {
 struct Beside<'a> {
     sourced: Option<&'a Sourced>,
     scanned: Option<&'a Scanned>,
+    /// What the stored analysis found in the tarball's shape, when one was read.
+    anomalies: Option<&'a [crate::analysis::Anomaly]>,
     detected: &'a [(String, crate::analysis::detector::Detection)],
 }
 
@@ -4437,10 +4891,7 @@ async fn intel_for(
         return Ok(None);
     };
     let ecosystem = key.ecosystem();
-    let why = match store
-        .package(ecosystem.as_str(), &key.registry_name())
-        .await
-    {
+    let why = match package_intel(store, key).await {
         Ok(Some(found)) => match snapshot_named(proxy, store, &found.snapshot).await {
             Ok(Some(snapshot)) => {
                 let gaps = snapshot.uncovered(ecosystem.as_str());
@@ -4466,11 +4917,73 @@ async fn intel_for(
     Err(NotReady::Unanswered)
 }
 
+/// What `store` holds against `key`, under its registry name and the other name its
+/// ecosystem says intel may list it under, from one snapshot: a second read from another
+/// snapshot is not merged, as one taken while a load replaced the first.
+async fn package_intel(
+    store: &dyn Intel,
+    key: &PackageKey,
+) -> Result<Option<PackageIntel>, crate::intel::store::IntelError> {
+    let (ecosystem, name) = (key.ecosystem(), key.registry_name());
+    let mut found = store.package(ecosystem.as_str(), &name).await?;
+    let Some(alias) = (crate::ecosystem::of(ecosystem).intel_alias)(&name) else {
+        return Ok(found);
+    };
+    let also = store.package(ecosystem.as_str(), &alias).await?;
+    if let (Some(found), Some(also)) = (found.as_mut(), also)
+        && found.snapshot == also.snapshot
+    {
+        found.records.extend(also.records);
+        found.ranges.extend(also.ranges);
+    }
+    Ok(found)
+}
+
 /// Where a resolution line is written, the account it names and the repository it was read from.
 struct Auditing<'a> {
     log: &'a AuditLog,
     account: Option<&'a str>,
     at: Repository,
+}
+
+/// The signal keys of the advisories `intel` holds against `record`'s version.
+fn advisory_keys(intel: &PackageIntel, record: &PackageRecord) -> Vec<String> {
+    let ecosystem = record.package.key().ecosystem();
+    crate::signal::of_advisories(&intel.for_version(ecosystem.as_str(), record.package.version()))
+        .iter()
+        .map(Signal::key)
+        .collect()
+}
+
+/// The checks `refusal` names, each reason's text before its `:`.
+fn check_names(refusal: &enforce::Refusal) -> impl Iterator<Item = String> + '_ {
+    refusal
+        .reasons
+        .iter()
+        .filter_map(|r| r.split(':').next().map(str::to_owned))
+}
+
+/// Each file of `record` that `decided` refuses as the record with the file's own publish
+/// time, and why: a PyPI file uploaded to a release after it. See
+/// docs/engineering_decisions/0124-pypi-file-publish-times.md.
+fn refused_alone(
+    record: &PackageRecord,
+    decided: &dyn Fn(&PackageRecord) -> Option<enforce::Refusal>,
+) -> Vec<(String, enforce::Refusal)> {
+    record
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.published_at.is_some() && artifact.published_at != record.published_at
+        })
+        .filter_map(|artifact| {
+            let dated = PackageRecord {
+                published_at: artifact.published_at,
+                ..record.clone()
+            };
+            decided(&dated).map(|refusal| (artifact.filename.clone(), refusal))
+        })
+        .collect()
 }
 
 /// The versions in this metadata document the policy refuses, every one asked, with
@@ -4489,6 +5002,7 @@ fn policy_refused_versions(
     };
     let today = crate::policy::today();
     let mut refused = HashSet::new();
+    let mut files = Vec::new();
     let mut order = Vec::new();
     let mut checks: BTreeSet<String> = BTreeSet::new();
     let mut strongest = crate::policy::Action::Allow;
@@ -4499,32 +5013,27 @@ fn policy_refused_versions(
     );
     for (record, previous) in metadata.records.iter().zip(&predecessors) {
         let provenance = attestation::from_metadata(record, previous);
-        let keys: Vec<String> = intel.map_or_else(Vec::new, |intel| {
-            let ecosystem = record.package.key().ecosystem();
-            crate::signal::of_advisories(
-                &intel.for_version(ecosystem.as_str(), record.package.version()),
-            )
-            .iter()
-            .map(Signal::key)
-            .collect()
-        });
-        let enforce::Verdict::Refuse(refusal) = enforce::artifact(
+        let keys = intel.map_or_else(Vec::new, |intel| advisory_keys(intel, record));
+        let decided = |record: &PackageRecord| match enforce::artifact(
             Some(policy),
             record,
             None,
             intel,
             (&provenance, &keys),
             today,
-        ) else {
+        ) {
+            enforce::Verdict::Refuse(refusal) => Some(refusal),
+            enforce::Verdict::Serve => None,
+        };
+        let Some(refusal) = decided(record) else {
+            for (file, refusal) in refused_alone(record, &decided) {
+                checks.extend(check_names(&refusal));
+                files.push(file);
+            }
             continue;
         };
         strongest = std::cmp::max_by_key(strongest, refusal.action, |a| a.strength());
-        checks.extend(
-            refusal
-                .reasons
-                .iter()
-                .filter_map(|r| r.split(':').next().map(str::to_owned)),
-        );
+        checks.extend(check_names(&refusal));
         order.push(record.package.version().to_owned());
         refused.insert(record.package.version().to_owned());
     }
@@ -4583,6 +5092,8 @@ fn policy_refused_versions(
     Refused {
         checks: checks.into_iter().collect(),
         versions: refused,
+        files,
+        snapshot: intel.map(|intel| intel.snapshot.clone()),
     }
 }
 
@@ -4674,7 +5185,7 @@ mod tests {
     ) -> (String, Recorder) {
         let (upstream, seen) = upstream_serving(status, content_type, content_encoding, body).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
@@ -4690,7 +5201,7 @@ mod tests {
         body: Vec<u8>,
     ) -> (String, Recorder) {
         let (upstream, seen) = upstream_serving(status, content_type, None, body).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream.clone())
             .with_upstream(Ecosystem::PyPI, upstream);
         let base = serve(proxy.router()).await;
@@ -4774,7 +5285,7 @@ mod tests {
     /// ecosystem. Passing npm for every request made a `pypi/...` entry unreachable.
     #[test]
     fn a_refusal_takes_the_status_configured_for_its_own_ecosystem() {
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org")
             .with_refusal_status(
                 crate::refusal::RefusalStatus::parse("default=403,pypi/pip=451,npm/pnpm=404")
@@ -4851,7 +5362,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("429:1:metadata").unwrap()))
                 .router(),
@@ -4884,7 +5395,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("503:none:all").unwrap()))
                 .router(),
@@ -4908,7 +5419,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("503:1:all:0").unwrap()))
                 .router(),
@@ -4963,7 +5474,7 @@ mod tests {
         let (upstream, seen) =
             upstream_revalidating("\"abc\"", fixture("lodash-4.17.21.abbrev.json")).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
@@ -5002,10 +5513,10 @@ mod tests {
             "version":"1.0.0","dist":{
             "tarball":"https://elsewhere.example/widget-1.0.0.tgz","integrity":"sha512-AAAA"}}}}"#;
 
-    /// A body past the limit is forwarded whole rather than truncated or refused. The
-    /// prefix already read has to be spliced back in front of the rest of the stream.
+    /// A body past the limit is refused. In observe mode it is forwarded whole, the prefix
+    /// already read spliced back in front of the rest of the stream.
     #[tokio::test]
-    async fn an_oversized_packument_is_forwarded_intact_without_being_parsed() {
+    async fn an_oversized_packument_is_refused_or_forwarded_intact_when_observing() {
         let body = fixture("lodash-4.17.21.abbrev.json");
         let (upstream, _) = upstream_serving(
             StatusCode::OK,
@@ -5014,11 +5525,24 @@ mod tests {
             body.clone(),
         )
         .await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_max_metadata_bytes(16);
         let base = serve(proxy.clone().router()).await;
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
+        assert_eq!(response.status(), 502);
+        let said = response.text().await.unwrap();
+        assert!(
+            said.contains(&format!(
+                "over 16 bytes, the limit {}",
+                crate::env::MAX_METADATA_BYTES
+            )),
+            "{said}"
+        );
+        assert_eq!(proxy.health().documents_uninspected, 1);
 
+        let proxy = proxy.with_mode(Mode::Observe);
+        let base = serve(proxy.clone().router()).await;
         let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), 200);
         assert_eq!(
@@ -5026,7 +5550,70 @@ mod tests {
             body.as_slice(),
             "the whole body has to arrive, including the prefix already buffered"
         );
-        assert_eq!(proxy.health().documents_uninspected, 1);
+        assert_eq!(proxy.health().documents_uninspected, 2);
+    }
+
+    /// A packument served as `text/plain` is 502 in enforce mode, forwarded in observe mode,
+    /// and counted UNINSPECTED either way. A 404 or a HEAD is no document left unchecked.
+    #[tokio::test]
+    async fn a_document_in_a_media_type_not_read_is_502() {
+        let body = fixture(LODASH);
+        for (status, method, mode, answered, counted) in [
+            (StatusCode::OK, reqwest::Method::GET, Mode::Enforce, 502, 1),
+            (StatusCode::OK, reqwest::Method::GET, Mode::Observe, 200, 1),
+            (
+                StatusCode::NOT_FOUND,
+                reqwest::Method::GET,
+                Mode::Enforce,
+                404,
+                0,
+            ),
+            (StatusCode::OK, reqwest::Method::HEAD, Mode::Enforce, 200, 0),
+        ] {
+            let (upstream, _) = upstream_serving(status, "text/plain", None, body.clone()).await;
+            let proxy = Proxy::new(crate::service::Connection::default())
+                .with_upstream(Ecosystem::Npm, upstream)
+                .with_mode(mode);
+            let base = serve(proxy.clone().router()).await;
+            let response = reqwest::Client::new()
+                .request(method.clone(), format!("{base}/npm/lodash"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), answered, "{status} {method} {mode:?}");
+            if answered == 502 {
+                let said = response.text().await.unwrap();
+                assert!(said.contains("served as `text/plain`"), "{said}");
+            }
+            assert_eq!(
+                proxy.health().documents_uninspected,
+                counted,
+                "{status} {method} {mode:?}"
+            );
+        }
+        let (upstream, _) = upstream_serving(StatusCode::OK, "text/plain", None, body).await;
+        let proxy = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, upstream);
+        let base = serve(proxy.clone().router()).await;
+        reqwest::Client::new()
+            .get(format!("{base}/npm/lodash"))
+            .header(header::ACCEPT_ENCODING, UNREADABLE)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            proxy.health().documents_uninspected,
+            1,
+            "a body the proxy cannot decode is counted once, as unreadable"
+        );
+        let tarball = format!("{base}/npm/lodash/-/lodash-4.17.21.tgz");
+        let fetched = reqwest::Client::new().get(tarball).send().await;
+        drop(fetched);
+        assert_eq!(
+            proxy.health().documents_uninspected,
+            1,
+            "a file is no document"
+        );
     }
 
     /// Decision #4's pinned half, end to end. `npm ci` fetches an artifact by name
@@ -5041,7 +5628,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
@@ -5126,7 +5713,7 @@ mod tests {
             fixture(packument),
         )
         .await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_intel(intel)
             .with_refuse_unservable(false)
@@ -5175,7 +5762,7 @@ mod tests {
         path: &str,
         accept_encoding: &str,
     ) -> Negotiation {
-        let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
+        let proxy = Proxy::new(crate::service::Connection::default()).with_policy(yaml.map(policy));
         let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
         negotiate(
             &proxy,
@@ -5248,7 +5835,7 @@ mod tests {
         path: &str,
         client: &[(header::HeaderName, &'static str)],
     ) -> HeaderMap {
-        let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
+        let proxy = Proxy::new(crate::service::Connection::default()).with_policy(yaml.map(policy));
         let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
@@ -5256,7 +5843,14 @@ mod tests {
             headers.append(name, HeaderValue::from_static(value));
         }
         let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
-        upstream_headers(&headers, &negotiation, path)
+        let view = unconsulted_view(&proxy, &negotiation);
+        upstream_headers(&headers, &negotiation, view.as_deref(), path)
+    }
+
+    /// [`current_view`] for a proxy that consults no intel.
+    fn unconsulted_view(proxy: &Proxy, negotiation: &Negotiation) -> Option<String> {
+        let base = negotiation.rewrite_base.as_deref()?;
+        Some(etag_view(proxy, base, None))
     }
 
     /// What reaches upstream, header by header. `None` is a header that must not.
@@ -5469,7 +6063,7 @@ mod tests {
     /// A tag this proxy issued reaches upstream as the upstream's own tag.
     #[test]
     fn a_tag_is_turned_back_only_at_the_address_that_issued_it() {
-        let proxy = Proxy::new(reqwest::Client::new());
+        let proxy = Proxy::new(crate::service::Connection::default());
         let (ecosystem, target) = crate::route::classify("/npm/lodash").expect("a routed path");
         for (issued_at, expected) in [
             ("http://proxy.test/npm", Some("W/\"abc123\"")),
@@ -5477,18 +6071,175 @@ mod tests {
             ("http://some-old-address:9999/npm", None),
         ] {
             let mut headers = client_headers("gzip");
-            let issued = mark_etag("W/\"abc123\"", issued_at);
+            let issued = mark_etag("W/\"abc123\"", &etag_view(&proxy, issued_at, None));
             headers.insert(
                 header::IF_NONE_MATCH,
                 HeaderValue::from_str(&issued).unwrap(),
             );
             let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
-            let sent = upstream_headers(&headers, &negotiation, "/npm/lodash");
+            let view = unconsulted_view(&proxy, &negotiation);
+            let sent = upstream_headers(&headers, &negotiation, view.as_deref(), "/npm/lodash");
             assert_eq!(
                 sent.get(header::IF_NONE_MATCH).map(|v| v.to_str().unwrap()),
                 expected,
                 "{issued_at}"
             );
+        }
+    }
+
+    /// A tag is sent upstream only under the policy and intel snapshot the document it came
+    /// with was filtered under. Any other tag, or intel that cannot be read, drops it.
+    #[tokio::test]
+    async fn a_tag_issued_under_another_policy_or_snapshot_is_not_sent_upstream() {
+        let conditional: Arc<Mutex<Vec<bool>>> = Arc::default();
+        let recorder = conditional.clone();
+        let router = Router::new().fallback(any(move |req: Request| {
+            let recorder = recorder.clone();
+            async move {
+                let asked = req.headers().contains_key(header::IF_NONE_MATCH);
+                recorder.lock().unwrap().push(asked);
+                Response::builder()
+                    .status(if asked {
+                        StatusCode::NOT_MODIFIED
+                    } else {
+                        StatusCode::OK
+                    })
+                    .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
+                    .header(header::ETAG, "W/\"t\"")
+                    .body(Body::from(fixture(LODASH)))
+                    .unwrap()
+            }
+        }));
+        let upstream = serve(router).await;
+        let intel = |snapshot: &str| -> Option<Arc<dyn Intel>> {
+            Some(Arc::new(crate::intel::store::testing::FixedIntel(Ok(
+                Some(PackageIntel {
+                    snapshot: snapshot.to_owned(),
+                    records: Vec::new(),
+                    ranges: Vec::new(),
+                    exploitation_loaded: true,
+                }),
+            ))))
+        };
+        let proxy = |intel: Option<Arc<dyn Intel>>, yaml: &str| {
+            Proxy::new(crate::service::Connection::default())
+                .with_upstream(Ecosystem::Npm, upstream.clone())
+                .with_public_base(Some("http://proxy.test".to_owned()))
+                .with_intel(intel)
+                .with_policy(Some(policy(yaml)))
+        };
+        let get = |proxy: Proxy, tag: Option<String>| async move {
+            let base = serve(proxy.router()).await;
+            let mut request = reqwest::Client::new().get(format!("{base}/npm/lodash"));
+            if let Some(tag) = tag {
+                request = request.header(header::IF_NONE_MATCH, tag);
+            }
+            let response = request.send().await.unwrap();
+            (
+                response.status(),
+                response.headers().get(header::ETAG).cloned(),
+            )
+        };
+        const ONE: &str = "version: 1\ncooldown_days: 0\n";
+        const TWO: &str = "version: 1\ncooldown_days: 1\n";
+
+        let (status, tag) = get(proxy(intel("s1"), ONE), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let tag = tag.expect("a tag").to_str().unwrap().to_owned();
+        let (_, unconsulted) = get(proxy(None, ONE), None).await;
+        let unconsulted = unconsulted.expect("a tag").to_str().unwrap().to_owned();
+        conditional.lock().unwrap().clear();
+
+        for (intel, yaml, tag, sent) in [
+            (intel("s1"), ONE, &tag, true),
+            (intel("s2"), ONE, &tag, false),
+            (intel("s1"), TWO, &tag, false),
+            (intel("s1"), ONE, &unconsulted, false),
+            (None, ONE, &unconsulted, true),
+        ] {
+            get(proxy(intel, yaml), Some(tag.clone())).await;
+            let asked = std::mem::take(&mut *conditional.lock().unwrap());
+            assert_eq!(asked.first(), Some(&sent), "{tag} {yaml}");
+        }
+        let unreadable: Option<Arc<dyn Intel>> =
+            Some(Arc::new(crate::intel::store::testing::FixedIntel(Err(()))));
+        get(proxy(unreadable, ONE), Some(unconsulted.clone())).await;
+        assert_eq!(conditional.lock().unwrap().first(), Some(&false));
+
+        let (status, remarked) = get(proxy(intel("s1"), ONE), Some(tag.clone())).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            remarked.expect("a tag").to_str().unwrap(),
+            tag,
+            "a 304 keeps the tag"
+        );
+    }
+
+    /// A [`crate::intel::store::testing::FixedIntel`] counting its package lookups.
+    struct Counted(crate::intel::store::testing::FixedIntel, AtomicU64);
+
+    impl Intel for Counted {
+        fn lookup<'a>(
+            &'a self,
+            ecosystem: &'a str,
+            name: &'a str,
+            version: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Vec<crate::intel::store::Record>> {
+            self.0.lookup(ecosystem, name, version)
+        }
+
+        fn snapshot(&self) -> crate::intel::store::Lookup<'_, Option<LoadedSnapshot>> {
+            self.0.snapshot()
+        }
+
+        fn package<'a>(
+            &'a self,
+            ecosystem: &'a str,
+            name: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Option<PackageIntel>> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.package(ecosystem, name)
+        }
+    }
+
+    /// A request's view is read only for a tag this proxy issued on a document it rewrites:
+    /// any other metadata GET costs the one intel lookup its filtering makes.
+    #[tokio::test]
+    async fn only_a_marked_tag_on_a_rewritten_document_costs_a_lookup() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture(LODASH),
+        )
+        .await;
+        let marked = mark_etag("W/\"t\"", "another view");
+        for (rewriting, tag) in [
+            (true, None),
+            (true, Some("W/\"t\"")),
+            (false, Some(marked.as_str())),
+        ] {
+            let counted = Arc::new(Counted(
+                crate::intel::store::testing::FixedIntel(Ok(Some(PackageIntel {
+                    snapshot: "s1".to_owned(),
+                    records: Vec::new(),
+                    ranges: Vec::new(),
+                    exploitation_loaded: true,
+                }))),
+                AtomicU64::new(0),
+            ));
+            let proxy = Proxy::new(crate::service::Connection::default())
+                .with_upstream(Ecosystem::Npm, upstream.clone())
+                .with_artifact_rewriting(rewriting)
+                .with_intel(Some(counted.clone()))
+                .with_policy(Some(policy("version: 1\ncooldown_days: 0\n")));
+            let base = serve(proxy.router()).await;
+            let mut request = reqwest::Client::new().get(format!("{base}/npm/lodash"));
+            if let Some(tag) = tag {
+                request = request.header(header::IF_NONE_MATCH, tag);
+            }
+            assert_eq!(request.send().await.unwrap().status(), 200);
+            assert_eq!(counted.1.load(Ordering::Relaxed), 1, "{rewriting} {tag:?}");
         }
     }
 
@@ -5507,8 +6258,8 @@ mod tests {
                 "https://registry.example/npm",
             ),
         ] {
-            let proxy =
-                Proxy::new(reqwest::Client::new()).with_public_base(configured.map(str::to_owned));
+            let proxy = Proxy::new(crate::service::Connection::default())
+                .with_public_base(configured.map(str::to_owned));
             let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
             assert_eq!(negotiation.rewrite_base.as_deref(), Some(expected));
         }
@@ -5612,12 +6363,12 @@ mod tests {
                 Some("2020-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap()),
                 false,
             ),
-            ("no Last-Modified", StatusCode::OK, None, false),
+            ("no Last-Modified", StatusCode::OK, None, true),
             (
                 "a 404 carrying a date",
                 StatusCode::NOT_FOUND,
                 Some(jiff::Timestamp::now()),
-                false,
+                true,
             ),
         ] {
             let router = Router::new().fallback(any(move |_req: Request| async move {
@@ -5650,6 +6401,177 @@ mod tests {
         }
     }
 
+    /// A full packument whose `time` lacks the version still asks the file host, and its
+    /// `Last-Modified` dates the version.
+    #[tokio::test]
+    async fn a_time_map_without_the_version_asks_the_file_host() {
+        let host = serve(Router::new().fallback(any(|_req: Request| async {
+            (
+                [(header::LAST_MODIFIED, "Wed, 01 Jan 2020 00:00:00 GMT")],
+                "",
+            )
+        })))
+        .await;
+        let packument = format!(
+            r#"{{"name":"widget","time":{{"modified":"2020-01-01T00:00:00Z"}},"versions":{{"1.0.0":{{"version":"1.0.0","dist":{{"tarball":"{host}/widget/-/widget-1.0.0.tgz","integrity":"sha512-{}"}}}}}}}}"#,
+            "A".repeat(86) + "=="
+        );
+        let registry = serve(Router::new().route(
+            "/widget",
+            get(move || {
+                let packument = packument.clone();
+                async move { ([(header::CONTENT_TYPE, "application/json")], packument) }
+            }),
+        ))
+        .await;
+        let proxy = offline(
+            None,
+            Some("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n"),
+        )
+        .with_upstream(Ecosystem::Npm, &registry)
+        .with_origin_policy([host.as_str()], [])
+        .expect("the host is an origin");
+        let step = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
+        assert!(
+            matches!(step, ArtifactStep::Fetch(_)),
+            "dated 2020 by the file host"
+        );
+    }
+
+    /// A file on an origin the proxy does not serve is not asked for its `Last-Modified`.
+    #[tokio::test]
+    async fn a_file_on_an_origin_not_served_is_not_asked_for_its_date() {
+        let (host, asked) =
+            crate::util::test_support::recorded(vec![crate::util::test_support::Answer::Status(
+                200,
+            )])
+            .await;
+        let packument = format!(
+            r#"{{"name":"widget","time":{{"modified":"2020-01-01T00:00:00Z"}},"versions":{{"1.0.0":{{"version":"1.0.0","dist":{{"tarball":"http://{host}/widget/-/widget-1.0.0.tgz","integrity":"sha512-{}"}}}}}}}}"#,
+            "A".repeat(86) + "=="
+        );
+        let registry = serve(Router::new().route(
+            "/widget",
+            get(move || {
+                let packument = packument.clone();
+                async move { ([(header::CONTENT_TYPE, "application/json")], packument) }
+            }),
+        ))
+        .await;
+        let proxy = offline(
+            None,
+            Some("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n"),
+        )
+        .with_upstream(Ecosystem::Npm, &registry);
+        pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "the file's host is not asked"
+        );
+    }
+
+    /// An undated file the index lists, behind a host that sends no `Last-Modified`.
+    async fn undated_pypi(proxy: &Proxy) -> String {
+        let router = Router::new().fallback(any(|_req: Request| async { StatusCode::OK }));
+        let host = serve(router).await;
+        let index = format!(
+            r#"{{"name":"x","files":[{{"filename":"x-1.0.tar.gz","url":"{host}/x-1.0.tar.gz","hashes":{{"sha256":"{}"}}}}]}}"#,
+            "a".repeat(64)
+        );
+        resolve(
+            proxy,
+            "/pypi/simple/x/",
+            pypi::SIMPLE_JSON,
+            index.as_bytes(),
+        )
+        .await;
+        host
+    }
+
+    /// Under a cooldown, a file nothing dates is dated by its first sighting, which a later
+    /// request reads back unchanged. A file the index does not list is not recorded.
+    #[tokio::test]
+    async fn an_undated_file_is_dated_by_its_first_sighting() {
+        let store = Arc::new(crate::analysis::store::InProcess::new(8));
+        let analyser = crate::analysis::run::tests::analyser("first-seen", 1 << 20, store.clone());
+        let yaml = "version: 1\ncooldown_days: 7\ninstall_scripts: allow\n";
+        let base = offline(None, Some(yaml)).with_analyser(Some(Arc::new(analyser)));
+        let host = undated_pypi(&base).await;
+        let proxy = base
+            .with_origin_policy([host.as_str()], [])
+            .expect("the host is an origin");
+        let (guard, log) = capture(tracing::Level::INFO);
+        let (_, body) = refused(pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await).await;
+        drop(guard);
+        let today = crate::policy::today();
+        let lifts = today.checked_add(jiff::Span::new().days(7)).unwrap();
+        assert!(body.contains(&format!("installable on {lifts}")), "{body}");
+        assert!(
+            text(&log).contains("dated by the file's first sighting"),
+            "{}",
+            text(&log)
+        );
+        let first = store
+            .seen("pkg:pypi/x@1.0", "x-1.0.tar.gz")
+            .expect("recorded");
+        refused(pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await).await;
+        assert_eq!(store.seen("pkg:pypi/x@1.0", "x-1.0.tar.gz"), Some(first));
+        pinned(&proxy, "/pypi/packages/x-2.0.tar.gz").await;
+        assert_eq!(
+            store.seen("pkg:pypi/x@2.0", "x-2.0.tar.gz"),
+            None,
+            "not listed"
+        );
+    }
+
+    /// A store that cannot record a first sighting leaves the file undated, and it is not
+    /// served.
+    #[tokio::test]
+    async fn an_undated_file_whose_store_errors_is_not_served() {
+        let store = Arc::new(crate::analysis::store::tests::Broken);
+        let analyser = crate::analysis::run::tests::analyser("broken", 1 << 20, store);
+        let yaml = "version: 1\ncooldown_days: 7\ninstall_scripts: allow\n";
+        let base = offline(None, Some(yaml)).with_analyser(Some(Arc::new(analyser)));
+        let host = undated_pypi(&base).await;
+        let proxy = base
+            .with_origin_policy([host.as_str()], [])
+            .expect("the host is an origin");
+        let (guard, log) = capture(tracing::Level::WARN);
+        let step = pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await;
+        drop(guard);
+        assert!(matches!(step, ArtifactStep::Answer(_)));
+        assert!(
+            text(&log).contains("its first sighting could not be read"),
+            "{}",
+            text(&log)
+        );
+    }
+
+    /// With no store to record a first sighting in, an undated file is refused as
+    /// `cooldown_unanswered`, and served when the policy weighs that 0.
+    #[tokio::test]
+    async fn an_undated_file_with_no_store_is_cooldown_unanswered() {
+        for (weights, served) in [
+            ("", false),
+            ("signal_weights: { cooldown_unanswered: 0 }\n", true),
+        ] {
+            let yaml = format!("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n{weights}");
+            let base = offline(None, Some(&yaml));
+            let host = undated_pypi(&base).await;
+            let proxy = base
+                .with_origin_policy([host.as_str()], [])
+                .expect("the host is an origin");
+            let step = pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await;
+            if served {
+                assert!(matches!(step, ArtifactStep::Fetch(_)), "{weights}");
+                continue;
+            }
+            let (status, body) = refused(step).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert!(body.contains("no first sighting stored"), "{body}");
+        }
+    }
+
     /// A deprecated version is served, and the message its publisher left is logged.
     #[tokio::test]
     async fn a_deprecated_version_is_served_and_its_message_logged() {
@@ -5679,6 +6601,8 @@ mod tests {
                 .into_iter()
                 .collect(),
             checks: vec!["cooldown_days".to_owned(), "denials".to_owned()],
+            files: Vec::new(),
+            snapshot: None,
         };
         mark_filtered(&mut headers, &refused);
         assert_eq!(headers[FILTERED_VERSIONS], "2");
@@ -5688,7 +6612,8 @@ mod tests {
     /// A limit of zero would deadlock every metadata request, so it is raised to one.
     #[tokio::test]
     async fn a_limit_of_zero_is_treated_as_one() {
-        let proxy = Proxy::new(reqwest::Client::new()).with_max_concurrent_documents(0);
+        let proxy =
+            Proxy::new(crate::service::Connection::default()).with_max_concurrent_documents(0);
         let slot = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             metadata_slot(&proxy, "/npm/lodash"),
@@ -5699,7 +6624,8 @@ mod tests {
     /// A slot taken at once is not reported; one waited for is.
     #[tokio::test]
     async fn only_a_wait_for_a_metadata_slot_is_logged() {
-        let proxy = Proxy::new(reqwest::Client::new()).with_max_concurrent_documents(1);
+        let proxy =
+            Proxy::new(crate::service::Connection::default()).with_max_concurrent_documents(1);
         let (_guard, buf) = capture(tracing::Level::DEBUG);
         let held = metadata_slot(&proxy, "/npm/first").await;
         assert_eq!(text(&buf), "", "nothing was waited for");
@@ -5765,7 +6691,7 @@ mod tests {
     /// A proxy with no upstream to reach. The origin check is off, so a 403 can only be the
     /// policy's.
     fn offline(intel: Option<Arc<dyn Intel>>, yaml: Option<&str>) -> Proxy {
-        Proxy::new(reqwest::Client::new())
+        Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
             .with_upstream(Ecosystem::PyPI, NO_UPSTREAM)
             .with_upstream(Ecosystem::Cargo, NO_UPSTREAM)
@@ -5808,14 +6734,12 @@ mod tests {
 
     /// The same, for a client whose user agent is `client`.
     async fn pinned_by(proxy: &Proxy, path: &str, client: &str) -> ArtifactStep {
-        let (
-            repository,
-            RequestTarget::Artifact {
-                key,
-                claimed_version,
-                filename,
-            },
-        ) = crate::route::classify(path).expect("a routed path")
+        let (repository, target) = crate::route::classify(path).expect("a routed path");
+        let RequestTarget::Artifact {
+            key,
+            claimed_version,
+            filename,
+        } = placed(proxy, repository, target, path).await
         else {
             panic!("{path} is not an artifact");
         };
@@ -6413,6 +7337,30 @@ mod tests {
         assert_eq!(weighed.checks, ["signals"]);
     }
 
+    /// A PyPI file uploaded yesterday to a 2024 release is refused alone, under the check
+    /// that refused it; observe mode removes nothing.
+    #[test]
+    fn a_pypi_file_newer_than_its_release_is_refused_alone() {
+        let yesterday = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
+        let index = format!(
+            r#"{{"name":"x","files":[
+            {{"filename":"x-1.0.tar.gz","url":"https://f/x-1.0.tar.gz","hashes":{{}},
+              "upload-time":"2024-01-01T00:00:00Z"}},
+            {{"filename":"x-1.0-py3-none-any.whl","url":"https://f/x-1.0-py3-none-any.whl",
+              "hashes":{{}},"upload-time":"{yesterday}"}}]}}"#
+        );
+        let project = crate::ecosystem::pypi::parse("x", index.as_bytes()).expect("parses");
+        let metadata = crate::ecosystem::pypi::normalize(&project).expect("records");
+        let policy = policy("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n");
+        let decide =
+            |mode| policy_refused_versions(&metadata, Some(&policy), None, "/p", None, mode);
+        let refused = decide(Mode::Enforce);
+        assert!(refused.versions.is_empty());
+        assert_eq!(refused.files, ["x-1.0-py3-none-any.whl"]);
+        assert_eq!(refused.checks, ["cooldown_days"]);
+        assert!(decide(Mode::Observe).files.is_empty());
+    }
+
     /// The resolution event carries the strongest action of the versions removed: 1.0.0 is
     /// blocked by a denial and 2.0.0 quarantined by the cooldown. It names the account.
     #[test]
@@ -6707,20 +7655,12 @@ mod tests {
         ));
     }
 
-    /// A 200 carrying something unreadable, or in an encoding this cannot decode, is
-    /// forwarded rather than turned into a 502: it is our gap, not an upstream outage.
+    /// A 200 its row does not read is forwarded. One the proxy cannot decode, normalize or
+    /// point at itself is refused, and forwarded in observe mode.
     #[tokio::test]
-    async fn a_document_the_proxy_cannot_read_is_forwarded_as_it_came() {
+    async fn a_document_the_proxy_cannot_check_is_refused_unless_observing() {
         let proxy = offline(None, None);
-        let junk = resolve(
-            &proxy,
-            "/npm/lodash",
-            npm::ABBREVIATED_ACCEPT,
-            b"<html>maintenance</html>",
-        )
-        .await;
-        assert!(matches!(junk, DocumentStep::Forward { body: None, .. }));
-
+        let observing = proxy.clone().with_mode(Mode::Observe);
         let (ecosystem, target) = crate::route::classify("/npm/lodash").expect("a routed path");
         let negotiation = negotiate(
             &proxy,
@@ -6729,18 +7669,54 @@ mod tests {
             &Method::GET,
             &client_headers("gzip"),
         );
-        let brotli = filtered_document(
+        let unread = filtered_document(
             &proxy,
-            DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
-            &Bytes::from_static(b"\x1b[brotli bytes]"),
-            Some("br"),
+            DocumentKind::SimpleIndex(crate::route::IndexFormat::Json),
+            &Bytes::from_static(b"{}"),
+            None,
             &negotiation,
             "/npm/lodash",
             None,
             true,
         )
         .await;
-        assert!(matches!(brotli, DocumentStep::Forward { body: None, .. }));
+        assert!(matches!(unread, DocumentStep::Forward { body: None, .. }));
+        let escaped = br#"{"name":"lodash","versions":{"4.17.21":{"version":"4.17.21",
+            "dist":{"tarball":"https:\/\/registry.npmjs.org\/lodash\/-\/lodash-4.17.21.tgz",
+            "integrity":"sha512-AAAA"}}}}"#;
+        for (body, encoding, why) in [
+            (
+                &b"\x1b[brotli bytes]"[..],
+                Some("br"),
+                "could not be decoded",
+            ),
+            (b"<html>maintenance</html>", None, "did not normalize"),
+            (escaped, None, "could not be rewritten"),
+        ] {
+            let mut steps = Vec::new();
+            for proxy in [&proxy, &observing] {
+                let step = filtered_document(
+                    proxy,
+                    DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
+                    &Bytes::from_static(body),
+                    encoding,
+                    &negotiation,
+                    "/npm/lodash",
+                    None,
+                    true,
+                )
+                .await;
+                steps.push(step);
+            }
+            let [DocumentStep::Answer(refused), observed] = <[_; 2]>::try_from(steps).ok().unwrap()
+            else {
+                panic!("a document that {why} is refused");
+            };
+            let (status, said) = read(refused).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert!(said.contains(why), "{said}");
+            assert!(matches!(observed, DocumentStep::Forward { body: None, .. }));
+        }
     }
 
     /// A rewritten body is this proxy's, so its length, encoding and entity tag describe
@@ -6858,7 +7834,7 @@ mod tests {
             }
         }));
         let upstream = serve(router).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_refuse_unservable(false)
             .with_policy(Some(policy("version: 1\ncooldown_days: 36500\n")));
@@ -6921,7 +7897,7 @@ mod tests {
             }
         }));
         let upstream = serve(router).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_refuse_unservable(false)
             .with_policy(Some(policy("version: 1\ncooldown_days: 7\n")));
@@ -7072,6 +8048,54 @@ mod tests {
         assert_eq!(unfiltered.len(), 3, "nothing refused, nothing removed");
     }
 
+    /// A wheel uploaded yesterday to a 2024 release is a day old: it alone leaves the index
+    /// and its fetch is refused, while a release whose every file is new leaves whole.
+    #[tokio::test]
+    async fn a_file_added_to_an_old_pypi_release_is_dated_by_its_own_upload() {
+        let yesterday = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
+        let files: Vec<serde_json::Value> = [
+            ("x-1.0.tar.gz", "2024-01-01T00:00:00Z".to_owned()),
+            ("x-1.0-py3-none-any.whl", yesterday.to_string()),
+            ("x-0.9.tar.gz", "2023-01-01T00:00:00Z".to_owned()),
+            (
+                "x-0.9-py3-none-any.whl",
+                (yesterday - jiff::SignedDuration::from_hours(24 * 29)).to_string(),
+            ),
+            ("x-2.0.tar.gz", yesterday.to_string()),
+            ("x-2.0-py3-none-any.whl", yesterday.to_string()),
+        ]
+        .into_iter()
+        .map(|(file, uploaded)| {
+            serde_json::json!({
+                "filename": file,
+                "url": format!("https://files.pythonhosted.org/packages/aa/bb/{file}"),
+                "hashes": {"sha256": x_hex(file)},
+                "upload-time": uploaded,
+            })
+        })
+        .collect();
+        let index =
+            serde_json::json!({"meta": {"api-version": "1.1"}, "name": "x", "files": files});
+        let proxy = offline(
+            None,
+            Some("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n"),
+        );
+        let names = served_filenames(&proxy, index.to_string().as_bytes()).await;
+        assert_eq!(
+            names,
+            ["x-1.0.tar.gz", "x-0.9.tar.gz", "x-0.9-py3-none-any.whl"],
+            "a file 30 days old stays"
+        );
+
+        let (status, body) =
+            refused(pinned(&proxy, "/pypi/packages/aa/bb/x-1.0-py3-none-any.whl").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("cooldown"), "{body}");
+        assert!(fetched(
+            &pinned(&proxy, "/pypi/packages/aa/bb/x-1.0.tar.gz").await
+        ));
+    }
+
     /// With no stream covering PyPI the index is still filtered by the checks that need no intel.
     #[tokio::test]
     async fn a_pypi_index_no_stream_covers_is_filtered_without_intel() {
@@ -7081,6 +8105,198 @@ mod tests {
         );
         let names = served_filenames(&proxy, PYPI_TWO_VERSIONS).await;
         assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
+    }
+
+    /// pip reads `x-1.0-1.tar.gz` in x's index as version `1.0-1`, which PEP 440 spells
+    /// `1.0.post1`, so an advisory for `1.0.post1` removes it.
+    #[tokio::test]
+    async fn a_pypi_sdist_whose_version_holds_a_dash_is_matched_by_its_advisory() {
+        let fixed = crate::intel::store::testing::FixedIntel(Ok(Some(PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: vec![(
+                Some("1.0.post1".to_owned()),
+                crate::intel::store::Record {
+                    advisory_id: "MAL-1".to_owned(),
+                    aliases: Vec::new(),
+                    source: "osv".to_owned(),
+                    cvss: None,
+                    band: None,
+                    cvss_source: None,
+                    exploited: false,
+                    malware: true,
+                    informational: None,
+                    cached: None,
+                },
+            )],
+            ranges: Vec::new(),
+            exploitation_loaded: false,
+        })));
+        let intel = crate::intel::store::testing::Covering(Ecosystem::PyPI, fixed);
+        let proxy = offline(
+            Some(Arc::new(intel)),
+            Some("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n"),
+        );
+        let index = br#"{"name":"x","files":[
+            {"filename":"x-1.0-1.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0-1.tar.gz","hashes":{}},
+            {"filename":"x-0.9.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-0.9.tar.gz","hashes":{}}
+        ]}"#;
+        assert_eq!(served_filenames(&proxy, index).await, ["x-0.9.tar.gz"]);
+        let (status, body) =
+            refused(pinned(&proxy, "/pypi/packages/ef/01/23/x-1.0-1.tar.gz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("pkg:pypi/x@1.0-1"), "{body}");
+    }
+
+    /// A PyPI index host answering `/<project>/` with an index listing `files`, or with a
+    /// status, from `projects`, and 404 for any other path. Records each path asked.
+    async fn pypi_indexes(
+        projects: &'static [(&'static str, Result<&'static [&'static str], u16>)],
+    ) -> (String, Recorder) {
+        let seen: Recorder = Arc::default();
+        let recorder = seen.clone();
+        let router = Router::new().fallback(any(move |req: Request| {
+            let seen = recorder.clone();
+            async move {
+                let path = req.uri().path().to_owned();
+                seen.lock().unwrap().paths.push(path.clone());
+                let answer = projects
+                    .iter()
+                    .find(|(project, _)| path == format!("/{project}/"));
+                let Some((project, Ok(files))) = answer else {
+                    let status = answer.map_or(404, |(_, a)| a.err().unwrap_or(404));
+                    return StatusCode::from_u16(status).unwrap().into_response();
+                };
+                let files: Vec<serde_json::Value> = files
+                    .iter()
+                    .map(|file| {
+                        serde_json::json!({
+                            "filename": file,
+                            "url": format!("https://files.pythonhosted.org/packages/aa/bb/{file}"),
+                            "hashes": {"sha256": x_hex(file)},
+                        })
+                    })
+                    .collect();
+                let index = serde_json::json!({"name": project, "files": files});
+                (
+                    [(header::CONTENT_TYPE, pypi::SIMPLE_JSON)],
+                    index.to_string(),
+                )
+                    .into_response()
+            }
+        }));
+        (serve(router).await, seen)
+    }
+
+    /// A proxy in front of `pypi_indexes(projects)`, refusing nothing.
+    async fn placing(
+        projects: &'static [(&'static str, Result<&'static [&'static str], u16>)],
+    ) -> (Proxy, Recorder) {
+        let (upstream, seen) = pypi_indexes(projects).await;
+        let proxy = offline(
+            None,
+            Some("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n"),
+        )
+        .with_upstream(Ecosystem::PyPI, upstream);
+        (proxy, seen)
+    }
+
+    fn index_paths(seen: &Recorder) -> Vec<String> {
+        seen.lock().unwrap().paths.clone()
+    }
+
+    /// A file on a hash path whose name fits two projects is placed by the index that lists
+    /// it, asked from the filename's last `-`. An index already held is not asked again.
+    #[tokio::test]
+    async fn a_pypi_file_is_placed_by_the_index_that_lists_it() {
+        const X: &[(&str, Result<&[&str], u16>)] = &[("x", Ok(&["x-1.0-1.tar.gz"]))];
+        let (proxy, seen) = placing(X).await;
+        let file = "/pypi/packages/aa/bb/x-1.0-1.tar.gz";
+        assert!(fetched(&pinned(&proxy, file).await));
+        assert_eq!(index_paths(&seen), ["/x-1-0/", "/x/"]);
+        assert!(fetched(&pinned(&proxy, file).await));
+        assert_eq!(index_paths(&seen).len(), 2, "x's index is held");
+
+        const HELD: &[(&str, Result<&[&str], u16>)] = &[
+            ("x-1-0", Ok(&["x_1_0-2.0.tar.gz"])),
+            ("x", Ok(&["x-1.0-1.tar.gz"])),
+        ];
+        let (proxy, seen) = placing(HELD).await;
+        let index = format!(
+            r#"{{"name":"x-1-0","files":[{{"filename":"x_1_0-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/aa/bb/x_1_0-2.0.tar.gz","hashes":{{"sha256":"{}"}}}}]}}"#,
+            x_hex("x_1_0-2.0.tar.gz")
+        );
+        resolve(
+            &proxy,
+            "/pypi/simple/x-1-0/",
+            pypi::SIMPLE_JSON,
+            index.as_bytes(),
+        )
+        .await;
+        assert!(fetched(&pinned(&proxy, file).await));
+        assert_eq!(
+            index_paths(&seen),
+            ["/x/"],
+            "x-1-0's index is held and lacks it"
+        );
+
+        const OTHER: &[(&str, Result<&[&str], u16>)] = &[
+            ("x-1-0", Ok(&["x_1_0-2.0.tar.gz"])),
+            ("x", Ok(&["x-1.0-1.tar.gz"])),
+        ];
+        let (proxy, seen) = placing(OTHER).await;
+        assert!(fetched(&pinned(&proxy, file).await));
+        assert_eq!(
+            index_paths(&seen),
+            ["/x-1-0/", "/x/"],
+            "x-1-0's index lacks it"
+        );
+    }
+
+    /// A `/packages/source/` path names its project, whose index is asked first.
+    #[tokio::test]
+    async fn a_pypi_source_path_asks_its_own_project_first() {
+        const X: &[(&str, Result<&[&str], u16>)] = &[("x", Ok(&["x-1.0-1.tar.gz"]))];
+        let (proxy, seen) = placing(X).await;
+        assert!(fetched(
+            &pinned(&proxy, "/pypi/packages/source/x/x/x-1.0-1.tar.gz").await
+        ));
+        assert_eq!(index_paths(&seen), ["/x/"]);
+    }
+
+    /// A dashed project name the last `-` reads costs the one index fetch it cost before.
+    #[tokio::test]
+    async fn a_dashed_pypi_name_costs_one_index_fetch() {
+        const ABC: &[(&str, Result<&[&str], u16>)] = &[("a-b-c", Ok(&["a-b-c-2.0.tar.gz"]))];
+        let (proxy, seen) = placing(ABC).await;
+        assert!(fetched(
+            &pinned(&proxy, "/pypi/packages/aa/bb/a-b-c-2.0.tar.gz").await
+        ));
+        assert_eq!(index_paths(&seen), ["/a-b-c/"]);
+    }
+
+    /// No more indexes than `max_indexes_per_file` are asked to place a file, and one that
+    /// fails ends the search. Either way the answer is the one the last `-` gave before.
+    #[tokio::test]
+    async fn placing_a_pypi_file_asks_at_most_the_cap_and_stops_on_a_failure() {
+        let (proxy, seen) = placing(&[]).await;
+        let proxy = proxy.with_max_indexes_per_file(2);
+        let (status, body) =
+            refused(pinned(&proxy, "/pypi/packages/aa/bb/q-1-2-3-4.tar.gz").await).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert!(body.contains("pkg:pypi/q-1-2-3@4"), "{body}");
+        assert_eq!(index_paths(&seen), ["/q-1-2-3/", "/q-1-2/", "/q-1-2-3/"]);
+
+        const BROKEN: &[(&str, Result<&[&str], u16>)] =
+            &[("x-1-0", Err(500)), ("x", Ok(&["x-1.0-1.tar.gz"]))];
+        let (proxy, seen) = placing(BROKEN).await;
+        let (status, _) =
+            refused(pinned(&proxy, "/pypi/packages/aa/bb/x-1.0-1.tar.gz").await).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(
+            !index_paths(&seen).contains(&"/x/".to_owned()),
+            "{:?}",
+            index_paths(&seen)
+        );
     }
 
     const ITOA_INDEX: &str = "/cargo/it/oa/itoa";
@@ -7533,6 +8749,149 @@ mod tests {
         }
     }
 
+    /// The sidecar of a document over the limit is refused as the document is, and the
+    /// document is read no further than one byte past it.
+    #[tokio::test]
+    async fn a_sidecar_of_a_document_over_the_limit_is_refused() {
+        use crate::util::test_support::Answer;
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let (addr, _) =
+            crate::util::test_support::recorded(vec![Answer::Typed("text/xml", fixture)]).await;
+        let proxy = offline(None, Some(DENY_LANG3))
+            .with_upstream(Ecosystem::Maven, format!("http://{addr}/maven2"))
+            .with_max_metadata_bytes(64);
+        let base = serve(proxy.router()).await;
+        let sha1 = reqwest::get(format!("{base}{LANG3_METADATA}.sha1"))
+            .await
+            .unwrap();
+        assert_eq!(sha1.status(), 502);
+        assert!(sha1.text().await.unwrap().contains("over 64 bytes"));
+    }
+
+    /// An intel store holding one malware record for each name, from the snapshot it names.
+    struct Named(Vec<(&'static str, &'static str)>);
+
+    impl Intel for Named {
+        fn lookup<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Vec<crate::intel::store::Record>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn snapshot(&self) -> crate::intel::store::Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn package<'a>(
+            &'a self,
+            _: &'a str,
+            name: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Option<PackageIntel>> {
+            if self
+                .0
+                .iter()
+                .any(|(held, snapshot)| *held == name && *snapshot == "fails")
+            {
+                let failed = crate::intel::store::IntelError::Backend(sqlx::Error::PoolClosed);
+                return Box::pin(async move { Err(failed) });
+            }
+            let found = self
+                .0
+                .iter()
+                .find(|(held, _)| *held == name)
+                .map(|(held, snapshot)| PackageIntel {
+                    snapshot: (*snapshot).to_owned(),
+                    records: vec![(
+                        None,
+                        crate::intel::store::Record {
+                            advisory_id: format!("MAL-{held}"),
+                            aliases: Vec::new(),
+                            source: "osv".to_owned(),
+                            cvss: None,
+                            band: None,
+                            cvss_source: None,
+                            exploited: false,
+                            malware: true,
+                            informational: None,
+                            cached: None,
+                        },
+                    )],
+                    ranges: Vec::new(),
+                    exploitation_loaded: false,
+                });
+            Box::pin(async move { Ok(found) })
+        }
+    }
+
+    /// A Go module on GitHub asked in another case is looked up under its lower-case path
+    /// too, from the same snapshot; another ecosystem's name, or another host's, is not.
+    #[tokio::test]
+    async fn a_go_module_asked_in_another_case_finds_its_lower_case_intel() {
+        let ids = |found: Option<PackageIntel>| -> Vec<String> {
+            found
+                .map(|found| {
+                    found
+                        .records
+                        .into_iter()
+                        .map(|(_, r)| r.advisory_id)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let go = |path: &str| PackageKey::from_registry_name(Ecosystem::Go, path).unwrap();
+        let store = Named(vec![
+            ("github.com/Evil/Pkg", "s1"),
+            ("github.com/evil/pkg", "s1"),
+        ]);
+        let found = package_intel(&store, &go("github.com/Evil/Pkg"))
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(found),
+            ["MAL-github.com/Evil/Pkg", "MAL-github.com/evil/pkg"]
+        );
+        let only_lower = Named(vec![
+            ("github.com/Evil/Pkg", "s1"),
+            ("github.com/evil/pkg", "s2"),
+        ]);
+        let found = package_intel(&only_lower, &go("github.com/Evil/Pkg"))
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(found),
+            ["MAL-github.com/Evil/Pkg"],
+            "another snapshot is not merged"
+        );
+        let elsewhere = Named(vec![
+            ("example.com/Evil/Pkg", "s1"),
+            ("example.com/evil/pkg", "s1"),
+        ]);
+        let found = package_intel(&elsewhere, &go("example.com/Evil/Pkg"))
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(found),
+            ["MAL-example.com/Evil/Pkg"],
+            "another host's paths keep their case"
+        );
+        assert_eq!(
+            crate::ecosystem::go::paths::intel_alias("github.com/evil/pkg"),
+            None
+        );
+        let failing = Named(vec![
+            ("github.com/Evil/Pkg", "s1"),
+            ("github.com/evil/pkg", "fails"),
+        ]);
+        assert!(
+            package_intel(&failing, &go("github.com/Evil/Pkg"))
+                .await
+                .is_err()
+        );
+    }
+
     /// An intel store that has loaded nothing, so no package can be decided.
     struct NeverLoaded;
 
@@ -7640,8 +8999,11 @@ mod tests {
         ] {
             let sidecars = maven_repository(jar.clone(), b"<project/>".to_vec(), true).await;
             let files = maven_repository(served.clone(), b"<project/>".to_vec(), false).await;
-            let client =
-                crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+            let client = crate::ecosystem::maven::Client::new(
+                crate::service::Connection::default(),
+                &sidecars,
+                1 << 20,
+            );
             let analyser = Arc::new(crate::analysis::run::tests::analyser(
                 label,
                 1 << 20,
@@ -7697,8 +9059,11 @@ mod tests {
         ] {
             let sidecars = maven_repository(jar.clone(), b"<project/>".to_vec(), true).await;
             let files = maven_repository(jar.clone(), b"<project/>".to_vec(), false).await;
-            let client =
-                crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+            let client = crate::ecosystem::maven::Client::new(
+                crate::service::Connection::default(),
+                &sidecars,
+                1 << 20,
+            );
             let analyser = Arc::new(crate::analysis::run::tests::analyser(
                 label,
                 1 << 20,
@@ -7761,8 +9126,11 @@ mod tests {
 
         let sidecars = maven_repository(b"jar".to_vec(), pom.clone(), true).await;
         let other = maven_repository(b"jar".to_vec(), b"<project/>".to_vec(), false).await;
-        let client =
-            crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+        let client = crate::ecosystem::maven::Client::new(
+            crate::service::Connection::default(),
+            &sidecars,
+            1 << 20,
+        );
         let changed = serve(
             offline(None, Some(NO_POLICY))
                 .with_upstream(Ecosystem::Maven, &other)
@@ -8183,8 +9551,12 @@ mod tests {
 
     /// An offline proxy whose Go upstream is `upstream`, asking `sumdb` for claims.
     fn go_proxy(upstream: &str, sumdb: crate::ecosystem::go::sumdb::Client) -> Proxy {
-        let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), upstream, 1 << 20)
-            .with_sumdb(sumdb);
+        let go = crate::ecosystem::go::Client::new(
+            crate::service::Connection::default(),
+            upstream,
+            1 << 20,
+        )
+        .with_sumdb(sumdb);
         offline(None, Some(NO_POLICY))
             .with_upstream(Ecosystem::Go, upstream)
             .with_client(Ecosystem::Go, Arc::new(go))
@@ -8203,11 +9575,36 @@ mod tests {
     async fn unreachable_sumdb() -> crate::ecosystem::go::sumdb::Client {
         let closed = crate::util::test_support::closing_server().await;
         crate::ecosystem::go::sumdb::Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{closed}"),
             crate::ecosystem::go::note::SUM_GOLANG_ORG,
         )
         .unwrap()
+    }
+
+    /// The checksum database's tree a Go request proves is kept in the analyser's store.
+    #[tokio::test]
+    async fn the_checksum_database_s_tree_is_kept_in_the_analyser_s_store() {
+        use crate::analysis::store::Trees as _;
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        let upstream = module_proxy(go_mod, None).await;
+        let store = Arc::new(crate::analysis::store::InProcess::new(8));
+        let (spool, _) =
+            crate::spool::Spool::open(&crate::util::test_support::tempdir("sumdb-kept"), 1 << 20)
+                .expect("opens");
+        let analyser = Arc::new(Analyser::new(
+            crate::service::Connection::default(),
+            Arc::new(spool),
+            store.clone(),
+            2,
+            8,
+        ));
+        let proxy = go_proxy(&upstream, quote_sumdb().await).with_analyser(Some(analyser));
+        let base = serve(proxy.router()).await;
+        let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let name = crate::ecosystem::go::sumdb::testing::NAME;
+        assert!(store.checksum_tree(name).await.unwrap().is_some());
     }
 
     /// go reads `go.mod` for versions it never builds, so it is checked against
@@ -8263,8 +9660,12 @@ mod tests {
         let small = go_proxy(&upstream, quote_sumdb().await)
             .with_max_metadata_bytes(8)
             .with_client(Ecosystem::Go, {
-                let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 8)
-                    .with_sumdb(quote_sumdb().await);
+                let go = crate::ecosystem::go::Client::new(
+                    crate::service::Connection::default(),
+                    &upstream,
+                    8,
+                )
+                .with_sumdb(quote_sumdb().await);
                 Arc::new(go)
             });
         let base = serve(small.router()).await;
@@ -8275,6 +9676,28 @@ mod tests {
             .await
             .unwrap();
         assert!(text.contains("it is over 8 bytes"), "{text}");
+    }
+
+    /// A `go.mod` answered with a 2xx other than 200 is checked as a 200 is.
+    #[tokio::test]
+    async fn a_go_mod_answered_with_another_2xx_is_checked() {
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        for (body, expected) in [
+            (go_mod.clone(), 203),
+            (b"module rsc.io/quote\n".to_vec(), 502),
+        ] {
+            let router = axum::Router::new().route(
+                "/rsc.io/quote/@v/v1.5.2.mod",
+                axum::routing::get(move || {
+                    let body = body.clone();
+                    async move { (StatusCode::NON_AUTHORITATIVE_INFORMATION, body) }
+                }),
+            );
+            let upstream = crate::proxy::testing::serve(router).await;
+            let base = serve(go_proxy(&upstream, quote_sumdb().await).router()).await;
+            let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
+            assert_eq!(response.status(), expected);
+        }
     }
 
     /// A version sum.golang.org does not know is forwarded, refused once weighed; one it
@@ -8347,9 +9770,12 @@ mod tests {
             .with_upstream(Ecosystem::Go, &upstream)
             .with_audit_log(Some(log))
             .with_client(Ecosystem::Go, {
-                let go =
-                    crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
-                        .with_sumdb(unreachable_sumdb().await);
+                let go = crate::ecosystem::go::Client::new(
+                    crate::service::Connection::default(),
+                    &upstream,
+                    1 << 20,
+                )
+                .with_sumdb(unreachable_sumdb().await);
                 Arc::new(go)
             });
         let ArtifactStep::Answer(response) = pinned(&proxy, QUOTE_ZIP).await else {
@@ -8456,6 +9882,106 @@ mod tests {
         assert!(body.contains("gave no metadata"), "{body}");
     }
 
+    /// A checksum database with no record of rsc.io/quote, so its `.info` `Time` dates it.
+    async fn sumdb_without_quote() -> crate::ecosystem::go::sumdb::Client {
+        use crate::ecosystem::go::sumdb::testing::{Database, client};
+        client(Database::new(vec![
+            crate::ecosystem::go::heads::testing::record(0),
+        ]))
+        .await
+    }
+
+    /// v500 and v1950, published 10.4 and 0.3 days ago, both claim 2020. Under a 7-day
+    /// cooldown v1950's line is removed, `@latest` naming it is 404, and its zip 403.
+    #[tokio::test]
+    async fn a_go_version_with_a_backdated_commit_is_refused_by_its_record() {
+        use crate::ecosystem::go::heads::testing::{every_ten_minutes, serve as index};
+        let (_index, index, _db, sumdb) = index(every_ten_minutes(2000)).await;
+        let router = axum::Router::new().route(
+            "/example.com/m/@v/{file}",
+            axum::routing::get(
+                |axum::extract::Path(file): axum::extract::Path<String>| async move {
+                    let version = file.trim_end_matches(".info");
+                    format!(r#"{{"Version":"{version}","Time":"2020-01-01T00:00:00Z"}}"#)
+                },
+            ),
+        );
+        let upstream = crate::proxy::testing::serve(router).await;
+        let go = crate::ecosystem::go::Client::new(
+            crate::service::Connection::default(),
+            &upstream,
+            1 << 20,
+        )
+        .with_sumdb(sumdb)
+        .with_index(&index);
+        let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
+            .with_upstream(Ecosystem::Go, &upstream)
+            .with_client(Ecosystem::Go, Arc::new(go));
+
+        let DocumentStep::Forward { body, .. } = resolve(
+            &proxy,
+            "/go/example.com/m/@v/list",
+            "text/plain",
+            b"v500\nv1950\n",
+        )
+        .await
+        else {
+            panic!("the list is forwarded");
+        };
+        assert_eq!(
+            body.map(|b| String::from_utf8(b).unwrap()).as_deref(),
+            Some("v500\n")
+        );
+        let (status, body) = answered(
+            resolve(
+                &proxy,
+                "/go/example.com/m/@latest",
+                "application/json",
+                br#"{"Version":"v1950","Time":"2020-01-01T00:00:00Z"}"#,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 404);
+        assert!(body.contains("cooldown"), "{body}");
+        let (status, body) = refused(pinned(&proxy, "/go/example.com/m/@v/v1950.zip").await).await;
+        assert_eq!(status, 403);
+        assert!(body.contains("cooldown"), "{body}");
+    }
+
+    /// `@latest` whose `.info` answers 500 keeps the `Time` in its body: a young one is 404.
+    #[tokio::test]
+    async fn latest_whose_info_fails_is_dated_by_its_body() {
+        let router = axum::Router::new().route(
+            "/rsc.io/quote/@v/{file}",
+            axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
+        let upstream = crate::proxy::testing::serve(router).await;
+        let go = crate::ecosystem::go::Client::new(
+            crate::service::Connection::default(),
+            &upstream,
+            1 << 20,
+        )
+        .with_sumdb(sumdb_without_quote().await);
+        let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
+            .with_upstream(Ecosystem::Go, &upstream)
+            .with_client(Ecosystem::Go, Arc::new(go));
+        let young = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
+        let body = format!(r#"{{"Version":"v1.5.2","Time":"{young}"}}"#);
+        let (status, body) = answered(
+            resolve(
+                &proxy,
+                "/go/rsc.io/quote/@latest",
+                "application/json",
+                body.as_bytes(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 404);
+        assert!(body.contains("cooldown"), "{body}");
+    }
+
     /// Under a cooldown, a list's versions are dated from their `.info`, newest first, until
     /// one is old enough; the versions after it are kept. Undated, the list is forwarded.
     #[tokio::test]
@@ -8494,7 +10020,12 @@ mod tests {
                     }),
                 );
             let upstream = crate::proxy::testing::serve(router).await;
-            let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20);
+            let go = crate::ecosystem::go::Client::new(
+                crate::service::Connection::default(),
+                &upstream,
+                1 << 20,
+            )
+            .with_sumdb(sumdb_without_quote().await);
             let proxy = offline(
                 None,
                 Some(&format!("version: 1\ncooldown_days: {cooldown}\n")),
@@ -8773,7 +10304,7 @@ mod tests {
     #[tokio::test]
     async fn a_snapshot_is_read_once_for_its_digest() {
         let store = refreshed("s1", "s1");
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
             .with_intel(Some(store.clone()))
             .with_policy(Some(policy("version: 1\n")));
@@ -8792,7 +10323,7 @@ mod tests {
     async fn readiness_depends_on_the_store_only_when_a_policy_is_set() {
         use crate::intel::store::testing::FixedIntel;
         let proxy = |intel: Option<Arc<dyn Intel>>, with_policy: bool| {
-            let proxy = Proxy::new(reqwest::Client::new())
+            let proxy = Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
                 .with_intel(intel);
             if with_policy {
@@ -8886,7 +10417,7 @@ mod tests {
         let addr = crate::util::test_support::closing_server().await;
 
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
                 .router(),
         )
@@ -8907,7 +10438,7 @@ mod tests {
     async fn the_only_4xx_this_proxy_produces_is_a_policy_refusal() {
         let addr = crate::util::test_support::closing_server().await;
         let dead = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
                 .router(),
         )
@@ -8933,7 +10464,7 @@ mod tests {
         )
         .await;
         let live = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
@@ -9002,14 +10533,12 @@ mod tests {
                 }
             }),
         );
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, serve(router).await)
-                .router(),
-        )
-        .await;
+        let proxy = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, serve(router).await);
+        let base = serve(proxy.clone().router()).await;
 
-        let ours = crate::http::mark_etag("W/\"abc123\"", &format!("{base}/npm"));
+        let view = etag_view(&proxy, &format!("{base}/npm"), None);
+        let ours = crate::http::mark_etag("W/\"abc123\"", &view);
         let response = reqwest::Client::new()
             .get(format!("{base}/npm/lodash"))
             .header(header::IF_NONE_MATCH, ours)
@@ -9075,7 +10604,7 @@ mod tests {
             }),
         );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -9169,7 +10698,7 @@ mod tests {
     async fn registry_with(integrity: &str, tarball: Vec<u8>) -> String {
         let upstream = serve(widget_registry(integrity, tarball)).await;
         serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
@@ -9178,6 +10707,11 @@ mod tests {
 
     /// An npm registry holding `widget` 1.0.0, whose packument publishes `integrity`.
     fn widget_registry(integrity: &str, tarball: Vec<u8>) -> Router {
+        widget_registry_answering(integrity, tarball, StatusCode::OK)
+    }
+
+    /// The same, answering the tarball with `status`.
+    fn widget_registry_answering(integrity: &str, tarball: Vec<u8>, status: StatusCode) -> Router {
         let packument = format!(
             r#"{{"name":"widget","dist-tags":{{"latest":"1.0.0"}},"versions":{{
                 "1.0.0":{{"version":"1.0.0","dist":{{
@@ -9203,6 +10737,7 @@ mod tests {
                     let tarball = tarball.clone();
                     async move {
                         (
+                            status,
                             [(header::CONTENT_TYPE, "application/octet-stream")],
                             tarball,
                         )
@@ -9231,7 +10766,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_mode(mode)
             .with_audit_log(audit)
@@ -9433,7 +10968,11 @@ mod tests {
     /// Without a gate, health says no token is required.
     #[test]
     fn a_proxy_without_a_gate_requires_no_token() {
-        assert!(!Proxy::new(reqwest::Client::new()).health().tokens_required);
+        assert!(
+            !Proxy::new(crate::service::Connection::default())
+                .health()
+                .tokens_required
+        );
     }
 
     /// Under [`crate::env::PROXY_URL`]'s path, the artifact URL a packument is given serves the
@@ -9443,7 +10982,7 @@ mod tests {
         let tarball: Vec<u8> = (0..5_000u32).map(|i| (i % 251) as u8).collect();
         let upstream = serve(widget_registry(&sri_of(&tarball), tarball.clone())).await;
         let base = serve_at(|base| {
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_public_base(Some(format!("{base}/registry/")))
                 .router()
@@ -9597,6 +11136,36 @@ mod tests {
         assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
     }
 
+    /// A 2xx other than 200 is verified as a 200 is: a 203 or 206 with other bytes never
+    /// arrives complete, and one with the published bytes is served.
+    #[tokio::test]
+    async fn a_tarball_answered_with_another_2xx_is_verified() {
+        let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let mut tampered = honest.clone();
+        tampered[25_000] ^= 0xFF;
+        for status in [
+            StatusCode::NON_AUTHORITATIVE_INFORMATION,
+            StatusCode::PARTIAL_CONTENT,
+        ] {
+            for (body, served) in [(tampered.clone(), false), (honest.clone(), true)] {
+                let upstream =
+                    serve(widget_registry_answering(&sri_of(&honest), body, status)).await;
+                let base = serve(
+                    Proxy::new(crate::service::Connection::default())
+                        .with_upstream(Ecosystem::Npm, upstream)
+                        .router(),
+                )
+                .await;
+                let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), status);
+                let complete = response.bytes().await.is_ok();
+                assert_eq!(complete, served, "{status}, served: {served}");
+            }
+        }
+    }
+
     /// A failed digest must not deliver a whole artifact.
     async fn assert_no_complete_body(url: &str) {
         let Ok(response) = reqwest::get(url).await else {
@@ -9628,7 +11197,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
@@ -9671,7 +11240,7 @@ mod tests {
         let (upstream, _) =
             upstream_serving(StatusCode::OK, "text/html", None, b"<html></html>".to_vec()).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::PyPI, upstream)
                 .router(),
         )
@@ -9701,7 +11270,7 @@ mod tests {
         }])
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
                 .router(),
         )
@@ -9748,9 +11317,7 @@ mod tests {
     #[tokio::test]
     async fn a_stalled_upstream_ends_the_request_it_holds() {
         let stalled = crate::util::test_support::stalling_server().await;
-        let client = crate::http::client_builder(std::time::Duration::from_millis(100))
-            .build()
-            .expect("a client");
+        let client = crate::service::Connection::timing_out(std::time::Duration::from_millis(100));
         let base = serve(
             Proxy::new(client)
                 .with_upstream(Ecosystem::Npm, format!("http://{stalled}"))
@@ -9783,7 +11350,7 @@ mod tests {
             }),
         );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -9826,7 +11393,7 @@ mod tests {
             (weighs_no_digest(), StatusCode::FORBIDDEN),
         ] {
             let base = serve(
-                Proxy::new(reqwest::Client::new())
+                Proxy::new(crate::service::Connection::default())
                     .with_upstream(Ecosystem::Npm, &upstream)
                     .with_policy(policy)
                     .router(),
@@ -9894,7 +11461,7 @@ mod tests {
             }),
         );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -9950,7 +11517,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_max_concurrent_documents(1)
                 .router(),
@@ -9988,7 +11555,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, &upstream)
                 .with_upstream(Ecosystem::PyPI, &upstream)
                 .with_upstream(Ecosystem::Cargo, &upstream)
@@ -10047,7 +11614,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_mode(Mode::Observe)
                 .router(),
@@ -10101,17 +11668,149 @@ mod tests {
         );
     }
 
+    /// The request line as written, unparsed, so no client removes a `..` before the proxy
+    /// reads it. The answer's status.
+    async fn raw_get(base: &str, target: &str) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(base.trim_start_matches("http://"))
+            .await
+            .unwrap();
+        let request = format!("GET {target} HTTP/1.1\r\nHost: proxy\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).await.unwrap();
+        answer[9..12].parse().unwrap()
+    }
+
+    /// A path whose `.` or `..` segment the upstream URL would remove is 400, in observe mode
+    /// too, and nothing is asked upstream. A `..` in the query is forwarded.
+    #[tokio::test]
+    async fn a_path_the_upstream_url_would_rewrite_is_refused() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/octet-stream",
+            None,
+            b"EVIL".to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(crate::service::Connection::default())
+                .with_mode(Mode::Observe)
+                .with_upstream(Ecosystem::Npm, &upstream)
+                .with_upstream(Ecosystem::Go, &upstream)
+                .router(),
+        )
+        .await;
+        let (guard, log) = capture(tracing::Level::WARN);
+        for target in [
+            "/npm/-/npm/v1/attestations/../../../../evil/-/evil-6.6.6.tgz",
+            "/npm/-/npm/v1/attestations/%2e%2e/%2e%2e/%2e%2e/%2E%2e/evil/-/evil-6.6.6.tgz",
+            "/go/sumdb/x/tile/%2e%2e/%2e%2e/%2e%2e/github.com/evil/mod/@v/v6.6.6.zip",
+            "/npm/-/npm/v1/attestations\\..\\..\\..\\..\\evil\\-\\evil-6.6.6.tgz",
+        ] {
+            assert_eq!(raw_get(&base, target).await, 400, "{target}");
+        }
+        drop(guard);
+        assert!(
+            seen.lock().unwrap().paths.is_empty(),
+            "nothing asked upstream"
+        );
+        assert!(
+            text(&log).contains("segment in the path: 400"),
+            "{}",
+            text(&log)
+        );
+        assert_eq!(raw_get(&base, "/npm/-/v1/search?text=../..").await, 200);
+        assert_eq!(seen.lock().unwrap().paths.len(), 1);
+    }
+
+    /// A file asked with a method but GET or HEAD is 405, and nothing is asked upstream.
+    /// npm's audit POST and a HEAD are forwarded, as the file is in observe mode.
+    #[tokio::test]
+    async fn a_file_asked_with_another_method_is_405() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/octet-stream",
+            None,
+            b"EVIL".to_vec(),
+        )
+        .await;
+        let proxy = |mode| {
+            Proxy::new(crate::service::Connection::default())
+                .with_mode(mode)
+                .with_upstream(Ecosystem::Npm, &upstream)
+                .with_upstream(Ecosystem::Go, &upstream)
+                .router()
+        };
+        let base = serve(proxy(Mode::Enforce)).await;
+        let client = reqwest::Client::new();
+        let (guard, log) = capture(tracing::Level::WARN);
+        for method in ["POST", "PUT", "OPTIONS", "PATCH", "DELETE"] {
+            for path in [
+                "/npm/evil/-/evil-6.6.6.tgz",
+                "/go/github.com/evil/mod/@v/v6.6.6.zip",
+                "/go/github.com/evil/mod/@v/v6.6.6.mod",
+            ] {
+                let method = Method::from_bytes(method.as_bytes()).unwrap();
+                let response = client
+                    .request(method.clone(), format!("{base}{path}"))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 405, "{method} {path}");
+                assert_eq!(response.headers()[header::ALLOW], "GET, HEAD");
+            }
+        }
+        drop(guard);
+        assert!(
+            seen.lock().unwrap().paths.is_empty(),
+            "nothing asked upstream"
+        );
+        assert!(
+            text(&log).contains("a file asked with POST: 405"),
+            "{}",
+            text(&log)
+        );
+        let audit = client
+            .post(format!("{base}/npm/-/npm/v1/security/advisories/bulk"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(audit.status(), 200);
+        let head = client
+            .head(format!("{base}/npm/evil/-/evil-6.6.6.tgz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(head.status(), 200, "HEAD is forwarded");
+        let observed = serve(proxy(Mode::Observe)).await;
+        let (guard, log) = capture(tracing::Level::WARN);
+        let response = client
+            .post(format!("{observed}/npm/evil/-/evil-6.6.6.tgz"))
+            .send()
+            .await
+            .unwrap();
+        drop(guard);
+        assert_eq!(response.status(), 200);
+        assert_eq!(seen.lock().unwrap().paths.len(), 3);
+        assert!(
+            text(&log).contains("a file asked with POST: forwarded in observe mode"),
+            "{}",
+            text(&log)
+        );
+    }
+
     /// An upstream set after the origin policy keeps the origins the operator added, and
     /// the upstream replaced is no longer served.
     #[test]
     fn the_builders_give_the_same_origins_in_either_order() {
         let origins = |proxy: &Proxy| proxy.origin_policy().reachable().as_slice().to_vec();
-        let policy_first = Proxy::new(reqwest::Client::new())
+        let policy_first = Proxy::new(crate::service::Connection::default())
             .with_origin_policy(["https://cdn.example"], ["https://direct.example"])
             .expect("valid origins")
             .with_upstream(Ecosystem::Npm, "https://npm.mirror.example/")
             .with_upstream(Ecosystem::PyPI, "https://pypi.mirror.example/simple");
-        let upstreams_first = Proxy::new(reqwest::Client::new())
+        let upstreams_first = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, "https://npm.mirror.example/")
             .with_upstream(Ecosystem::PyPI, "https://pypi.mirror.example/simple")
             .with_origin_policy(["https://cdn.example"], ["https://direct.example"])
@@ -10144,12 +11843,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "upstream is not a usable origin")]
     fn an_upstream_with_no_host_is_refused() {
-        let _ = Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, "not a url");
+        let _ = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, "not a url");
     }
 
     #[test]
     fn the_upstream_base_drops_a_trailing_slash() {
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org/");
         assert_eq!(
             proxy.upstreams().get(Ecosystem::Npm),
@@ -10167,7 +11867,8 @@ mod tests {
              cargo=https://index.crates.io golang=https://proxy.golang.org \
              maven=https://repo1.maven.org/maven2 gradle-plugins=https://plugins.gradle.org/m2"
         );
-        let both = Proxy::new(reqwest::Client::new()).with_upstreams(proxy.upstreams().clone());
+        let both = Proxy::new(crate::service::Connection::default())
+            .with_upstreams(proxy.upstreams().clone());
         assert_eq!(both.upstreams(), proxy.upstreams());
     }
 
@@ -10176,7 +11877,7 @@ mod tests {
         use crate::route::IndexFormat;
 
         fn proxy() -> Proxy {
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org")
         }
 
@@ -10517,14 +12218,14 @@ mod tests {
         let (spool, _) = Spool::open(&crate::util::test_support::tempdir("analyse-404"), 1 << 20)
             .expect("opens");
         let analyser = Arc::new(Analyser::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             Arc::new(spool),
             Arc::new(crate::analysis::store::InProcess::new(8)),
             2,
             8,
         ));
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .with_analyser(Some(analyser.clone()))
                 .router(),
@@ -10739,6 +12440,41 @@ mod tests {
         assert_eq!(tarball_request(&base).await.status(), 200);
     }
 
+    /// A second gzip member is the `archive_suspicious` signal: weighed 1 by default, so
+    /// served, and refused where the policy weighs it the threshold.
+    #[tokio::test]
+    async fn a_suspicious_archive_is_a_signal_the_policy_weighs() {
+        use crate::util::test_support::tar;
+        let tarball = [
+            crate::http::gzip(&tar(&[("package/index.js", b"")], false)),
+            crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]),
+        ]
+        .concat();
+        for (label, yaml, status) in [
+            (
+                "analyse-archive-default",
+                "version: 1\ncooldown_days: 0\n",
+                200,
+            ),
+            (
+                "analyse-archive-weighed",
+                "version: 1\ncooldown_days: 0\nsignal_weights: { archive_suspicious: 100 }\n",
+                403,
+            ),
+        ] {
+            let (base, analyser) =
+                analysing(label, "", &integrity(&tarball), tarball.clone(), Some(yaml)).await;
+            assert_eq!(tarball_request(&base).await.status(), 503, "{label}");
+            analyser.ended(1).await;
+            let answer = tarball_request(&base).await;
+            assert_eq!(answer.status(), status, "{label}");
+            if status == 403 {
+                let body = answer.text().await.unwrap();
+                assert!(body.contains("archive_suspicious"), "{body}");
+            }
+        }
+    }
+
     /// Not knowing is not knowing there is no script.
     #[tokio::test]
     async fn an_archive_that_cannot_be_read_is_refused_under_block() {
@@ -10821,6 +12557,7 @@ mod tests {
             Scripts::Declared(crate::analysis::InstallScripts {
                 names: names.iter().map(|n| (*n).to_owned()).collect(),
                 bodies: Vec::new(),
+                anomalies: Vec::new(),
             })
         };
         let said = |scripts: Scripts| {
@@ -10918,7 +12655,7 @@ mod tests {
         let (spool, _) =
             Spool::open(&crate::util::test_support::tempdir(label), 1 << 20).expect("opens");
         let analyser = Arc::new(Analyser::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             Arc::new(spool),
             store,
             2,
@@ -11157,6 +12894,56 @@ mod tests {
         assert!(body.contains("https://elsewhere.example"), "{body}");
     }
 
+    /// Each version published within the provenance window, this one or a prior, is
+    /// verified with a 404 not stored, since npm can answer 404 just after a publish.
+    #[tokio::test]
+    async fn a_recent_version_s_missing_attestations_are_asked_for_again() {
+        let now = jiff::Timestamp::now();
+        let hours_ago = |hours: i64| (now - jiff::SignedDuration::from_hours(hours)).to_string();
+        let mut recent: serde_json::Value =
+            serde_json::from_str(&widget_versions(&["1.0.0", "2.0.0"])).expect("json");
+        recent["time"]["1.0.0"] = serde_json::json!(hours_ago(2));
+        recent["time"]["2.0.0"] = serde_json::json!(hours_ago(1));
+        let mut mixed = recent.clone();
+        mixed["time"]["1.0.0"] = serde_json::json!(hours_ago(30 * 24));
+        for (label, packument, expected) in [
+            ("provenance-recent", recent.to_string(), [true, true]),
+            ("provenance-mixed", mixed.to_string(), [true, false]),
+            (
+                "provenance-old",
+                widget_versions(&["1.0.0", "2.0.0"]),
+                [false, false],
+            ),
+        ] {
+            let (proxy, analyser) = provenance_proxy(label, PROVENANCE, &[], &[]).await;
+            let metadata =
+                npm::normalize_packument(packument.as_bytes(), crate::record::DocumentDetail::Full)
+                    .expect("normalizes");
+            hold_document(
+                &proxy,
+                packument.as_bytes(),
+                crate::record::DocumentDetail::Full,
+            );
+            let record = metadata
+                .records
+                .iter()
+                .find(|r| r.package.version() == "2.0.0")
+                .expect("2.0.0");
+            let (provenance, work) = attested(
+                &proxy,
+                Repository::of(Ecosystem::Npm),
+                Some(&analyser),
+                record,
+                Some(&widget_digest("2.0.0")),
+                None,
+            )
+            .await;
+            assert_eq!(provenance, Provenance::NOT_VERIFIED, "{label}");
+            let recent: Vec<bool> = work.iter().map(|a| a.recent).collect();
+            assert_eq!(recent, expected, "{label}");
+        }
+    }
+
     /// PyPI project `x`: 1.0 then 2.0, each an sdist and a wheel, as a PEP 691 index. A
     /// version in `attested` publishes provenance for both its files, on pypi.org.
     fn x_index(attested: &[&str]) -> String {
@@ -11313,7 +13100,7 @@ mod tests {
                 get(|| async { (StatusCode::NOT_FOUND, "gone") }),
             );
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
@@ -11484,7 +13271,8 @@ mod tests {
             fixture("lodash-4.17.21.abbrev.json"),
         )
         .await;
-        let proxy = Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, upstream);
+        let proxy = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, upstream);
         let base = serve(proxy.clone().router()).await;
         let client = reqwest::Client::new();
         client
@@ -11596,13 +13384,13 @@ mod tests {
             crate::spool::Spool::open(&crate::util::test_support::tempdir(label), 1 << 20)
                 .expect("opens");
         let analyser = Arc::new(Analyser::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             Arc::new(spool),
             Arc::new(crate::analysis::store::InProcess::new(8)),
             2,
             8,
         ));
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, serve(router).await)
             .with_analyser(Some(analyser.clone()));
         let first = Published::Served(crate::util::test_support::tarball(&[(
@@ -11625,6 +13413,58 @@ mod tests {
         (proxy, analyser)
     }
 
+    /// A pass analyses the highest new versions of a package, up to its limit, one at a time:
+    /// each is analysed when the pass returns. `highest` orders by version, not by text.
+    #[tokio::test]
+    async fn the_watcher_analyses_the_highest_new_versions_one_at_a_time() {
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let (proxy, analyser) = watching("watch-highest", published.clone()).await;
+        let proxy = proxy.with_watch_max_versions(1);
+        let made = |version: &str| {
+            crate::util::test_support::tarball(&[(
+                "package/package.json",
+                format!(r#"{{"name":"widget","version":"{version}"}}"#).as_bytes(),
+            )])
+        };
+        let (nine, ten) = (made("9.0.0"), made("10.0.0"));
+        {
+            let mut published = published.lock().unwrap();
+            published.push(("9.0.0", Published::Served(nine.clone())));
+            published.push(("10.0.0", Published::Served(ten.clone())));
+        }
+        let watched = proxy.watch().await;
+        assert_eq!(
+            (watched.new_versions, watched.started, watched.left),
+            (2, 1, 1)
+        );
+        let known = |bytes: &[u8]| {
+            let digest = Sri::parse(&sri_of(bytes)).expect("an SRI");
+            let analyser = analyser.clone();
+            async move { matches!(analyser.known(&digest).await, Known::Analysed(_)) }
+        };
+        assert!(
+            known(&ten).await,
+            "10.0.0, the highest, analysed before the pass returned"
+        );
+        assert!(!known(&nine).await, "9.0.0 is left for a client's request");
+        let packument = br#"{"name":"widget","versions":{
+            "2.0.0":{"version":"2.0.0","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-2.0.0.tgz"}},
+            "x":{"version":"x","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-x.tgz"}},
+            "10.0.0":{"version":"10.0.0","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-10.0.0.tgz"}}
+        }}"#;
+        let records = crate::ecosystem::npm::normalize_packument(
+            packument,
+            crate::record::DocumentDetail::Abbreviated,
+        )
+        .expect("normalises")
+        .records;
+        assert_eq!(records.len(), 3);
+        let npm = Repository::of(Ecosystem::Npm);
+        let (kept, left) = highest(npm, &records, 2);
+        let kept: Vec<&str> = kept.iter().map(|r| r.package.version()).collect();
+        assert_eq!((kept, left), (vec!["2.0.0", "10.0.0"], 1));
+    }
+
     /// A version published after the proxy read the package is analysed by the next pass.
     /// A held version, analysed bytes, an origin not served and no digest start nothing.
     #[tokio::test]
@@ -11643,7 +13483,8 @@ mod tests {
             Watched {
                 packages: 1,
                 new_versions: 1,
-                started: 1
+                started: 1,
+                left: 0
             },
             "1.0.0 was held, so only 2.0.0 is new, and `gone` is not read"
         );
@@ -11676,14 +13517,15 @@ mod tests {
             Watched {
                 packages: 1,
                 new_versions: 3,
-                started: 0
+                started: 0,
+                left: 0
             },
             "3.0.0's bytes are 2.0.0's, already analysed; 4.0.0 is on an origin the proxy does \
              not serve; 5.0.0 publishes no digest"
         );
 
-        let unanalysed =
-            Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, NO_UPSTREAM);
+        let unanalysed = Proxy::new(crate::service::Connection::default())
+            .with_upstream(Ecosystem::Npm, NO_UPSTREAM);
         assert_eq!(
             unanalysed.watch().await,
             Watched::default(),
@@ -11903,7 +13745,7 @@ mod tests {
         )
         .await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(ALLOW_ALL)))
                 .with_audit_log(Some(log))
@@ -11987,7 +13829,7 @@ mod tests {
 
         let short = scripted(vec![Answer::cut_short()]).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, format!("http://{short}"))
                 .with_policy(Some(policy(ALLOW_ALL)))
                 .with_audit_log(Some(log))
@@ -12043,7 +13885,7 @@ mod tests {
         tampered[25_000] ^= 0xFF;
         let upstream = serve(widget_registry(&sri_of(&honest), tampered)).await;
         let base = serve(
-            Proxy::new(reqwest::Client::new())
+            Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(ALLOW_ALL)))
                 .with_audit_log(Some(log.clone()))
@@ -12054,7 +13896,7 @@ mod tests {
         assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
 
         let short = scripted(vec![Answer::cut_short()]).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, format!("http://{short}"))
             .with_refuse_unservable(false)
             .with_policy(Some(policy(ALLOW_ALL)))
@@ -12116,7 +13958,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let analyser = Arc::new(crate::analysis::run::tests::analyser(label, 1 << 20, store));
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_analyser(Some(analyser.clone()))
             .with_policy(Some(policy(ALLOW_ALL)));
@@ -12134,7 +13976,7 @@ mod tests {
         let upstream = serve(widget_registry(&digest, tampered)).await;
         let kept = Arc::new(crate::usage::tests::Kept::default());
         let usage = Batched::new("usage rows", kept.clone());
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_policy(Some(policy(ALLOW_ALL)))
             .with_usage(Some(usage.clone()));
@@ -12450,6 +14292,13 @@ mod tests {
                 "{:?}",
                 lines[1].signals
             );
+            assert!(
+                lines[1]
+                    .signals
+                    .contains(&"guarddog: whois_error".to_owned()),
+                "a WHOIS rule that could not run: {:?}",
+                lines[1].signals
+            );
         }
 
         let (proxy, analyser, _, _) = sourcing(
@@ -12614,7 +14463,7 @@ mod tests {
                 .expect("opens");
         let analyser = Arc::new(
             Analyser::new(
-                reqwest::Client::new(),
+                crate::service::Connection::default(),
                 Arc::new(spool),
                 Arc::new(crate::analysis::store::InProcess::new(8)),
                 2,
@@ -12626,7 +14475,7 @@ mod tests {
         );
         let path =
             crate::util::test_support::tempdir(&format!("{label}-audit")).join("audit.jsonl");
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_analyser(Some(analyser.clone()))
             .with_policy(Some(policy(yaml)))
@@ -12956,7 +14805,7 @@ mod tests {
             }));
             let dir = crate::util::test_support::tempdir("signals-full");
             let path = dir.join("audit.jsonl");
-            let proxy = Proxy::new(reqwest::Client::new())
+            let proxy = Proxy::new(crate::service::Connection::default())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .with_policy(Some(policy(yaml)))
                 .with_audit_log(Some(Arc::new(
@@ -13278,23 +15127,12 @@ mod tests {
         assert_eq!(deciding.purl, "pkg:npm/lodash@ ");
     }
 
-    /// A file host that cannot be asked gives no publish time.
-    #[tokio::test]
-    async fn a_file_host_that_cannot_be_asked_gives_no_date() {
-        let proxy = offline(None, None);
-        let closed = crate::util::test_support::closing_server().await;
-        assert_eq!(
-            head_last_modified(&proxy, &format!("http://{closed}/x.tar.gz"), "/npm/x").await,
-            None
-        );
-    }
-
     /// Metadata fetched on the proxy's own behalf that does not read leaves nothing to find.
     #[tokio::test]
     async fn metadata_fetched_that_does_not_read_is_logged() {
         use crate::util::test_support::{Answer, scripted};
         let upstream = scripted(vec![Answer::body("not json")]).await;
-        let proxy = Proxy::new(reqwest::Client::new())
+        let proxy = Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, format!("http://{upstream}"))
             .with_policy(Some(policy(ALLOW_ALL)));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();

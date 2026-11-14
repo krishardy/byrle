@@ -1,4 +1,4 @@
-reader: install-scripts 4
+reader: install-scripts 7
 
 npm, every install lifecycle script and two others: runs ["preinstall", "install", "postinstall"], bodies [("preinstall", "a"), ("install", "b"), ("postinstall", "c")]
 npm, only scripts that do not run on install: runs [], bodies []
@@ -22,10 +22,11 @@ crate, build = false and build.rs: runs [], bodies []
 crate, build.rs only deeper: runs [], bodies []
 crate, proc-macro: runs ["proc-macro"], bodies []
 crate, proc_macro, the old spelling: runs ["proc-macro"], bodies []
+crate, crate-type proc-macro: runs ["proc-macro"], bodies []
 crate, neither: runs [], bodies []
 crate, no Cargo.toml: error: the archive holds no manifest to read
 crate, Cargo.toml at the root: error: the archive holds no manifest to read
-crate, Cargo.toml not UTF-8: error: not readable as an archive: stream did not contain valid UTF-8
+crate, Cargo.toml not UTF-8: error: not readable as an archive: invalid utf-8 sequence of 1 bytes from index 0
 crate, Cargo.toml not TOML: error: not readable as an archive: TOML parse error at line 1, column 9
   |
 1 | [package
@@ -33,3 +34,7 @@ crate, Cargo.toml not TOML: error: not readable as an archive: TOML parse error 
 unclosed table, expected `]`
 
 crate, not gzip: error: not readable as an archive: unexpected end of file
+sdist, setup.py in a second gzip member: runs ["setup.py"], bodies [], anomalies [GzipMembers(2)]
+npm, binding.gyp and no install script: runs ["install"], bodies [("install", "node-gyp rebuild")]
+npm, binding.gyp with gypfile false: runs [], bodies []
+npm, two package.json: runs ["install"], bodies [("install", "b")], anomalies [Duplicate("package.json")]

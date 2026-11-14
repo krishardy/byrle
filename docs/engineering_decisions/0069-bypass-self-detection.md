@@ -16,6 +16,12 @@ says what the proxy did not see, which a check cannot decide on.
 | Signal | Certain or heuristic | Log | Health |
 |---|---|---|---|
 | A metadata document forwarded without being read or rewritten, oversized or undecodable | certain: the artifacts it lists are fetched from where they point | WARN `UNINSPECTED`, as before | `documents_uninspected` |
+
+Amended 2026-11-05, for the security review: the first row refuses. In enforce mode an
+oversized or undecodable document, and an npm packument or PyPI index the proxy could not
+read, filter or repoint, is answered 502. Observe mode forwards it. Both are logged
+`UNINSPECTED` and counted in `documents_uninspected`. See
+[adapter-interface](0047-adapter-interface.md).
 | A version depending on a package by URL, git or path | certain: npm fetches those from where they point | WARN `BYPASS`, once per artifact request, naming each dependency | `artifacts_with_direct_dependencies` |
 | An artifact answered 304 | certain that this request's bytes were not hashed; the client cached them earlier | INFO | `artifacts_revalidated` |
 | A client reading metadata documents and fetching no artifact in a 10-minute window | heuristic | INFO when the window closes | `clients_without_artifacts`, the last window's |

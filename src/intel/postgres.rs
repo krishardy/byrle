@@ -10,8 +10,8 @@ use super::range::{Interval, VersionOrder};
 use super::refresh::StreamDigest;
 use super::rows::Rows;
 use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
-use sqlx::{PgConnection, PgPool};
-use std::collections::HashMap;
+use sqlx::{AssertSqlSafe, PgConnection, PgPool};
+use std::collections::{BTreeMap, HashMap};
 
 /// Bytes per `CopyData` message, which bounds what one send holds in flight.
 const COPY_CHUNK: usize = 1 << 20;
@@ -198,6 +198,22 @@ impl PgIntel {
         })
     }
 
+    /// How many rows each source has: its `advisory` rows, or its `exploited_cve` rows.
+    pub async fn stored_rows(&self) -> Result<BTreeMap<String, u64>, IntelError> {
+        let counted = sqlx::query!(
+            r#"SELECT source AS "source!", count(*) AS "rows!" FROM advisory GROUP BY source
+               UNION ALL
+               SELECT source, count(*) FROM exploited_cve GROUP BY source"#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(IntelError::Backend)?;
+        Ok(counted
+            .into_iter()
+            .map(|c| (c.source, u64::try_from(c.rows).unwrap_or(0)))
+            .collect())
+    }
+
     /// Append `not_loaded` to `intel_ingestion` for a refresh that loaded nothing, in one
     /// transaction. `taken_at` is RFC 3339 UTC.
     pub async fn record_not_loaded(
@@ -331,7 +347,8 @@ async fn replace_rows(
 
 /// Copy `advisory` through `advisory_load`, each keeping the `cached` of the one it replaces,
 /// read back the keys Postgres assigned, and copy the alias, affected and range rows carrying
-/// them.
+/// them. The two statements built with `format!` take `AssertSqlSafe` because the only text
+/// formatted into them is `load::ADVISORY_COLUMNS`, a constant.
 async fn write_advisories(
     conn: &mut PgConnection,
     replacement: &Replacement<'_>,
@@ -339,10 +356,10 @@ async fn write_advisories(
 ) -> Result<(), IntelError> {
     let encoded = replacement.encoded;
     let columns = load::ADVISORY_COLUMNS;
-    sqlx::query(&format!(
+    sqlx::query(AssertSqlSafe(format!(
         "CREATE TEMP TABLE advisory_load ON COMMIT DROP AS \
          SELECT {columns} FROM advisory WITH NO DATA"
-    ))
+    )))
     .execute(&mut *conn)
     .await
     .map_err(IntelError::Backend)?;
@@ -352,7 +369,7 @@ async fn write_advisories(
          SELECT l.*, COALESCE(p.cached, now()) \
          FROM advisory_load l LEFT JOIN prior_cached p ON p.publisher_id = l.publisher_id"
     );
-    written.advisories += sqlx::query(&loaded)
+    written.advisories += sqlx::query(AssertSqlSafe(loaded))
         .execute(&mut *conn)
         .await
         .map_err(IntelError::Backend)?

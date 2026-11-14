@@ -38,9 +38,9 @@ semver = "1.0.28"
 # Postgres only, and rustls rather than native-tls so there is one TLS stack in the tree.
 # `macros` is what checks SQL against the real schema at compile time; see
 # docs/engineering_decisions/0025-storage-sqlx-postgres.md.
-# Held at 0.8: sqlx 0.9 requires rustc 1.94 and kani 0.67 compiles with 1.93. See
+# 0.9 requires rustc 1.94. kani 0.68.0, which `make verify` uses, bundles nightly-2026-08-21. See
 # docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md.
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "macros", "migrate"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "macros", "migrate"] }
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

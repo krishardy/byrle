@@ -50,7 +50,7 @@ pub enum Command {
         "Load OSV, GitHub, CISA KEV and Datadog intel into the Postgres at {}",
         crate::env::DATABASE_URL
     ))]
-    Refresh,
+    Refresh(Refresh),
     /// Create, list and disable accounts; set passwords; link OIDC identities
     #[command(subcommand)]
     Account(AccountCommand),
@@ -181,6 +181,20 @@ pub struct Verify {
     /// A policy file a line may have been decided under, matched by digest
     #[arg(long, required = true)]
     pub policy: Vec<PathBuf>,
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct Refresh {
+    #[arg(
+        long,
+        value_name = "STREAM",
+        value_parser = clap::builder::PossibleValuesParser::new(
+            crate::intel::stream::all().iter().map(|declared| declared.stream)
+        ),
+        help = "Load this stream even when it parses to under half the rows stored for it. \
+                Repeatable"
+    )]
+    pub force: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Args)]
@@ -532,7 +546,19 @@ mod tests {
         assert_eq!(parse(&["doctor"]).expect("parses").command, Command::Doctor);
         assert_eq!(
             parse(&["refresh"]).expect("parses").command,
-            Command::Refresh
+            Command::Refresh(Refresh { force: vec![] })
+        );
+        assert_eq!(
+            parse(&["refresh", "--force", "osv/npm", "--force", "cisa/kev"])
+                .expect("parses")
+                .command,
+            Command::Refresh(Refresh {
+                force: vec!["osv/npm".to_owned(), "cisa/kev".to_owned()]
+            })
+        );
+        assert!(
+            parse(&["refresh", "--force", "osv/nowhere"]).is_err(),
+            "only a declared stream can be forced"
         );
         assert_eq!(
             parse(&["intel", "history"]).expect("parses").command,

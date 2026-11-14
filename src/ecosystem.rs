@@ -10,7 +10,7 @@ pub mod npm;
 pub mod pypi;
 
 use crate::doctor::Client;
-use crate::env::{Env, EnvError, Var};
+use crate::env::{Env, Var};
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
 use crate::intel::range::VersionOrder;
 use crate::intel::stream::Stream;
@@ -24,10 +24,23 @@ use std::collections::BTreeMap;
 /// Metadata the proxy fetched itself: the outer error is the fetch, the inner the document.
 pub type Fetched = Result<Result<PackageMetadata, String>, String>;
 
+/// [`Fetch::listing`]'s answer: the place among the candidates and the metadata of the one listing a file.
+pub type Listing = Result<Option<(usize, PackageMetadata)>, String>;
+
 /// What an ecosystem's registry client answers for a request the proxy makes itself.
 pub trait Fetch: Send + Sync + std::fmt::Debug {
     /// The package's metadata as records.
     fn metadata<'a>(&'a self, key: &'a PackageKey) -> BoxFuture<'a, Fetched>;
+
+    /// The first of `candidates`, asked in order, whose document lists `filename`. `Ok(None)`
+    /// for an ecosystem whose filenames name their package, which asks nothing.
+    fn listing<'a>(
+        &'a self,
+        _candidates: &'a [PackageKey],
+        _filename: &'a str,
+    ) -> BoxFuture<'a, Listing> {
+        Box::pin(async { Ok(None) })
+    }
 
     /// The fuller document with publish times, for an ecosystem whose client asks for
     /// less. `Ok(None)` for one whose records carry `published_at`, which asks nothing.
@@ -37,12 +50,14 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
     ) -> BoxFuture<'a, Result<Option<FullDocument>, String>>;
 
     /// The record of `version` read on its own, for an ecosystem that serves versions its
-    /// document does not list. `Ok(None)` for one that does not, or a version it lacks.
+    /// document does not list, dated for a cooldown starting `before`. `Ok(None)` for one
+    /// that does not, or a version it lacks.
     fn version<'a>(
         &'a self,
         _key: &'a PackageKey,
         _version: &'a str,
-    ) -> BoxFuture<'a, Result<Option<crate::record::PackageRecord>, String>> {
+        _before: Option<jiff::Timestamp>,
+    ) -> BoxFuture<'a, Result<Option<Versioned>, String>> {
         Box::pin(async { Ok(None) })
     }
 
@@ -55,6 +70,10 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
     ) -> BoxFuture<'a, Result<Option<PublishTimes>, String>> {
         Box::pin(async { Ok(None) })
     }
+
+    /// Keep what must outlast a restart in `store`: Go's checksum database tree. Nothing for
+    /// others.
+    fn keeping(&self, _store: &std::sync::Arc<dyn crate::analysis::store::Trees>) {}
 
     /// Where the file at `url` is served from after the repository's redirects, for one whose
     /// redirects say whose a file is. `Ok(None)` for others. Errors when it cannot be asked.
@@ -184,8 +203,9 @@ pub trait Document: Send + Sync {
     fn metadata(&self) -> Option<&PackageMetadata>;
 
     /// The body with refused versions removed and artifacts pointed at the proxy, or
-    /// `None` to forward it as it came.
-    fn rewrite(&self, rewriting: &Rewriting<'_>) -> Option<Vec<u8>>;
+    /// `None` to forward it as it came. `Err` says why a change it needed failed: forwarded,
+    /// it would offer refused versions, or artifacts fetched around the proxy.
+    fn rewrite(&self, rewriting: &Rewriting<'_>) -> Result<Option<Vec<u8>>, String>;
 
     /// Whether removing `refused` leaves a document that names one version naming none,
     /// answered 404 as an absent one is.
@@ -193,6 +213,9 @@ pub trait Document: Send + Sync {
         false
     }
 }
+
+/// A body read: `None` forwards it unread, and `Err` says why the row could not read it.
+pub type Read = Result<Option<Box<dyn Document>>, String>;
 
 /// What an adapter's [`Registry::read`] is given: a metadata body on its way to the client.
 pub struct Reading<'a> {
@@ -217,6 +240,8 @@ pub struct Rewriting<'a> {
     pub origins: &'a crate::origin::OriginPolicy,
     /// Versions the policy refuses, which are removed.
     pub refused_by_policy: &'a std::collections::HashSet<String>,
+    /// Files the policy refuses one by one, by filename, which are removed: PyPI only.
+    pub refused_files: &'a [String],
     /// Whether a version on an origin the proxy does not serve is removed too.
     pub refuse_unservable: bool,
     pub path: &'a str,
@@ -244,6 +269,23 @@ pub struct UpstreamCheck {
     pub check: fn(&str, Option<&str>, bool) -> crate::doctor::Finding,
 }
 
+/// A record read on its own, and what its client read to date it: [`Fetch::version`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Versioned {
+    pub record: crate::record::PackageRecord,
+    pub dates: crate::dating::RecordDates,
+}
+
+impl Versioned {
+    /// `record`, dated by its own time alone.
+    pub fn of(record: crate::record::PackageRecord) -> Self {
+        Self {
+            dates: crate::dating::RecordDates::of(&record),
+            record,
+        }
+    }
+}
+
 /// A document fetched for its publish times: [`Fetch::full`].
 #[derive(Debug, Clone)]
 pub struct FullDocument {
@@ -259,23 +301,31 @@ pub struct Clients(BTreeMap<Repository, std::sync::Arc<dyn Fetch>>);
 
 impl Clients {
     /// A client for each upstream. `max_bytes` bounds each decoded body.
-    pub fn new(http: reqwest::Client, upstreams: &Upstreams, max_bytes: usize) -> Self {
+    pub fn new(
+        connection: crate::service::Connection,
+        upstreams: &Upstreams,
+        max_bytes: usize,
+    ) -> Self {
         Self(
             upstreams
                 .iter()
                 .map(|(repository, base)| {
-                    (repository, repository.client(http.clone(), base, max_bytes))
+                    (
+                        repository,
+                        repository.client(connection.clone(), base, max_bytes),
+                    )
                 })
                 .collect(),
         )
     }
 
-    /// Clients for the upstreams and body limit the environment configures.
+    /// Clients for the upstreams, body limit and CA bundle the environment configures,
+    /// connecting as the proxy's do.
     pub fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
         environment: &Env<L>,
-    ) -> Result<Self, EnvError> {
+    ) -> Result<Self, crate::startup::StartupError> {
         Ok(Self::new(
-            reqwest::Client::new(),
+            crate::startup::connection(environment)?,
             &environment.upstreams()?,
             environment.max_metadata_bytes()?,
         ))
@@ -292,10 +342,26 @@ impl Clients {
         self
     }
 
+    /// The same, each client keeping what must outlast a restart in `store`.
+    pub fn keeping(self, store: &std::sync::Arc<dyn crate::analysis::store::Trees>) -> Self {
+        self.0.values().for_each(|client| client.keeping(store));
+        self
+    }
+
     /// `at`'s client, for `key`, a package of its ecosystem.
     fn of(&self, at: Repository, key: &PackageKey) -> &dyn Fetch {
         debug_assert_eq!(at.ecosystem(), key.ecosystem(), "{key} is not of {at}");
         self.0[&at].as_ref()
+    }
+
+    /// [`Fetch::listing`], asked of `at`.
+    pub async fn listing(
+        &self,
+        at: Repository,
+        candidates: &[PackageKey],
+        filename: &str,
+    ) -> Listing {
+        self.0[&at].listing(candidates, filename).await
     }
 
     /// The package's metadata as records, from `at`.
@@ -333,23 +399,27 @@ impl Clients {
         at: Repository,
         key: &PackageKey,
         version: &str,
-    ) -> Result<Option<crate::record::PackageRecord>, String> {
-        self.of(at, key).version(key, version).await
+        before: Option<jiff::Timestamp>,
+    ) -> Result<Option<Versioned>, String> {
+        self.of(at, key).version(key, version, before).await
     }
 
     /// The record of `version` of `metadata`'s package: read on its own where the
-    /// ecosystem serves versions its document does not list, else `metadata`'s.
-    /// `Ok(None)` when neither has it.
+    /// ecosystem serves versions its document does not list, dated for a cooldown starting
+    /// `before`, else `metadata`'s. `Ok(None)` when neither has it.
     pub async fn version_of(
         &self,
         at: Repository,
         metadata: &PackageMetadata,
         version: &str,
-    ) -> Result<Option<crate::record::PackageRecord>, String> {
-        Ok(match self.version(at, &metadata.key, version).await? {
-            Some(alone) => Some(alone),
-            None => metadata.version(version).cloned(),
-        })
+        before: Option<jiff::Timestamp>,
+    ) -> Result<Option<Versioned>, String> {
+        Ok(
+            match self.version(at, &metadata.key, version, before).await? {
+                Some(alone) => Some(alone),
+                None => metadata.version(version).cloned().map(Versioned::of),
+            },
+        )
     }
 
     /// A time for each of `metadata`'s versions: [`Fetch::dated`].
@@ -445,7 +515,7 @@ impl Setup {
 
 /// Makes a [`Registry::publishers`] detector for a repository, `None` when its API is not asked.
 pub type Publishers = fn(
-    &reqwest::Client,
+    &crate::service::Connection,
     Repository,
     &str,
     &crate::env::ApiSetting,
@@ -505,8 +575,17 @@ pub struct Registry {
     /// A non-empty registry name as a purl namespace and name.
     pub split_name: SplitName,
 
-    /// A name as a policy selector compares it, prefix or exact.
+    /// A name as intel stores it, so a lookup by the package key's name finds it.
     pub canonical_name: fn(&str) -> String,
+
+    /// A name as a policy selector compares it, prefix or exact.
+    pub selector_name: fn(&str) -> String,
+
+    /// Another name intel may list a registry name's records under; `None` for most.
+    pub intel_alias: fn(&str) -> Option<String>,
+
+    /// Each package a filename fits, with its version there, when it fits several: PyPI's sdists.
+    pub filename_projects: fn(&str) -> Vec<(PackageKey, String)>,
 
     /// Whether the registry could publish a registry name; `None` when `split_name` checks it.
     pub published_name: Option<fn(&str) -> bool>,
@@ -517,9 +596,9 @@ pub struct Registry {
     /// Where a request path goes, given the upstream base.
     pub upstream_url: fn(&str, &str) -> String,
     /// The registry client for the upstream, with each decoded body bounded.
-    pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
-    /// A metadata body read on its way to the client, or `None` to forward it unread.
-    pub read: fn(Reading<'_>) -> Option<Box<dyn Document>>,
+    pub client: fn(crate::service::Connection, &str, usize) -> std::sync::Arc<dyn Fetch>,
+    /// A metadata body read on its way to the client.
+    pub read: fn(Reading<'_>) -> Read,
     /// What reads an artifact file for the code it runs on install; `None` if it runs none.
     pub reader: fn(&str) -> Option<crate::analysis::Reader>,
     /// How an artifact file is laid out, or `None` for one the source comparison does not read.
@@ -572,7 +651,7 @@ pub struct Also {
     /// The variable naming its upstream.
     pub upstream: Var,
     /// The registry client for its upstream, with each decoded body bounded.
-    pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
+    pub client: fn(crate::service::Connection, &str, usize) -> std::sync::Arc<dyn Fetch>,
     /// Where a redirect to says a file is the row's own repository's: the portal's to Central.
     pub own_at: &'static [&'static str],
 }
@@ -660,7 +739,7 @@ impl Repository {
     /// The registry client for `upstream`, with each decoded body bounded.
     fn client(
         self,
-        http: reqwest::Client,
+        http: crate::service::Connection,
         upstream: &str,
         max_bytes: usize,
     ) -> std::sync::Arc<dyn Fetch> {
@@ -750,11 +829,21 @@ fn trimmed(base: &str) -> String {
     base.trim_end_matches('/').to_owned()
 }
 
-/// `name` as `ecosystem`, a purl type, compares it: a PyPI name PEP 503 normalised, an npm
-/// name as written. As written for an ecosystem with no row, which nothing here serves.
+/// `name` as `ecosystem`, a purl type, stores intel under it: a PyPI name PEP 503
+/// normalised, an npm name as written. As written for an ecosystem with no row, which
+/// nothing here serves.
 pub fn canonical_name(ecosystem: &str, name: &str) -> String {
     match ecosystem.parse::<Ecosystem>() {
         Ok(known) => (of(known).canonical_name)(name),
+        Err(_) => name.to_owned(),
+    }
+}
+
+/// `name` as a policy selector in `ecosystem` compares it: [`canonical_name`]'s, but a
+/// crate name with `-` read as `_`. As written for an ecosystem with no row.
+pub fn selector_name(ecosystem: &str, name: &str) -> String {
+    match ecosystem.parse::<Ecosystem>() {
+        Ok(known) => (of(known).selector_name)(name),
         Err(_) => name.to_owned(),
     }
 }
@@ -841,11 +930,18 @@ mod table {
     #[tokio::test]
     async fn a_client_that_cannot_be_built_or_reach_its_registry_is_an_error() {
         use crate::env::testing::with;
-        let Err(error) = Clients::from_env(&with(&[(crate::env::MAX_METADATA_BYTES, "lots")]))
+        let Err(crate::startup::StartupError::Env(error)) =
+            Clients::from_env(&with(&[(crate::env::MAX_METADATA_BYTES, "lots")]))
         else {
             panic!("the limit does not parse");
         };
         assert_eq!(error.var, crate::env::MAX_METADATA_BYTES.name);
+        assert!(Clients::from_env(&with(&[(crate::env::UPSTREAM_NPM, "not a url")])).is_err());
+        let missing = "/nonexistent/byrle-ca.pem";
+        let Err(error) = Clients::from_env(&with(&[(crate::env::CA_BUNDLE, missing)])) else {
+            panic!("the bundle does not load");
+        };
+        assert!(error.to_string().contains(missing), "{error}");
 
         let closed = crate::util::test_support::closing_server().await;
         let clients = Clients::from_env(&with(&[(
@@ -961,7 +1057,7 @@ mod table {
     async fn only_a_repository_whose_redirects_say_whose_a_file_is_is_asked_where_it_is() {
         let nowhere = crate::util::test_support::NO_UPSTREAM;
         let upstreams = Upstreams::defaults().with(Ecosystem::Npm, nowhere);
-        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
+        let clients = Clients::new(crate::service::Connection::default(), &upstreams, 1024);
         let npm = Repository::of(Ecosystem::Npm);
         assert_eq!(
             clients.located(npm, &format!("{nowhere}/x")).await,
@@ -979,7 +1075,7 @@ mod table {
         let upstreams = Upstreams::defaults()
             .with(Ecosystem::Maven, &format!("http://{central}/maven2"))
             .with(plugins, &format!("http://{portal}/m2"));
-        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
+        let clients = Clients::new(crate::service::Connection::default(), &upstreams, 1024);
         let key = PackageKey::from_registry_name(Ecosystem::Maven, "a.b:c").unwrap();
         assert!(clients.metadata(plugins, &key).await.is_err());
         assert_eq!(from_portal.lock().unwrap().len(), 1);
@@ -1160,7 +1256,7 @@ mod table {
         let upstreams = Upstreams::defaults()
             .with(Ecosystem::Npm, nowhere)
             .with(Ecosystem::PyPI, nowhere);
-        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
+        let clients = Clients::new(crate::service::Connection::default(), &upstreams, 1024);
         let idna = "pkg:pypi/idna".parse().expect("a purl");
         let at = |ecosystem| Repository::of(ecosystem);
         assert_eq!(
@@ -1282,8 +1378,8 @@ mod table {
         assert_eq!((files.len(), before), (1, 1));
     }
 
-    /// A row reads only its own kind of document, and one it can parse; anything else is
-    /// forwarded unread.
+    /// A row reads only its own kind of document; anything else is forwarded unread. One of
+    /// its kind that does not parse is an error.
     #[test]
     fn a_row_reads_only_its_own_kind_of_document() {
         use crate::record::DocumentDetail;
@@ -1307,11 +1403,6 @@ mod table {
                 b"{}",
             ),
             (
-                &pypi::REGISTRY,
-                DocumentKind::SimpleIndex(IndexFormat::Json),
-                b"not json",
-            ),
-            (
                 &cargo::REGISTRY,
                 DocumentKind::SimpleIndex(IndexFormat::Json),
                 b"{}",
@@ -1330,8 +1421,22 @@ mod table {
                 parse_started: std::time::Instant::now(),
                 path: "/x",
             });
-            assert!(read.is_none(), "{:?}", row.ecosystem);
+            assert!(matches!(read, Ok(None)), "{:?}", row.ecosystem);
         }
+        let unparsed = (pypi::REGISTRY.read)(Reading {
+            decoded: b"not json",
+            kind: DocumentKind::SimpleIndex(IndexFormat::Json),
+            page: "https://pypi.org/simple/x/",
+            store: crate::store::Keeping {
+                store: &store,
+                at: Repository::of(crate::identity::Ecosystem::PyPI),
+            },
+            origins: &origins,
+            encoded_bytes: 8,
+            parse_started: std::time::Instant::now(),
+            path: "/x",
+        });
+        assert!(unparsed.is_err_and(|why| why.contains("did not parse")));
     }
 
     /// Lines outside the adapters that name a row's ecosystem, per file, until a file's

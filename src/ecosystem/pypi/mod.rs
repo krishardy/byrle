@@ -74,12 +74,15 @@ pub const REGISTRY: Registry = Registry {
     versions: VersionOrder::Pep440,
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
+    selector_name: paths::canonical_name,
+    intel_alias: |_| None,
+    filename_projects: paths::filename_projects,
     published_name: Some(paths::published_name),
     upstream: crate::env::UPSTREAM_PYPI,
     upstream_url: paths::upstream_url,
     read: |reading| {
         let crate::route::DocumentKind::SimpleIndex(format) = reading.kind else {
-            return None;
+            return Ok(None);
         };
         let index = read_index(
             reading.decoded,
@@ -88,7 +91,7 @@ pub const REGISTRY: Registry = Registry {
             reading.store,
             reading.path,
         )?;
-        Some(Box::new(index))
+        Ok(Some(Box::new(index)))
     },
     reader: |filename| {
         (!filename.ends_with(".whl")).then_some(
@@ -164,7 +167,7 @@ impl crate::ecosystem::Document for Index {
         self.metadata.as_deref()
     }
 
-    fn rewrite(&self, r: &crate::ecosystem::Rewriting<'_>) -> Option<Vec<u8>> {
+    fn rewrite(&self, r: &crate::ecosystem::Rewriting<'_>) -> Result<Option<Vec<u8>>, String> {
         rewrite::rewrite_index(rewrite::Rewrite {
             decoded: r.decoded,
             format: self.format,
@@ -172,6 +175,7 @@ impl crate::ecosystem::Document for Index {
             origins: r.origins,
             base: r.base,
             refused_by_policy: r.refused_by_policy,
+            refused_files: r.refused_files,
             refuse_unservable: r.refuse_unservable,
             path: r.path,
         })

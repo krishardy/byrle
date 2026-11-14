@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_analysis (digest, ecosystem, name, version, unreadable, reader, anomalies)\n            VALUES ($1, $2, $3, $4, $5, $6, $7)\n            ON CONFLICT (digest) DO UPDATE SET\n                ecosystem   = EXCLUDED.ecosystem,\n                name        = EXCLUDED.name,\n                version     = EXCLUDED.version,\n                unreadable  = EXCLUDED.unreadable,\n                reader      = EXCLUDED.reader,\n                anomalies   = EXCLUDED.anomalies,\n                analysed_at = now()\n            RETURNING id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "artifact_analysis",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c497ca24e8fdca0b52eddfab23e97826cd7476f59c46f2acee9e865d085a29d5"
+}

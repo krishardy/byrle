@@ -54,16 +54,16 @@ impl Document for ArtifactMetadata {
 
     /// Files are fetched at the proxy, which mvn and Gradle ask for every file, so only
     /// refused versions are removed. `None` when none is.
-    fn rewrite(&self, r: &Rewriting<'_>) -> Option<Vec<u8>> {
+    fn rewrite(&self, r: &Rewriting<'_>) -> Result<Option<Vec<u8>>, String> {
         if r.refused_by_policy.is_empty() {
-            return None;
+            return Ok(None);
         }
         warn!(
             url.path = %crate::http::url_path(r.path),
             byrle.package.removed_by_policy = r.refused_by_policy.len(),
             "REFUSED versions removed from the document so the resolver picks another"
         );
-        Some(self.read.without(r.decoded, r.refused_by_policy))
+        Ok(Some(self.read.without(r.decoded, r.refused_by_policy)))
     }
 }
 
@@ -138,13 +138,14 @@ mod tests {
             base: None,
             origins: &origins,
             refused_by_policy: &HashSet::new(),
+            refused_files: &[],
             refuse_unservable: true,
             path: PATH,
         };
-        assert_eq!(document.rewrite(&rewriting), None);
+        assert_eq!(document.rewrite(&rewriting), Ok(None));
         let refused: HashSet<String> = ["3.21.0".to_owned()].into();
         rewriting.refused_by_policy = &refused;
-        let body = String::from_utf8(document.rewrite(&rewriting).unwrap()).unwrap();
+        let body = String::from_utf8(document.rewrite(&rewriting).unwrap().unwrap()).unwrap();
         assert!(!body.contains("<version>3.21.0</version>"), "{body}");
         assert!(body.contains("<release>3.20.0</release>"), "{body}");
     }

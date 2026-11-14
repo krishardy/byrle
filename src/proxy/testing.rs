@@ -131,14 +131,14 @@ pub(crate) async fn analysing_with(
     let (spool, _) =
         Spool::open(&crate::util::test_support::tempdir(label), 1 << 20).expect("opens");
     let analyser = Arc::new(Analyser::new(
-        reqwest::Client::new(),
+        crate::service::Connection::default(),
         Arc::new(spool),
         store,
         2,
         8,
     ));
     let base = serve(
-        Proxy::new(reqwest::Client::new())
+        Proxy::new(crate::service::Connection::default())
             .with_upstream(Ecosystem::Npm, serve(router).await)
             .with_policy(yaml.map(policy))
             .with_analyser(Some(analyser.clone()))

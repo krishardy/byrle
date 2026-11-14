@@ -2176,6 +2176,16 @@
             },
             "description": "The caller's roles do not grant packages.read"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Another policy diff is running"
+          },
           "503": {
             "content": {
               "application/json": {

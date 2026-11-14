@@ -73,8 +73,8 @@ pub fn list(key: &PackageKey, decoded: &[u8], files: &str) -> PackageMetadata {
     }
 }
 
-/// The version `@latest` names as a record of `key`, its `Time` the publish time.
-/// Errors when the body names no version, or a time that does not parse.
+/// The version `@latest` names as a record of `key`, its `Time` the publish time unless the
+/// version is dated as a list's are. Errors on no version, or a time that does not parse.
 pub fn latest(key: &PackageKey, decoded: &[u8], files: &str) -> Result<PackageMetadata, String> {
     let info: Info = serde_json::from_slice(decoded).map_err(|e| e.to_string())?;
     if listed(info.version.as_bytes()) != Some(info.version.as_str()) {
@@ -129,6 +129,7 @@ pub fn record(
             yanked: None,
             legacy_sha1: None,
             attestation_url: None,
+            published_at: None,
             file_count: None,
             unpacked_size: None,
         }],

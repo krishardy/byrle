@@ -483,17 +483,45 @@ Items that I've added that are not stage-bound.
     vector is built, the risk score, the decision and the response. Raised 2026-10-19.
     Done 2026-10-19: [logic-flow](docs/logic-flow.md), and `request-flow.md` corrected
     against the code at `3ade87d`.
-50. Step-wise security reviews of each step in #49's diagrams. For each step: is it
+50. [x] Step-wise security reviews of each step in #49's diagrams. For each step: is it
     vulnerable, what does abnormal data do there, can a malicious package be coaxed
     through, and can malicious input make a score ignored or overridden. After #49.
     Raised 2026-10-19.
-    Reviewed 2026-10-26. The review is kept out of the repository until its findings are
-    fixed.
+    Reviewed 2026-10-26. Done 2026-11-08: [security-review](docs/security-review.md), every
+    finding resolved.
 51. `make strip-claude`, `make unsigned` and `make signed-off` become one `make
     commit-fixup`. It rewinds to the oldest failing commit and fixes each commit from there
     forward. Raised 2026-10-20. Done 2026-10-20: per commit it removes the Claude credit
     lines, adds the author's sign-off, then signs. CI's `signed-off` job runs it with
     `CHECKS=sign-off`.
+52. Documentation of what each signal means: for every `signal_weights` key, what fires
+    it, what it says about the version, an example of its detail, and why its default
+    weight is what it is. Raised 2026-10-29.
+53. [x] `byrle explain` and `byrle policy diff` date a Go version by its record, as the proxy
+    does since decision 0125. They pass `before: None` to `Clients::version_of` today, so
+    they read the `.info` `Time`, and `explain` reports a backdated version as allowed
+    while the proxy refuses it. Their clients are built from the environment, which names
+    no index or checksum database, so their tests cannot keep off the network. Add a
+    setting for both: a `BYRLE_*` URL for the index, and for the checksum database a
+    `GOSUMDB`-style name, key and URL. Raised 2026-10-30.
+    Neither reads a file's first sighting either, which dates an undated pinned fetch
+    since decision 0129, so both report an undated version as having no date. Added
+    2026-11-03.
+    Done 2026-11-08: [dates-reported](docs/engineering_decisions/0137-dates-reported.md).
+    Both call the proxy's `dating::date`, pass a cooldown start, read a first sighting
+    without recording one, and print every date read and the one used. The Go tests set the
+    index and checksum database through `Clients::with`, so no setting was added.
+54. [x] Opengrep for SAST: add it to `make sast` beside semgrep or in its place, with a
+    `scripts/make/opengrep.sh`, the same rules and `// nosemgrep:` suppressions, and a CI
+    step. Raised 2026-11-05.
+    Done 2026-11-13: [opengrep-trial](docs/engineering_decisions/0138-opengrep-trial.md).
+    Tried in `make sast` and removed from it. `make opengrep` stays, sharing
+    `scripts/make/lib/semgrep_scan.sh` with `make semgrep`. No CI step: CI runs no
+    `make sast` job.
+55. [x] Check in CI that each commit in a pull request is signed with a valid signature.
+    Raised 2026-11-14. Done 2026-11-14:
+    [pr-commit-signatures](docs/engineering_decisions/0139-pr-commit-signatures.md). The
+    `signatures` job runs `make pr-signatures`, which fails on a commit GitHub did not verify.
 
 ## Architecture Refactor
 
@@ -3039,8 +3067,9 @@ role gets 403 from every endpoint except `GET health`.
   - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, is the same tradeoff
         from the other side: asking OSV about one package leaks that package. It stays
         opt-in and documented, and a mirror is the answer for anyone who cannot accept it.
-- [ ] Move to sqlx 0.9 once a kani release bundles rustc 1.94 or later. kani 0.67.0 bundles
-      1.93.0-nightly and sqlx 0.9 requires 1.94. Steps are in
+- [x] Move to sqlx 0.9 once a kani release bundles rustc 1.94 or later. Done 2026-11-13 with
+      kani 0.68.0: `Cargo.toml` is on 0.9, `make verify` passes, `.sqlx/` is regenerated and
+      `make test-integration` passes 61 of 61. Steps are in
       `docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md`. Moved from Stage 2: it
       waits on an upstream release, and RUSTSEC-2023-0071 is accepted meanwhile only while
       `rsa` is not compiled.

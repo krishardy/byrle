@@ -44,10 +44,10 @@ pub(super) struct Scans {
 }
 
 impl Analyser {
-    /// Ask VirusTotal as `settings` say. `None` leaves it off.
+    /// Ask VirusTotal as `settings` say, through its own client. `None` leaves it off.
     pub fn with_virustotal(mut self, settings: Option<&Settings>) -> Self {
         self.scans = settings.map(|settings| Scans {
-            client: Arc::new(Client::new(self.client.clone(), settings)),
+            client: Arc::new(Client::new(&self.connection, settings)),
             mode: settings.mode,
             uploads_from: settings.uploads_from.clone(),
             per_minute: settings.per_minute,
@@ -292,7 +292,7 @@ fn said(failure: Failure) -> String {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::analysis::run::tests::{analyser, server, sri_of};
+    use crate::analysis::run::tests::{analyser, server, server_at, sri_of};
     use crate::analysis::store::Analyses;
     use crate::analysis::store::InProcess;
     use crate::analysis::store::tests::Broken;
@@ -378,12 +378,14 @@ mod tests {
     /// origin, and only within the size limit; above the direct limit through an upload URL.
     #[tokio::test]
     async fn an_unknown_artifact_is_uploaded_only_when_allowed() {
-        let (uploads, uploaded) = server(vec![("/up".to_owned(), 200, UPLOADED.to_vec())]).await;
-        let up = format!(r#"{{"data":"{uploads}/up"}}"#);
-        let (base, asked) = server(routes(vec![
-            ("/files".to_owned(), 200, UPLOADED.to_vec()),
-            ("/files/upload_url".to_owned(), 200, up.into_bytes()),
-        ]))
+        let (base, asked) = server_at(|base| {
+            let up = format!(r#"{{"data":"{base}/up"}}"#);
+            routes(vec![
+                ("/files".to_owned(), 200, UPLOADED.to_vec()),
+                ("/files/upload_url".to_owned(), 200, up.into_bytes()),
+                ("/up".to_owned(), 200, UPLOADED.to_vec()),
+            ])
+        })
         .await;
         let fresh = || Arc::new(InProcess::new(8)) as Arc<dyn Analyses>;
         let paths =
@@ -406,8 +408,7 @@ mod tests {
         large.scans.as_mut().unwrap().upload_limits = (4, 1 << 20);
         let scanned = run(&large, job(&base, BYTES), None).await.expect("stored");
         assert_eq!(scanned.verdict, Verdict::Queued("an-1".to_owned()));
-        assert_eq!(paths(&asked)[2..], ["/files/upload_url".to_owned()]);
-        assert_eq!(paths(&uploaded), ["/up".to_owned()]);
+        assert_eq!(paths(&asked)[2..], ["/files/upload_url", "/up"]);
 
         let mut too_large = scanning("vt-too-large", &base, Mode::Upload, fresh());
         too_large.scans.as_mut().unwrap().upload_limits = (4, 8);

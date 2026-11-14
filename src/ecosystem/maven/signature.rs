@@ -89,6 +89,12 @@ pub fn verify(
 
 /// The detached signature `bytes` armor. Errors when they are not one.
 fn parse(bytes: &[u8]) -> Result<Signature, String> {
+    if bytes.len() > crate::http::MAX_SIDECAR_BYTES {
+        let limit = crate::http::MAX_SIDECAR_BYTES;
+        return Err(format!(
+            "it is over {limit} bytes, more than a signature is"
+        ));
+    }
     match DetachedSignature::from_armor_single(bytes) {
         Ok((detached, _)) => Ok(detached.signature),
         Err(e) => compressed(bytes).ok_or_else(|| format!("it is no signature: {e}")),
@@ -689,6 +695,49 @@ mod tests {
         assert_eq!(signer(&at(20), &other), None, "another key's copy");
         let undated = signature(&key.primary_key, SignatureType::Binary, None, data);
         assert_eq!(signer(&undated, &armored(public())), None);
+    }
+
+    /// A signature naming another key as its issuer is not verified, before any hashing, so
+    /// a key's third-party certifications are not checked: its expiry does not apply.
+    #[test]
+    fn a_signature_naming_another_key_is_not_read() {
+        use made::*;
+        use pgp::packet::{SignatureType, SubpacketData};
+        let (key, other, base) = (key(), key(), now());
+        let data = b"the file";
+        let at = signature(
+            &key.primary_key,
+            SignatureType::Binary,
+            Some(base + 200),
+            data,
+        );
+        let life = pgp::types::Duration::from_secs(base + 100 - made());
+        let misnamed = config(
+            SignatureType::Key,
+            Some(base + 10),
+            &other.primary_key,
+            vec![SubpacketData::KeyExpirationTime(life)],
+        )
+        .sign_key(
+            &key.primary_key,
+            &pgp::types::Password::empty(),
+            key.primary_key.public_key(),
+        )
+        .unwrap();
+        let mut copy = pgp::composed::SignedPublicKey::from(key.clone());
+        copy.details.direct_signatures.push(misnamed.clone());
+        let Signed::Verified { expired, .. } = judged(&at, copy, data) else {
+            panic!("the key made it");
+        };
+        assert_eq!(
+            expired, None,
+            "the expiry is in a signature naming another key"
+        );
+        let named = misnamed
+            .verify_key(key.primary_key.public_key())
+            .unwrap_err()
+            .to_string();
+        assert!(named.contains("No matching issuer"), "{named}");
     }
 
     /// `key`'s public copy, saying it expired 100 seconds after `base`.

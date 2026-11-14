@@ -6,87 +6,144 @@
       {
         "ordinal": 0,
         "name": "snapshot!",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "intel_snapshot",
+            "name": "digest"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "exploitation_loaded!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 2,
         "name": "advisory_id?",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "advisory",
+            "name": "publisher_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "source?",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "advisory",
+            "name": "source"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "cvss?",
-        "type_info": "Float8"
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "advisory",
+            "name": "cvss"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "cvss_source?",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "advisory",
+            "name": "cvss_source"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "severity_band?",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "advisory",
+            "name": "severity_band"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "exploited?",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 8,
         "name": "malware?",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "advisory",
+            "name": "malware"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "informational?",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "advisory",
+            "name": "informational"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "cached?",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 11,
         "name": "aliases!",
-        "type_info": "VarcharArray"
+        "type_info": "VarcharArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 12,
         "name": "versions!: Vec<Option<String>>",
-        "type_info": "VarcharArray"
+        "type_info": "VarcharArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 13,
         "name": "introduced!: Vec<Option<String>>",
-        "type_info": "VarcharArray"
+        "type_info": "VarcharArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 14,
         "name": "introduced_excluded!",
-        "type_info": "BoolArray"
+        "type_info": "BoolArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 15,
         "name": "fixed!: Vec<Option<String>>",
-        "type_info": "VarcharArray"
+        "type_info": "VarcharArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 16,
         "name": "last_affected!: Vec<Option<String>>",
-        "type_info": "VarcharArray"
+        "type_info": "VarcharArray",
+        "origin": "Expression"
       }
     ],
     "parameters": {

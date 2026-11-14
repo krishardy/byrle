@@ -5,7 +5,7 @@
   `src/intel/postgres.rs`, `migrations/0001_intel.sql`, `tests/postgres.rs`. Refresh
   is not built.
 - **Plan reference:** decision #14
-- **Version:** sqlx 0.8. See [sqlx-0-8-and-rsa-advisory](0028-sqlx-0-8-and-rsa-advisory.md)
+- **Version:** sqlx 0.9. See [sqlx-0-8-and-rsa-advisory](0028-sqlx-0-8-and-rsa-advisory.md)
 - **Supersedes:** the ORM half of [intel-distribution-fetch-from-origin](0005-intel-distribution-fetch-from-origin.md)
 
 ## Decision

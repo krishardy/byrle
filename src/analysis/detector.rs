@@ -1,8 +1,9 @@
 //! Detectors that report findings about a package version, which become signals in its risk
 //! score and refuse nothing. Built in: the metadata heuristics, the source comparison,
-//! VirusTotal and `trustpub`. Others are commands run on the version by name, GuardDog first.
+//! VirusTotal, `trustpub`, `signing` and `archive`. Others are commands run on the version by name, GuardDog first.
 //! See docs/engineering_decisions/0092-detectors.md.
 
+pub mod archive;
 pub mod guarddog;
 pub mod metadata;
 pub mod signing;
@@ -24,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// The detectors whose rules a policy may weight, and those rules.
-pub const KNOWN: [(&str, &[&str]); 9] = [
+pub const KNOWN: [(&str, &[&str]); 10] = [
     (crate::policy::decide::NAME, &crate::policy::decide::RULES),
     (
         crate::policy::decide::PROXY,
@@ -36,11 +37,12 @@ pub const KNOWN: [(&str, &[&str]); 9] = [
     (virustotal::NAME, &virustotal::RULES),
     (trustpub::NAME, &trustpub::RULES),
     (signing::NAME, &signing::RULES),
-    ("guarddog", &guarddog::RULES),
+    (archive::NAME, &archive::RULES),
+    (guarddog::NAME, &guarddog::WEIGHED),
 ];
 
 /// The detectors built in, whose rules a policy names without the detector's name.
-pub const BUILT_IN: [&str; 8] = [
+pub const BUILT_IN: [&str; 9] = [
     crate::policy::decide::NAME,
     crate::policy::decide::PROXY,
     metadata::NAME,
@@ -48,25 +50,29 @@ pub const BUILT_IN: [&str; 8] = [
     virustotal::NAME,
     trustpub::NAME,
     signing::NAME,
+    archive::NAME,
     crate::signal::ADVISORY,
 ];
 
 /// The rules of the detectors built in, as a policy names them.
-pub const BUILT_IN_RULES: [&str; 34] = joined(
-    &joined::<16>(
+pub const BUILT_IN_RULES: [&str; 36] = joined(
+    &joined::<17>(
         &crate::policy::decide::RULES,
         &crate::policy::decide::PROXY_RULES,
     ),
-    &joined::<18>(
-        &joined::<13>(
-            &joined::<11>(
-                &joined::<9>(
-                    &joined::<8>(&metadata::RULES, &source::RULES),
-                    &virustotal::RULES,
+    &joined::<19>(
+        &joined::<14>(
+            &joined::<13>(
+                &joined::<11>(
+                    &joined::<9>(
+                        &joined::<8>(&metadata::RULES, &source::RULES),
+                        &virustotal::RULES,
+                    ),
+                    &trustpub::RULES,
                 ),
-                &trustpub::RULES,
+                &signing::RULES,
             ),
-            &signing::RULES,
+            &archive::RULES,
         ),
         &crate::signal::ADVISORY_RULES,
     ),
@@ -100,6 +106,9 @@ pub fn knows(key: &str) -> bool {
         .iter()
         .any(|(detector, rules)| rules.iter().any(|rule| self::key(detector, rule) == key))
 }
+
+/// The rule a command's run fires when its `errors` names any rule that could not run.
+pub const ERROR_RULE: &str = "error";
 
 /// How long one run of a command may take before it is killed.
 pub const TIMEOUT: Duration = Duration::from_secs(300);
@@ -360,6 +369,13 @@ impl Detector for Command {
                 })
                 .collect();
             let printed = self.run(&args).await?;
+            if !printed.success {
+                return Err(format!(
+                    "{} did not exit 0; it said {}",
+                    self.name,
+                    tail(&printed.stderr)
+                ));
+            }
             detection(&printed.stdout)
                 .map_err(|e| format!("{}: {e}; it said {}", self.name, tail(&printed.stderr)))
         })
@@ -460,6 +476,7 @@ case "$3" in
   slow) sleep 30 & echo "$$ $!" > "$4"; wait ;;
   flood) head -c 20000000 /dev/zero | tr '\0' 'x' ;;
   garbage) echo "not json" ; echo "it went wrong" >&2 ;;
+  failed) echo '{"results":{}}' ; echo "no such package" >&2 ; exit 3 ;;
 esac
 "#;
 
@@ -507,6 +524,12 @@ esac
     fn a_rule_is_known_only_as_a_known_detectors() {
         assert!(knows("guarddog.threat-process-hooks"));
         assert!(knows("guarddog.bundled_binary"));
+        assert!(knows("guarddog.error"));
+        assert!(knows("guarddog.whois_error"));
+        assert!(
+            !knows("error"),
+            "a command's rule is named with its detector"
+        );
         assert!(!knows("guarddog.threat-proces-hooks"), "misspelt");
         assert!(!knows("other.threat-process-hooks"));
         assert!(!knows("threat-process-hooks"));
@@ -520,13 +543,14 @@ esac
         assert_eq!(key("source", "source_differing"), "source_differing");
         assert_eq!(key("guarddog", "bundled_binary"), "guarddog.bundled_binary");
         assert_eq!(BUILT_IN_RULES[..12], crate::policy::decide::RULES);
-        assert_eq!(BUILT_IN_RULES[12..16], crate::policy::decide::PROXY_RULES);
-        assert_eq!(BUILT_IN_RULES[16..20], metadata::RULES);
-        assert_eq!(BUILT_IN_RULES[20..24], source::RULES);
-        assert_eq!(BUILT_IN_RULES[24..25], virustotal::RULES);
-        assert_eq!(BUILT_IN_RULES[25..27], trustpub::RULES);
-        assert_eq!(BUILT_IN_RULES[27..29], signing::RULES);
-        assert_eq!(BUILT_IN_RULES[29..], crate::signal::ADVISORY_RULES);
+        assert_eq!(BUILT_IN_RULES[12..17], crate::policy::decide::PROXY_RULES);
+        assert_eq!(BUILT_IN_RULES[17..21], metadata::RULES);
+        assert_eq!(BUILT_IN_RULES[21..25], source::RULES);
+        assert_eq!(BUILT_IN_RULES[25..26], virustotal::RULES);
+        assert_eq!(BUILT_IN_RULES[26..28], trustpub::RULES);
+        assert_eq!(BUILT_IN_RULES[28..30], signing::RULES);
+        assert_eq!(BUILT_IN_RULES[30..31], archive::RULES);
+        assert_eq!(BUILT_IN_RULES[31..], crate::signal::ADVISORY_RULES);
         assert!(knows("provenance_dropped"), "a check's rule is built in");
         assert!(knows("signing_key_new"));
         assert!(knows("virustotal_detected"));
@@ -643,8 +667,8 @@ esac
         assert!(!std::path::Path::new(&cwd).exists(), "removed after: {cwd}");
     }
 
-    /// A value that could be read as an option is refused before anything runs, output that
-    /// is not JSON says what it printed on stderr, and too much output is refused.
+    /// An option-like value is refused before anything runs. Output that is not JSON, or a
+    /// run that did not exit 0, says what stderr printed. Too much output is refused.
     #[tokio::test]
     async fn what_a_command_cannot_answer_is_an_error() {
         let detector = fake("detector-errors").await;
@@ -659,6 +683,8 @@ esac
                 && garbage.ends_with("it said it went wrong"),
             "{garbage}"
         );
+        let failed = detector.detect(&target("failed")).await.unwrap_err();
+        assert_eq!(failed, "fake did not exit 0; it said no such package");
         let mut unwritable = detector.clone();
         unwritable.scratch = PathBuf::from("/nonexistent/scratch");
         let error = unwritable.detect(&target("quiet")).await.unwrap_err();

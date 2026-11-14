@@ -2,7 +2,6 @@
 //!
 //! Tested by `tests/postgres.rs`. See docs/engineering_decisions/0063-artifact-analysis-store.md.
 
-use crate::analysis::InstallScripts;
 use crate::analysis::attestation::{Attested, verifier_id};
 use crate::analysis::decision::{Artifact, Decided, Page};
 use crate::analysis::detector::Detection;
@@ -10,8 +9,10 @@ use crate::analysis::source::{COMPARER, Sourced};
 use crate::analysis::store::DetectionKey;
 use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored};
 use crate::analysis::virustotal::{Counts, Scanned, Verdict};
+use crate::analysis::{Anomaly, InstallScripts};
 use crate::ecosystem::Signature;
 use crate::integrity::Sri;
+use jiff::Timestamp;
 use sqlx::PgPool;
 
 /// The stores a proxy decides with: the intel store, when one is configured, with the
@@ -36,6 +37,15 @@ pub fn stores(
     }
 }
 
+/// The analysis store at [`crate::env::DATABASE_URL`], when it is set.
+pub async fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
+    environment: &crate::env::Env<L>,
+) -> Result<Option<std::sync::Arc<dyn Analyses>>, String> {
+    Ok(crate::intel::postgres::from_env(environment)
+        .await?
+        .map(|intel| std::sync::Arc::new(PgAnalyses::new(intel.pool().clone())) as _))
+}
+
 /// What the detectors found, kept across restarts and shared between proxies.
 #[derive(Debug, Clone)]
 pub struct PgAnalyses {
@@ -51,22 +61,23 @@ impl PgAnalyses {
     /// row whose scripts are half written.
     async fn write(&self, digest: &Sri, analysis: &Analysis) -> Result<(), AnalysisError> {
         let (names, bodies) = columns(&analysis.scripts);
-        let unreadable = match &analysis.scripts {
-            Scripts::Unreadable(why) => Some(why.as_str()),
-            Scripts::Declared(_) => None,
+        let (unreadable, anomalies) = match &analysis.scripts {
+            Scripts::Unreadable(why) => (Some(why.as_str()), Vec::new()),
+            Scripts::Declared(found) => (None, found.anomalies.iter().map(Anomaly::code).collect()),
         };
         let mut tx = self.pool.begin().await.map_err(AnalysisError::Backend)?;
 
         let id = sqlx::query_scalar!(
             r#"
-            INSERT INTO artifact_analysis (digest, ecosystem, name, version, unreadable, reader)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO artifact_analysis (digest, ecosystem, name, version, unreadable, reader, anomalies)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (digest) DO UPDATE SET
                 ecosystem   = EXCLUDED.ecosystem,
                 name        = EXCLUDED.name,
                 version     = EXCLUDED.version,
                 unreadable  = EXCLUDED.unreadable,
                 reader      = EXCLUDED.reader,
+                anomalies   = EXCLUDED.anomalies,
                 analysed_at = now()
             RETURNING id
             "#,
@@ -76,6 +87,7 @@ impl PgAnalyses {
             analysis.version,
             unreadable,
             crate::analysis::READER,
+            &anomalies,
         )
         .fetch_one(&mut *tx)
         .await
@@ -114,6 +126,7 @@ impl PgAnalyses {
                 a.name      AS "name!",
                 a.version   AS "version!",
                 a.unreadable,
+                a.anomalies,
                 s.name      AS "script?",
                 s.body      AS "body?"
             FROM artifact_analysis a
@@ -134,7 +147,14 @@ impl PgAnalyses {
         let scripts = match &first.unreadable {
             Some(why) => Scripts::Unreadable(why.clone()),
             None => {
-                let mut found = InstallScripts::default();
+                let mut found = InstallScripts {
+                    anomalies: first
+                        .anomalies
+                        .iter()
+                        .filter_map(|code| Anomaly::parse(code))
+                        .collect(),
+                    ..InstallScripts::default()
+                };
                 for row in &rows {
                     let Some(name) = row.script.clone() else {
                         continue;
@@ -399,9 +419,123 @@ impl Analyses for PgAnalyses {
     ) -> Stored<'a, ()> {
         Box::pin(self.write_signature(digest, repository, verifier, signature))
     }
+
+    fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp> {
+        Box::pin(self.write_first_seen(purl, filename))
+    }
+
+    fn sighted<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Option<Timestamp>> {
+        Box::pin(self.read_first_seen(purl, filename))
+    }
+}
+
+impl crate::analysis::store::Trees for PgAnalyses {
+    fn checksum_tree<'a>(&'a self, database: &'a str) -> Stored<'a, Option<(u64, [u8; 32])>> {
+        Box::pin(self.read_checksum_tree(database))
+    }
+
+    fn keep_checksum_tree<'a>(
+        &'a self,
+        database: &'a str,
+        tree: (u64, [u8; 32]),
+    ) -> Stored<'a, ()> {
+        Box::pin(self.write_checksum_tree(database, tree))
+    }
 }
 
 impl PgAnalyses {
+    async fn read_checksum_tree(
+        &self,
+        database: &str,
+    ) -> Result<Option<(u64, [u8; 32])>, AnalysisError> {
+        let row = sqlx::query!(
+            "SELECT size, root FROM checksum_tree WHERE database = $1",
+            database
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        let unreadable = |what: &str| {
+            let why = format!("checksum_tree for {database}: {what}");
+            AnalysisError::Backend(sqlx::Error::Decode(why.into()))
+        };
+        row.map(|row| {
+            let size = u64::try_from(row.size).map_err(|_| unreadable("a negative size"))?;
+            let root = crate::util::unhex(&row.root)
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                .ok_or_else(|| unreadable("a root that is not 32 bytes of hex"))?;
+            Ok((size, root))
+        })
+        .transpose()
+    }
+
+    /// A smaller tree than the one kept leaves it: the tree only grows.
+    async fn write_checksum_tree(
+        &self,
+        database: &str,
+        (size, root): (u64, [u8; 32]),
+    ) -> Result<(), AnalysisError> {
+        let size = i64::try_from(size).unwrap_or(i64::MAX);
+        sqlx::query!(
+            r#"
+            INSERT INTO checksum_tree (database, size, root) VALUES ($1, $2, $3)
+            ON CONFLICT (database) DO UPDATE SET size = EXCLUDED.size, root = EXCLUDED.root,
+                kept = now()
+            WHERE checksum_tree.size < EXCLUDED.size
+            "#,
+            database,
+            size,
+            crate::util::hex(&root),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        Ok(())
+    }
+
+    /// The no-op update makes the row come back whether this call wrote it or another did.
+    async fn write_first_seen(
+        &self,
+        purl: &str,
+        filename: &str,
+    ) -> Result<Timestamp, AnalysisError> {
+        let seen = sqlx::query_scalar!(
+            r#"
+            INSERT INTO artifact_first_seen (purl, filename) VALUES ($1, $2)
+            ON CONFLICT (purl, filename) DO UPDATE SET purl = EXCLUDED.purl
+            RETURNING floor(EXTRACT(EPOCH FROM first_seen))::bigint AS "seen!"
+            "#,
+            purl,
+            filename,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        Timestamp::from_second(seen)
+            .map_err(|e| AnalysisError::Backend(sqlx::Error::Decode(Box::new(e))))
+    }
+
+    async fn read_first_seen(
+        &self,
+        purl: &str,
+        filename: &str,
+    ) -> Result<Option<Timestamp>, AnalysisError> {
+        let seen = sqlx::query_scalar!(
+            r#"
+            SELECT floor(EXTRACT(EPOCH FROM first_seen))::bigint AS "seen!"
+            FROM artifact_first_seen WHERE purl = $1 AND filename = $2
+            "#,
+            purl,
+            filename,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        seen.map(Timestamp::from_second)
+            .transpose()
+            .map_err(|e| AnalysisError::Backend(sqlx::Error::Decode(Box::new(e))))
+    }
+
     async fn write_claimed(&self, claim: &str, digest: &Sri) -> Result<(), AnalysisError> {
         sqlx::query!(
             r#"

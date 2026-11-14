@@ -3,7 +3,7 @@
 //!
 //! See docs/engineering_decisions/0092-detectors.md.
 
-use crate::analysis::detector::{self, Detection};
+use crate::analysis::detector::{self, Detection, guarddog};
 use crate::policy::SignalWeights;
 
 /// One rule a detector fired on a version.
@@ -39,16 +39,33 @@ pub fn score(signals: &[Signal], weights: &SignalWeights) -> u32 {
 }
 
 /// The signals `detections`, each a detector's name and what it found, give: one per rule
-/// that fired, in their order.
+/// that fired, in their order, then one per rule [`guarddog::error_rule`] gives the rules in
+/// its `errors`, with those rules as its detail.
 pub fn of_detections(detections: &[(String, Detection)]) -> Vec<Signal> {
     detections
         .iter()
         .flat_map(|(detector, detection)| {
-            detection.findings.iter().map(|finding| Signal {
+            let mut errored = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+            for error in &detection.errors {
+                errored
+                    .entry(guarddog::error_rule(detector, &error.rule))
+                    .or_default()
+                    .push(&error.rule);
+            }
+            let errored = errored.into_iter().map(|(rule, rules)| Signal {
                 detector: detector.clone(),
-                rule: finding.rule.clone(),
-                detail: finding.detail.clone(),
-            })
+                rule: rule.to_owned(),
+                detail: rules.join(", "),
+            });
+            detection
+                .findings
+                .iter()
+                .map(|finding| Signal {
+                    detector: detector.clone(),
+                    rule: finding.rule.clone(),
+                    detail: finding.detail.clone(),
+                })
+                .chain(errored)
         })
         .collect()
 }
@@ -189,10 +206,12 @@ mod tests {
                     detail: String::new(),
                 })
                 .collect(),
-            errors: vec![Finding {
-                rule: "e".to_owned(),
-                detail: "no dns".to_owned(),
-            }],
+            errors: ["e", "f"]
+                .map(|rule| Finding {
+                    rule: rule.to_owned(),
+                    detail: "no dns".to_owned(),
+                })
+                .to_vec(),
         };
         let detected = [
             (
@@ -200,26 +219,93 @@ mod tests {
                 fired(&["threat-process-hooks", "bundled_binary"]),
             ),
             ("guarddog".to_owned(), fired(&["bundled_binary"])),
-            ("metadata".to_owned(), fired(&["no_repository"])),
+            (
+                "metadata".to_owned(),
+                Detection {
+                    errors: Vec::new(),
+                    ..fired(&["no_repository"])
+                },
+            ),
         ];
-        let signals = of_detections(&detected);
+        let signals = of_detections(&detected[..2]);
         assert_eq!(
             signals.iter().map(ToString::to_string).collect::<Vec<_>>(),
             [
                 "guarddog: threat-process-hooks",
                 "guarddog: bundled_binary",
+                "guarddog: error",
                 "guarddog: bundled_binary",
-                "no repository: ",
+                "guarddog: error",
             ]
         );
-        assert_eq!(signals[0].key(), "guarddog.threat-process-hooks");
-        assert_eq!(signals[3].key(), "no_repository");
+        assert_eq!(signals[2].key(), "guarddog.error");
+        assert_eq!(signals[2].detail, "e, f", "the rules that could not run");
+        let quiet = Detection {
+            findings: Vec::new(),
+            errors: Vec::new(),
+        };
+        assert_eq!(
+            of_detections(&[("guarddog".to_owned(), quiet)]),
+            [],
+            "no error, no signal"
+        );
+        let signals = of_detections(&detected[2..]);
+        assert_eq!(signals[0].to_string(), "no repository: ");
+        assert_eq!(signals[0].key(), "no_repository");
+        let signals = of_detections(&detected);
         let weights = SignalWeights::of_pairs(&[("guarddog.threat-process-hooks", 4)]);
         assert_eq!(signals[0].weight(&weights), 4);
         assert_eq!(
             score(&signals, &weights),
-            6,
-            "4, then bundled_binary and no_repository once each at 1"
+            7,
+            "4, then bundled_binary, guarddog.error and no_repository once each at 1"
+        );
+    }
+
+    /// GuardDog's WHOIS rules that could not run fire `whois_error`, and its other rules
+    /// `error`. Another detector's rules of the same names fire `error`.
+    #[test]
+    fn a_whois_rule_that_could_not_run_is_a_signal_of_its_own() {
+        let errored = Detection {
+            findings: Vec::new(),
+            errors: [
+                "unclaimed_maintainer_email_domain",
+                "rules-all",
+                "potentially_compromised_email_domain",
+            ]
+            .map(|rule| Finding {
+                rule: rule.to_owned(),
+                detail: "timed out".to_owned(),
+            })
+            .to_vec(),
+        };
+        let signals = of_detections(&[
+            ("guarddog".to_owned(), errored.clone()),
+            ("other".to_owned(), errored),
+        ]);
+        assert_eq!(
+            signals
+                .iter()
+                .map(|s| (s.key(), s.detail.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("guarddog.error".to_owned(), "rules-all"),
+                (
+                    "guarddog.whois_error".to_owned(),
+                    "unclaimed_maintainer_email_domain, potentially_compromised_email_domain"
+                ),
+                (
+                    "other.error".to_owned(),
+                    "unclaimed_maintainer_email_domain, rules-all, \
+                     potentially_compromised_email_domain"
+                ),
+            ]
+        );
+        let whois_only = SignalWeights::of_pairs(&[("guarddog.whois_error", 0)]);
+        assert_eq!(
+            score(&signals[..2], &whois_only),
+            1,
+            "the WHOIS rules weigh 0"
         );
     }
 

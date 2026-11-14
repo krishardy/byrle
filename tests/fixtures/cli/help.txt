@@ -103,6 +103,7 @@ Proxy configuration, all through the environment:
   BYRLE_LOG_RETENTION_DAYS          days a rotated audit or account event log file is kept (default 365)
   BYRLE_DECISION_RETENTION_DAYS     days an artifact decision is kept in the analysis store (default 365)
   BYRLE_EXPIRY_CEILING_DAYS         how many days ahead a `packages` entry may be dated (default 90)
+  BYRLE_MAX_DIFF_VERSIONS           package versions a remote `policy diff` may send (default 10000)
   BYRLE_MAX_CONCURRENT_METADATA     metadata documents decoded at once (default 8)
   BYRLE_SPOOL_DIR                   directory an artifact is written to while it is
                                     analysed. Locked; spool files left in it are removed
@@ -112,6 +113,10 @@ Proxy configuration, all through the environment:
   BYRLE_MAX_TRAFFIC_CLIENTS         client names counted apart in a traffic window (default 256)
   BYRLE_WATCH_INTERVAL              seconds between checks of served packages for new versions to analyse
                                     before a client asks for them; 0 turns it off (default 900)
+  BYRLE_WATCH_MAX_VERSIONS          new versions of one package the watcher analyses in one pass, the highest
+                                    in version order; a client's request analyses any other (default 4)
+  BYRLE_MAX_INDEXES_PER_FILE        indexes asked, one at a time, for the project a file fetched by a path naming
+                                    none belongs to, when its name fits several: PyPI's foo-1.0-1.tar.gz (default 4)
   BYRLE_ALLOCATOR_PURGE_DELAY_MS    milliseconds the allocator keeps freed memory before returning it to the
                                     system; 0 returns it at once (default 0)
   BYRLE_SOURCE_ARCHIVES             host of the GitHub archives each artifact is compared with, the source

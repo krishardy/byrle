@@ -8,10 +8,16 @@ use super::{MAX_INDEX_BYTES, SIMPLE_JSON};
 use crate::ecosystem::Fetched;
 use crate::identity::PackageKey;
 
+/// The headers the PyPI index is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the PyPI index",
+    headers: &["accept", "accept-encoding"],
+};
+
 /// Fetches project indexes from one simple index.
 #[derive(Debug, Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     index: String,
     max_bytes: usize,
 }
@@ -48,13 +54,24 @@ impl std::fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
+impl From<crate::http::BodyError> for FetchError {
+    fn from(e: crate::http::BodyError) -> Self {
+        match e {
+            crate::http::BodyError::Transport(e) => Self::Transport(e),
+            crate::http::BodyError::TooLarge(limit) => {
+                Self::Undecodable(crate::http::DecodeError::TooLarge(limit))
+            }
+        }
+    }
+}
+
 impl Client {
     /// `index` is a base URL such as `https://pypi.org/simple`. A trailing slash is
     /// accepted and trimmed.
-    pub fn new(http: reqwest::Client, index: impl Into<String>) -> Self {
+    pub fn new(connection: crate::service::Connection, index: impl Into<String>) -> Self {
         let index = index.into();
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             index: index.trim_end_matches('/').to_owned(),
             max_bytes: MAX_INDEX_BYTES,
         }
@@ -105,7 +122,7 @@ impl Client {
             .get(reqwest::header::CONTENT_ENCODING)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let body = response.bytes().await.map_err(FetchError::Transport)?;
+        let body = crate::http::capped_body(response, self.max_bytes).await?;
         let decoded = crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes)
             .map_err(FetchError::Undecodable)?;
         match format {
@@ -119,6 +136,28 @@ impl Client {
 impl crate::ecosystem::Fetch for Client {
     fn metadata<'a>(&'a self, key: &'a PackageKey) -> futures_util::future::BoxFuture<'a, Fetched> {
         Box::pin(Client::metadata(self, key))
+    }
+
+    /// Each candidate's index is asked in turn. One the index answers 404 for is passed over;
+    /// any other failure ends the search, so an outage costs one request.
+    fn listing<'a>(
+        &'a self,
+        candidates: &'a [PackageKey],
+        filename: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, crate::ecosystem::Listing> {
+        Box::pin(async move {
+            for (asked, key) in candidates.iter().enumerate() {
+                match self.project(key.name()).await {
+                    Ok(project) if project.files.iter().any(|f| f.filename == filename) => {
+                        let metadata = normalize(&project).map_err(|e| e.to_string())?;
+                        return Ok(Some((asked, metadata)));
+                    }
+                    Ok(_) | Err(FetchError::Status(reqwest::StatusCode::NOT_FOUND)) => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            Ok(None)
+        })
     }
 
     /// The index's records carry each file's `upload-time`: nothing more is asked.
@@ -154,11 +193,29 @@ mod tests {
     }
 
     fn client(base: &str) -> Client {
-        Client::new(reqwest::Client::new(), base)
+        Client::new(crate::service::Connection::default(), base)
     }
 
-    /// The normalised name in the URL, the `Accept` header, the body and the records.
-    /// The name the document gives wins over the one asked for.
+    /// An index that lists the file but names no usable project is an error, not a place.
+    #[tokio::test]
+    async fn a_listing_index_that_does_not_normalize_is_an_error() {
+        let base = serve(Router::new().route(
+            "/x/",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, SIMPLE_JSON)],
+                    r#"{"name":"a/b","files":[{"filename":"x-1.0-1.tar.gz","url":"https://f/x","hashes":{}}]}"#,
+                )
+            }),
+        ))
+        .await;
+        let x = PackageKey::from_registry_name(crate::identity::Ecosystem::PyPI, "x").unwrap();
+        let listed = crate::ecosystem::Fetch::listing(&client(&base), &[x], "x-1.0-1.tar.gz").await;
+        assert!(listed.expect_err("unusable").contains("a/b"));
+    }
+
+    /// The normalised name in the URL, the `Accept` header, the body and the records. The
+    /// document's name wins over the one asked for; its sdists, of another project, are skipped.
     #[tokio::test]
     async fn asks_for_json_under_the_normalised_name_and_reads_the_index() {
         let body = String::from_utf8(fixture()).expect("the fixture is utf-8");
@@ -180,7 +237,7 @@ mod tests {
             .await
             .expect("the index reads");
         assert_eq!(project.name, "requests");
-        assert_eq!(project.versions().len(), 3);
+        assert_eq!(project.versions().len(), 2);
     }
 
     /// A PEP 503 page is read, with its relative hrefs resolved against the page's own
@@ -332,8 +389,8 @@ mod tests {
                     "/nameless/",
                     get(move || {
                         json(
-                            br#"{"name": "", "files": [{"filename": "x-1.0.tar.gz",
-                            "url": "https://f/x-1.0.tar.gz", "hashes": {}}]}"#,
+                            br#"{"name": "", "files": [{"filename": "x-1.0-py3-none-any.whl",
+                            "url": "https://f/x-1.0-py3-none-any.whl", "hashes": {}}]}"#,
                         )
                     }),
                 ),

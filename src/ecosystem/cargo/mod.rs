@@ -53,18 +53,21 @@ pub const REGISTRY: Registry = Registry {
     versions: VersionOrder::SemVer,
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
+    selector_name: paths::selector_name,
+    intel_alias: |_| None,
+    filename_projects: |_| Vec::new(),
     published_name: None,
     upstream: crate::env::UPSTREAM_CARGO,
     upstream_url,
     read: |reading| {
         let crate::route::DocumentKind::IndexLines = reading.kind else {
-            return None;
+            return Ok(None);
         };
-        Some(Box::new(read_index(
+        Ok(Some(Box::new(read_index(
             reading.decoded,
             reading.store,
             reading.path,
-        )))
+        ))))
     },
     reader: |filename| {
         filename.ends_with(".crate").then_some(

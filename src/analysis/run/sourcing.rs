@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use super::{Analyser, InFlight};
 use crate::analysis::ReadError;
-use crate::analysis::source::{self, Layout, MAX_SOURCE_BYTES, Repo, Sourced, Tree};
+use crate::analysis::source::{self, CEILING, Layout, Repo, Sourced, Tree};
 use crate::identity::Ecosystem;
 use crate::integrity::Sri;
 use crate::record::PackageRecord;
@@ -242,7 +242,7 @@ impl Analyser {
             return Some(cached);
         }
         let response = self
-            .client
+            .archives
             .get(url)
             .send()
             .await
@@ -254,12 +254,7 @@ impl Analyser {
             warn!(url.full = %url, http.response.status_code = response.status().as_u16(), "source comparison: not answered, nothing stored");
             return None;
         } else {
-            let claimed = response.content_length();
-            let read = match self
-                .spool
-                .write(response.bytes_stream(), claimed, |_| {})
-                .await
-            {
+            let read = match self.spool.write(response.bytes_stream(), |_| {}).await {
                 Ok(spooled) => tree_of(spooled, Layout::Tar).await.map(|read| match read {
                     Ok(tree) => Archive::Tree(Arc::new(tree)),
                     Err(why) => Archive::Unreadable(format!("the source archive: {why}")),
@@ -311,12 +306,22 @@ impl Analyser {
 /// The spooled archive read as a [`Tree`], or why it could not be.
 /// Returns `None` when the spool file could not be opened.
 async fn tree_of(spooled: Spooled, layout: Layout) -> Option<Result<Tree, String>> {
-    let read = tokio::task::spawn_blocking(move || {
-        let file = std::io::BufReader::new(spooled.reader()?);
-        Ok(match layout {
-            Layout::Tar => source::tree(&mut { file }, MAX_SOURCE_BYTES),
-            Layout::Wheel => source::wheel_tree(file, MAX_SOURCE_BYTES),
-        })
+    read_tree(spooled, move |file| match layout {
+        Layout::Tar => source::tree(file, CEILING),
+        Layout::Wheel => source::wheel_tree(file, CEILING),
+    })
+    .await
+}
+
+/// What `read` makes of the spooled file, on a blocking thread whose reads stop when this
+/// future is dropped. Returns `None` when the spool file could not be opened.
+async fn read_tree(
+    spooled: Spooled,
+    read: impl FnOnce(&mut dyn crate::ecosystem::Source) -> Result<Tree, ReadError> + Send + 'static,
+) -> Option<Result<Tree, String>> {
+    let read = crate::util::blocking::run(move |stop| {
+        let mut file = std::io::BufReader::new(stop.reading(spooled.reader()?));
+        Ok(read(&mut file))
     })
     .await
     .map_err(std::io::Error::other)
@@ -623,7 +628,6 @@ mod tests {
             .spool
             .write(
                 futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from_static(b"x"))]),
-                None,
                 |_| {},
             )
             .await
@@ -635,6 +639,34 @@ mod tests {
             }
         }
         assert!(tree_of(spooled, Layout::Tar).await.is_none());
+    }
+
+    /// Reading a tree stops once the comparison awaiting it is dropped at its deadline.
+    #[tokio::test]
+    async fn a_tree_past_its_deadline_stops_reading() {
+        static SAID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let analyser = comparing("source-endless", "http://x", 1 << 20);
+        let spooled = analyser
+            .spool
+            .write(
+                futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from_static(b"x"))]),
+                |_| {},
+            )
+            .await
+            .expect("spools");
+        let reading = read_tree(spooled, |file| {
+            crate::util::blocking::testing::read_endlessly(file, &SAID);
+            Err(ReadError::NothingToRead)
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), reading)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            crate::util::blocking::testing::stopped(&SAID).await,
+            crate::util::blocking::STOPPED
+        );
     }
 
     /// A wheel is compared with the repository its own metadata names, and one naming none,

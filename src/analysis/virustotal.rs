@@ -13,6 +13,18 @@ use serde::Deserialize;
 /// The API's base URL, unless [`crate::env::VIRUSTOTAL_URL`] names another.
 pub const API: &str = "https://www.virustotal.com/api/v3";
 
+/// The header VirusTotal reads its key from.
+pub const KEY: &str = "x-apikey";
+
+/// [`KEY`], as a header's name.
+pub const KEY_HEADER: reqwest::header::HeaderName = reqwest::header::HeaderName::from_static(KEY);
+
+/// The headers VirusTotal is sent: its key, and an upload's type and length.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "VirusTotal",
+    headers: &[KEY, "content-type", "content-length"],
+};
+
 /// The largest file `POST /files` takes; a larger one goes through `/files/upload_url`.
 pub const DIRECT_UPLOAD_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -180,16 +192,17 @@ struct AnalysisAttributes {
 
 /// One request at a time to VirusTotal's API. The caller asks the [`Limiter`] first.
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     base: String,
     key: String,
 }
 
 impl Client {
-    /// A client for the API at `settings.base` with `settings.key`, sending through `http`.
-    pub fn new(http: reqwest::Client, settings: &Settings) -> Self {
+    /// A client for the API at `settings.base` with `settings.key`, connecting as `connection`
+    /// says.
+    pub fn new(connection: &crate::service::Connection, settings: &Settings) -> Self {
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, connection),
             base: settings.base.trim_end_matches('/').to_owned(),
             key: settings.key.clone(),
         }
@@ -234,11 +247,17 @@ impl Client {
         let body = futures_util::stream::iter([Ok(Bytes::from(head))])
             .chain(file_stream(tokio::fs::File::from_std(file)))
             .chain(futures_util::stream::iter([Ok(Bytes::from(tail))]));
+        if let Some(to) = to
+            && !same_origin(to, &self.base)
+        {
+            let why = "the upload URL it answered is not on the API's host";
+            return Err(Failure::Other(why.to_owned()));
+        }
         let default = format!("{}/files", self.base);
         let response = self
             .http
             .post(to.unwrap_or(&default))
-            .header("x-apikey", &self.key)
+            .header(KEY_HEADER, &self.key)
             .header(
                 reqwest::header::CONTENT_TYPE,
                 format!("multipart/form-data; boundary={boundary}"),
@@ -264,7 +283,7 @@ impl Client {
     async fn get(&self, url: &str) -> Result<reqwest::Response, Failure> {
         self.http
             .get(url)
-            .header("x-apikey", &self.key)
+            .header(KEY_HEADER, &self.key)
             .send()
             .await
             .map_err(sent)
@@ -293,6 +312,12 @@ fn random() -> [u8; 16] {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("the operating system supplies random bytes");
     bytes
+}
+
+/// Whether `url` has `base`'s scheme, host and port, where the key may be sent.
+fn same_origin(url: &str, base: &str) -> bool {
+    let origin = |url| reqwest::Url::parse(url).map(|url| url.origin());
+    matches!((origin(url), origin(base)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// A request that could not be sent, without its URL, which holds no secret but is long.
@@ -415,7 +440,10 @@ pub(crate) mod tests {
     }
 
     fn client(addr: std::net::SocketAddr) -> Client {
-        Client::new(reqwest::Client::new(), &settings(format!("http://{addr}/")))
+        Client::new(
+            &crate::service::Connection::default(),
+            &settings(format!("http://{addr}/")),
+        )
     }
 
     /// A file object whose last analysis counted these.
@@ -588,6 +616,13 @@ pub(crate) mod tests {
             request.contains("\r\n\r\nthe artifact bytes\r\n--byrle-"),
             "{request}"
         );
+
+        let elsewhere = client(addr)
+            .upload(Some("http://elsewhere.test/upload"), open(), 18, "a.tgz")
+            .await;
+        let why = "the upload URL it answered is not on the API's host";
+        assert_eq!(elsewhere, Err(Failure::Other(why.to_owned())));
+        assert!(!same_origin("not a url", "http://a.test"));
 
         let (addr, requests) = recorded(vec![Answer::body(UPLOADED.to_vec())]).await;
         let to = format!("http://{addr}/upload-here");

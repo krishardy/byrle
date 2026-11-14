@@ -19,29 +19,33 @@ pub struct Index {
     pub metadata: Option<Box<PackageMetadata>>,
 }
 
-/// No project name for the parsers: every message here names the project by its path.
-const UNNAMED: &str = "";
+/// The project `path` asks for, which pip splits each sdist's filename by. Empty when the
+/// path names none, and the parsers then use the index's own name.
+fn asked(path: &str) -> String {
+    match super::paths::classify_path(path) {
+        crate::route::RequestTarget::Metadata(key) => key.name().to_owned(),
+        _ => String::new(),
+    }
+}
 
 /// Parse a forwarded simple index and keep its records.
 ///
-/// `None` when it did not parse: the body is then forwarded as it arrived.
+/// `Err` says why it did not parse.
 pub fn read_index(
     decoded: &[u8],
     format: IndexFormat,
     page: &str,
     store: Keeping<'_>,
     path: &str,
-) -> Option<Index> {
+) -> Result<Index, String> {
+    let asked = asked(path);
     let read = match format {
-        IndexFormat::Json => parse(UNNAMED, decoded),
-        IndexFormat::Html => super::html::parse(UNNAMED, page, decoded),
+        IndexFormat::Json => parse(&asked, decoded),
+        IndexFormat::Html => super::html::parse(&asked, page, decoded),
     };
     let project = match read {
         Ok(project) => project,
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: simple index did not parse");
-            return None;
-        }
+        Err(e) => return Err(format!("the simple index did not parse: {e}")),
     };
 
     let metadata = match normalize(&project) {
@@ -78,7 +82,7 @@ pub fn read_index(
             None
         }
     };
-    Some(Index {
+    Ok(Index {
         project,
         format,
         metadata,
@@ -99,7 +103,10 @@ mod tests {
         std::sync::Mutex::new(crate::store::RecordStore::new(1000))
     }
 
-    fn read(store: &std::sync::Mutex<crate::store::RecordStore>, decoded: &[u8]) -> Option<Index> {
+    fn read(
+        store: &std::sync::Mutex<crate::store::RecordStore>,
+        decoded: &[u8],
+    ) -> Result<Index, String> {
         read_index(
             decoded,
             IndexFormat::Json,
@@ -154,21 +161,45 @@ mod tests {
     #[test]
     fn an_index_that_does_not_normalize_stores_nothing() {
         let store = store();
-        assert!(read(&store, b"not json").is_none());
+        let unparsed = read(&store, b"not json").err().unwrap_or_default();
+        assert!(unparsed.contains("did not parse"), "{unparsed}");
         assert!(
             read(
                 &store,
                 br#"{"name":"x","files":[{"filename":"notadistribution.txt","url":"https://e/a","hashes":{}}]}"#,
             )
-            .is_none()
+            .is_err()
         );
         let unreadable = read(
             &store,
-            br#"{"name":"a/b/c","files":[{"filename":"x-1.0.tar.gz","url":"https://e/a","hashes":{}}]}"#,
+            br#"{"name":"a/b/c","files":[{"filename":"x-1.0-py3-none-any.whl","url":"https://e/a","hashes":{}}]}"#,
         )
         .expect("it parses");
         assert!(unreadable.metadata.is_none());
         assert_eq!(store.lock().unwrap().records(), 0);
+    }
+
+    /// An sdist is split after the project the request path asks for, as pip splits it, and
+    /// after the index's own name when the path names none.
+    #[test]
+    fn an_sdist_is_split_after_the_project_asked_for() {
+        let index = br#"{"name":"foo","files":[
+            {"filename":"foo-1.0-1.tar.gz","url":"https://e/a","hashes":{}}]}"#;
+        for (path, version) in [("/pypi/simple/foo-1-0/", "1"), ("/simple/foo/", "1.0-1")] {
+            let store = store();
+            let read = read_index(
+                index,
+                IndexFormat::Json,
+                "https://pypi.org/simple/foo/",
+                Keeping {
+                    store: &store,
+                    at: AT,
+                },
+                path,
+            )
+            .expect("it parses");
+            assert_eq!(read.project.versions(), [version], "{path}");
+        }
     }
 
     /// A PEP 503 page is read against the URL it came from.
@@ -188,5 +219,111 @@ mod tests {
         )
         .expect("it parses");
         assert_eq!(store.lock().unwrap().records(), 1);
+    }
+
+    /// Real simple indexes parse, normalise and are served without an `Err`, which answers 502.
+    /// Ignored; see docs/engineering_decisions/0046-pypi-simple-index.md for the corpus.
+    #[cfg(not(coverage))]
+    #[test]
+    #[ignore = "needs a corpus directory of simple indexes; see the doc comment"]
+    fn real_indexes_are_served_without_skipping_anything() {
+        let dir = crate::env::process()
+            .pypi_corpus()
+            .unwrap_or_else(|e| panic!("{e}"))
+            .unwrap_or_else(|| panic!("set {} to a corpus directory", crate::env::PYPI_CORPUS));
+        let origins = crate::origin::OriginPolicy::new(
+            crate::origin::ReachableOrigins::new(std::iter::empty(), std::iter::empty())
+                .expect("the table's own origins are valid"),
+            std::iter::empty(),
+        )
+        .expect("valid origins");
+        let (mut indexes, mut versions, mut files) = (0usize, 0usize, 0usize);
+        let mut failures = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("corpus directory should be readable") {
+            let path = entry.expect("readable entry").path();
+            let format = match path.extension().and_then(|e| e.to_str()) {
+                Some("json") => IndexFormat::Json,
+                Some("html") => IndexFormat::Html,
+                _ => continue,
+            };
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let body = std::fs::read(&path).expect("readable index");
+            let store = store();
+            let index = match read_index(
+                &body,
+                format,
+                &format!("https://pypi.org/simple/{stem}/"),
+                Keeping {
+                    store: &store,
+                    at: AT,
+                },
+                &format!("/pypi/simple/{stem}/"),
+            ) {
+                Ok(index) => index,
+                Err(why) => {
+                    failures.push(format!("{}: would answer 502: {why}", path.display()));
+                    continue;
+                }
+            };
+            indexes += 1;
+            let Some(metadata) = &index.metadata else {
+                failures.push(format!("{}: did not normalize", path.display()));
+                continue;
+            };
+            versions += metadata.records.len();
+            files += index.project.files.len();
+            for skip in &metadata.skipped {
+                let (version, reason) = (&skip.version, &skip.reason);
+                failures.push(format!("{}: {version} skipped: {reason}", path.display()));
+            }
+            let latest = metadata
+                .records
+                .last()
+                .map(|r| r.package.version().to_owned());
+            let refusals: [std::collections::HashSet<String>; 2] = [
+                std::collections::HashSet::new(),
+                latest.into_iter().collect(),
+            ];
+            for refused_by_policy in refusals {
+                let served = super::super::rewrite::rewrite_index(super::super::rewrite::Rewrite {
+                    decoded: &body,
+                    format,
+                    project: &index.project,
+                    origins: &origins,
+                    base: Some("http://127.0.0.1:8080/pypi"),
+                    refused_by_policy: &refused_by_policy,
+                    refused_files: &[],
+                    refuse_unservable: true,
+                    path: "/pypi/simple/corpus/",
+                });
+                match served {
+                    Err(why) => {
+                        failures.push(format!("{}: would answer 502: {why}", path.display()));
+                    }
+                    Ok(Some(out)) => {
+                        let on_origin = |body: &[u8]| {
+                            String::from_utf8_lossy(body)
+                                .matches(super::super::FILES)
+                                .count()
+                        };
+                        let read = index.project.files.iter();
+                        let read = read.filter(|file| file.url.starts_with(super::super::FILES));
+                        let unread = on_origin(&body) - read.count();
+                        let left = on_origin(&out).saturating_sub(unread);
+                        if left > 0 {
+                            let at = path.display();
+                            failures.push(format!("{at}: {left} file URLs left on the origin"));
+                        }
+                    }
+                    Ok(_) => {}
+                }
+            }
+        }
+        println!(
+            "{}: served {indexes} indexes, {versions} versions, {files} files",
+            dir.display()
+        );
+        assert!(indexes > 0, "corpus at {} held no indexes", dir.display());
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

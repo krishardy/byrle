@@ -6,8 +6,17 @@ use std::sync::{Arc, Mutex};
 
 use crate::util::lru::Lru;
 
+/// The headers the key servers is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the key servers",
+    headers: &[],
+};
+
 /// The key servers asked, in order; keyserver.ubuntu.com held 12 of 93 keys the first lacked.
 pub const SERVERS: [&str; 2] = ["https://keys.openpgp.org", "https://keyserver.ubuntu.com"];
+
+/// The most read of a server's copy of a key; 38DBBDC86092693E's was 135,482 bytes on Ubuntu's.
+pub const MAX_KEY_BYTES: usize = 1024 * 1024;
 
 /// Keys kept, by the fingerprint or key id a signature named them by.
 pub const MAX_KEYS: usize = 4096;
@@ -15,7 +24,7 @@ pub const MAX_KEYS: usize = 4096;
 /// Asks key servers for keys, keeping what each answered.
 #[derive(Clone)]
 pub struct KeyServers {
-    http: reqwest::Client,
+    http: crate::service::Service,
     servers: Vec<String>,
     held: Arc<Mutex<Lru<String, Vec<String>>>>,
 }
@@ -30,14 +39,14 @@ impl std::fmt::Debug for KeyServers {
 
 impl KeyServers {
     /// The servers in [`SERVERS`].
-    pub fn new(http: reqwest::Client) -> Self {
-        Self::at(http, &SERVERS)
+    pub fn new(connection: crate::service::Connection) -> Self {
+        Self::at(connection, &SERVERS)
     }
 
     /// The servers at `servers`, base URLs, asked in that order.
-    pub fn at(http: reqwest::Client, servers: &[&str]) -> Self {
+    pub fn at(connection: crate::service::Connection, servers: &[&str]) -> Self {
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             servers: servers
                 .iter()
                 .map(|s| s.trim_end_matches('/').to_owned())
@@ -82,11 +91,14 @@ impl KeyServers {
         match response.status() {
             reqwest::StatusCode::NOT_FOUND => Ok(None),
             status if !status.is_success() => Err(format!("{server} answered {status}")),
-            _ => response
-                .text()
-                .await
-                .map(Some)
-                .map_err(|e| format!("{server} could not be read: {e}")),
+            _ => match crate::http::capped_body(response, MAX_KEY_BYTES).await {
+                Ok(body) => Ok(Some(String::from_utf8_lossy(&body).into_owned())),
+                Err(crate::http::BodyError::TooLarge(limit)) => {
+                    tracing::warn!(byrle.signature.key = %issuer, server.address = %server, "the key server's copy is over {limit} bytes; it is not used");
+                    Ok(None)
+                }
+                Err(e) => Err(format!("{server} could not be read: {e}")),
+            },
         }
     }
 }
@@ -103,7 +115,7 @@ mod tests {
         let (first, asked) = recorded(vec![Answer::Status(404)]).await;
         let (second, _) = recorded(vec![Answer::body("KEY")]).await;
         let servers = KeyServers::at(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &[&format!("http://{first}/"), &format!("http://{second}")],
         );
         for _ in 0..2 {
@@ -118,12 +130,33 @@ mod tests {
         assert!(format!("{servers:?}").contains(&first.to_string()));
     }
 
+    /// A copy over [`MAX_KEY_BYTES`] is not used, and the other server's is.
+    #[tokio::test]
+    async fn a_copy_over_the_limit_is_not_used() {
+        let (first, _) = recorded(vec![Answer::Chunked(vec![b'k'; MAX_KEY_BYTES + 1])]).await;
+        let (second, _) = recorded(vec![Answer::body("KEY")]).await;
+        let servers = KeyServers::at(
+            crate::service::Connection::default(),
+            &[&format!("http://{first}"), &format!("http://{second}")],
+        );
+        assert_eq!(servers.copies("ABCD").await.unwrap(), ["KEY"]);
+        let (at, _) = recorded(vec![Answer::Chunked(vec![b'k'; MAX_KEY_BYTES])]).await;
+        let whole = KeyServers::at(
+            crate::service::Connection::default(),
+            &[&format!("http://{at}")],
+        );
+        assert_eq!(whole.copies("ABCD").await.unwrap()[0].len(), MAX_KEY_BYTES);
+    }
+
     /// A key no server holds is no copy, and is asked again; a server that cannot answer
     /// is an error.
     #[tokio::test]
     async fn a_key_no_server_holds_is_none_and_a_server_that_fails_is_an_error() {
         let addr = scripted(vec![Answer::Status(404)]).await;
-        let none = KeyServers::at(reqwest::Client::new(), &[&format!("http://{addr}")]);
+        let none = KeyServers::at(
+            crate::service::Connection::default(),
+            &[&format!("http://{addr}")],
+        );
         assert!(none.copies("AB").await.unwrap().is_empty());
         for (answer, said) in [
             (Answer::Status(500), "answered 500"),
@@ -131,10 +164,16 @@ mod tests {
             (Answer::cut_short(), "could not be read"),
         ] {
             let addr = scripted(vec![answer]).await;
-            let failing = KeyServers::at(reqwest::Client::new(), &[&format!("http://{addr}")]);
+            let failing = KeyServers::at(
+                crate::service::Connection::default(),
+                &[&format!("http://{addr}")],
+            );
             let error = failing.copies("AB").await.unwrap_err();
             assert!(error.contains(said), "{error}");
         }
-        assert_eq!(KeyServers::new(reqwest::Client::new()).servers, SERVERS);
+        assert_eq!(
+            KeyServers::new(crate::service::Connection::default()).servers,
+            SERVERS
+        );
     }
 }

@@ -41,6 +41,14 @@ elsewhere; the salt comes from `getrandom` 0.3, which issues proxy tokens too.
 | `BYRLE_LOGIN_FAILURES_PER_ACCOUNT` | 5 | 1 or more |
 | `BYRLE_LOGIN_FAILURES_PER_ADDRESS` | 20 | 1 or more |
 
+Failures are counted in this process. An account's are counted in one of 65,536 buckets,
+chosen by hashing its name under a key random to the process, which nothing evicts: names
+sharing a bucket share its count. Addresses' are kept apart, for the 10,000 addresses that
+failed most recently. Before 2026-11-05 both shared those 10,000 entries, and failures from
+500 IPv6 /64s, 20 each, evicted an account's count. To push one account's bucket over its
+limit, an attacker who cannot see the key must land 5 failures in it within the window:
+about 327,000 failures, spread over 16,000 addresses at 20 each.
+
 `byrle account password` reads the first three, so the command line and the console make
 hashes alike. A value outside its range stops the proxy at startup, and the command with
 exit 2. Changing the Argon2 cost leaves earlier hashes working; a password is rehashed only
@@ -77,8 +85,8 @@ form the proxy accepts ([admin-plan](../admin-plan.md) §4.1). A 401 has no
 | Session | 8 hours from login, no idle limit. Its id is 32 random bytes; the `session` table keeps its SHA-256 |
 | Cookie | `byrle_session=<id>; Path=<console path>; Max-Age=28800; HttpOnly; Secure; SameSite=Strict` |
 | CSRF | a cookie request other than GET or HEAD carries `X-Byrle-CSRF`, the SHA-256 of `byrle-csrf\0` and the session id, which login returns. A token request needs none |
-| Origin | a `POST` with an `Origin` other than `BYRLE_CONSOLE_URL`'s is 403, login included. A request with no `Origin`, such as curl's, is let through |
-| Failures | 5 per account and 20 per address in 15 minutes; past either, a login is 429 without its password being checked. An IPv6 address counts by its /64. The counts are per process, so instances sharing a database each count their own |
+| Origin | any request but a `GET` or `HEAD` with an `Origin` other than `BYRLE_CONSOLE_URL`'s is 403, whatever its credential: a session, a token or Basic, which a browser holds and sends on another site's `POST`. `routes::guarded` checks it for every route, login included, since 2026-11-05; before, only login and logout did. A request with no `Origin`, such as curl's, is let through |
+| Failures | 5 per account and 20 per address in 15 minutes; past either, a login is 429 without its password being checked. A login is counted as a failure when it is let in, before its password is checked, and taken back if it succeeds or the store does not answer, so logins sent at once cannot each be checked. An IPv6 address counts by its /64. The counts are per process, so instances sharing a database each count their own |
 | Hashing | 2 passwords at once, each on a blocking thread. An account that is unknown, has no password, or a name that is not a name is checked against a hash of a random string, so it takes as long |
 | Address | the peer's, or the last `X-Forwarded-For` entry on a request carrying `BYRLE_RP_KEY` ([fronting-tls](../fronting-tls.md)) |
 

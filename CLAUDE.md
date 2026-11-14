@@ -13,6 +13,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * docs/postgres-review.md - Postgres schema and query performance, measured, with proposed changes
 * docs/break-glass.md - Installing when the proxy is down, and releasing a refused package
 * docs/threat-model.md - What byrle defends against, what it trusts, and its bypasses
+* docs/security-review.md - A review of each logic-flow step, each finding and the commit that resolved it
 * docs/policy-reference.md - Every policy key, its default, and which way it loosens
 * docs/admin-plan.md - Stage 4.9 plan: admin console, its APIs and web interface
 * docs/runbook.md - A team running byrle in blocking mode, from a release
@@ -75,6 +76,10 @@ These apply to chat messages. The documentation rules above apply here too.
 | "Stage 2 has 74 open, Stage 3 has 11, Stage 5 has 29..." | a stage/count table |
 | "OSSF is Apache-2.0 with no attribution, GHSA is CC-BY-4.0 requiring it..." | a source/licence/attribution table |
 | "`Match` originates findings, `Enrich` only adds to them..." | a capability/meaning table |
+
+## Git Branching
+
+* When creating a branch, major work should be done in a feature `feat/<name>` branch. Minor chores should be done in a chore `chore/<name>` branch.
 
 ## GitHub
 

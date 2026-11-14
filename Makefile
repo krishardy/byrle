@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup install-shellcheck install-java install-gradle ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
@@ -7,6 +7,7 @@ help:
 	@echo "  clean          remove target/, the spike's target/, dist/ and __pycache__"
 	@echo "  lint           rustfmt, clippy and shellcheck, warnings as errors"
 	@echo "  semgrep        pattern-based static analysis"
+	@echo "  opengrep       semgrep's rules run by opengrep, not part of sast"
 	@echo "  trufflehog     credential scanning (working tree and git history)"
 	@echo "  trivy          container/Containerfile misconfigurations and dev image vulnerabilities"
 	@echo "  sast           semgrep + trufflehog + trivy"
@@ -42,7 +43,10 @@ help:
 	@echo "  duplicates     repeated code blocks and string literals (docs/duplication-catalogue.md)"
 	@echo "  commit-fixup   list unpushed commits that credit Claude, are unsigned or not signed off;"
 	@echo "                 FIX=1 [KEY=<id>] rewrites them; BASE=<commit>, ALL=1, CHECKS=<names>"
+	@echo "  pr-signatures  PR=<number> [REPO=<owner>/<name>]: each commit in a pull request has a"
+	@echo "                 signature GitHub verified"
 	@echo "  install-shellcheck  the pinned shellcheck into ~/.local/bin, or SHELLCHECK_DEST"
+	@echo "  install-opengrep    the pinned opengrep into ~/.local/bin, or OPENGREP_DEST"
 	@echo "  install-java   the pinned JDK and Maven into ~/.local, linked in ~/.local/bin"
 	@echo "  install-gradle the pinned Gradle into ~/.local, linked in ~/.local/bin"
 	@echo "  ci-setup       the tools CI job JOB=lint|test|sqlx needs"
@@ -76,11 +80,14 @@ lint:
 semgrep:
 	@scripts/make/semgrep.sh
 
+opengrep:
+	@scripts/make/opengrep.sh
+
 trufflehog:
 	@TRUFFLEHOG_REPO_ROOT='$(TRUFFLEHOG_REPO_ROOT)' scripts/make/trufflehog.sh
 
 # Prerequisites, so each scanner is runnable on its own. Make stops at the first
-# failing prerequisite; use `make -k sast` to run both regardless.
+# failing prerequisite; use `make -k sast` to run all of them regardless.
 trivy:
 	@scripts/make/trivy.sh
 
@@ -179,8 +186,14 @@ duplicates:
 commit-fixup:
 	@FIX="$(FIX)" KEY="$(KEY)" BASE="$(BASE)" ALL="$(ALL)" CHECKS="$(CHECKS)" scripts/make/commit-fixup.sh
 
+pr-signatures:
+	@PR="$(PR)" REPO="$(REPO)" scripts/make/pr-signatures.py
+
 install-shellcheck:
 	@scripts/make/install-shellcheck.sh
+
+install-opengrep:
+	@scripts/make/install-opengrep.sh
 
 install-java:
 	@scripts/make/install-java.sh

@@ -8,10 +8,16 @@ use super::error::{FetchError, NormalizeError};
 use super::normalize::{normalize_packument, parse_publish_times};
 use super::{ABBREVIATED_ACCEPT, FULL_ACCEPT};
 
+/// The headers the npm registry is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the npm registry",
+    headers: &["accept", "accept-encoding"],
+};
+
 /// Fetches packuments from one registry, on the proxy's own behalf.
 #[derive(Debug, Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     registry: String,
     /// Ceiling on what decompression may produce, as for the proxy's own bodies.
     max_bytes: usize,
@@ -20,10 +26,10 @@ pub struct Client {
 impl Client {
     /// `registry` is a base URL such as `https://registry.npmjs.org`. A trailing slash
     /// is accepted and trimmed.
-    pub fn new(http: reqwest::Client, registry: impl Into<String>) -> Self {
+    pub fn new(connection: crate::service::Connection, registry: impl Into<String>) -> Self {
         let registry = registry.into();
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             registry: registry.trim_end_matches('/').to_owned(),
             max_bytes: crate::env::DEFAULT_MAX_METADATA_BYTES,
         }
@@ -103,7 +109,7 @@ impl Client {
             .get(reqwest::header::CONTENT_ENCODING)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let body = response.bytes().await.map_err(FetchError::Transport)?;
+        let body = crate::http::capped_body(response, self.max_bytes).await?;
         crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes)
             .map_err(FetchError::Undecodable)
     }
@@ -152,7 +158,10 @@ mod tests {
     /// because the registry tolerates it.
     #[test]
     fn packument_urls_encode_the_scope_separator() {
-        let client = Client::new(reqwest::Client::new(), "https://registry.npmjs.org/");
+        let client = Client::new(
+            crate::service::Connection::default(),
+            "https://registry.npmjs.org/",
+        );
         let key = |n: &str| PackageKey::from_registry_name(Ecosystem::Npm, n).unwrap();
 
         assert_eq!(
@@ -171,7 +180,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits registry.npmjs.org"]
     async fn live_registry_fetch_returns_both_documents() {
-        let client = Client::new(reqwest::Client::new(), DEFAULT_REGISTRY);
+        let client = Client::new(crate::service::Connection::default(), DEFAULT_REGISTRY);
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "@babel/traverse").unwrap();
 
         let abbrev = client
@@ -238,7 +247,10 @@ mod tests {
         );
         tokio::spawn(axum::serve(listener, router).into_future());
 
-        let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
+        let client = Client::new(
+            crate::service::Connection::default(),
+            format!("http://{addr}"),
+        );
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         let packument = client
             .packument(&key, DocumentDetail::Abbreviated)
@@ -274,7 +286,10 @@ mod tests {
         );
         tokio::spawn(axum::serve(listener, router).into_future());
 
-        let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
+        let client = Client::new(
+            crate::service::Connection::default(),
+            format!("http://{addr}"),
+        );
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         assert!(
             client
@@ -310,8 +325,11 @@ mod tests {
         );
         tokio::spawn(axum::serve(listener, router).into_future());
 
-        let client =
-            Client::new(reqwest::Client::new(), format!("http://{addr}")).with_max_bytes(16);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            format!("http://{addr}"),
+        )
+        .with_max_bytes(16);
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         let result = client.packument(&key, DocumentDetail::Abbreviated).await;
         assert!(
@@ -329,7 +347,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits registry.npmjs.org"]
     async fn live_missing_package_is_a_status_error() {
-        let client = Client::new(reqwest::Client::new(), DEFAULT_REGISTRY);
+        let client = Client::new(crate::service::Connection::default(), DEFAULT_REGISTRY);
         let key = PackageKey::from_registry_name(
             Ecosystem::Npm,
             "byrle-package-that-should-never-exist-9f3a",
@@ -406,7 +424,7 @@ mod tests {
         ))
         .await;
 
-        let client = Client::new(reqwest::Client::new(), base);
+        let client = Client::new(crate::service::Connection::default(), base);
         let p = client
             .packument(&key("lodash"), DocumentDetail::Abbreviated)
             .await
@@ -436,7 +454,7 @@ mod tests {
         ))
         .await;
 
-        let times = Client::new(reqwest::Client::new(), base)
+        let times = Client::new(crate::service::Connection::default(), base)
             .full(&key("lodash"))
             .await
             .expect("server answered")
@@ -459,7 +477,7 @@ mod tests {
             }),
         ))
         .await;
-        let full = Client::new(reqwest::Client::new(), base)
+        let full = Client::new(crate::service::Connection::default(), base)
             .full(&key("lodash"))
             .await
             .expect("server answered")
@@ -476,7 +494,7 @@ mod tests {
             serve(Router::new().route("/lodash", get(|| async { (StatusCode::FORBIDDEN, "no") })))
                 .await;
 
-        let error = Client::new(reqwest::Client::new(), base)
+        let error = Client::new(crate::service::Connection::default(), base)
             .full(&key("lodash"))
             .await
             .expect_err("403 is a fetch failure");
@@ -496,7 +514,7 @@ mod tests {
             serve(Router::new().route("/@babel%2Ftraverse", get(move || async move { body })))
                 .await;
 
-        let client = Client::new(reqwest::Client::new(), base);
+        let client = Client::new(crate::service::Connection::default(), base);
         let p = client
             .packument(&key("@babel/traverse"), DocumentDetail::Full)
             .await
@@ -521,7 +539,7 @@ mod tests {
         ))
         .await;
 
-        let client = Client::new(reqwest::Client::new(), base);
+        let client = Client::new(crate::service::Connection::default(), base);
         let p = client
             .packument(&key("lodash"), DocumentDetail::Full)
             .await
@@ -535,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_package_is_a_status_error() {
         let base = serve(Router::new()).await;
-        let client = Client::new(reqwest::Client::new(), base);
+        let client = Client::new(crate::service::Connection::default(), base);
 
         match client
             .packument(&key("nonexistent"), DocumentDetail::Abbreviated)
@@ -554,7 +572,7 @@ mod tests {
             get(|| async { (StatusCode::SERVICE_UNAVAILABLE, "busy") }),
         ))
         .await;
-        let client = Client::new(reqwest::Client::new(), base);
+        let client = Client::new(crate::service::Connection::default(), base);
 
         match client
             .packument(&key("lodash"), DocumentDetail::Abbreviated)
@@ -571,7 +589,10 @@ mod tests {
     async fn a_registry_that_sends_no_response_is_a_transport_error() {
         let addr = crate::util::test_support::closing_server().await;
 
-        let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
+        let client = Client::new(
+            crate::service::Connection::default(),
+            format!("http://{addr}"),
+        );
         match client
             .packument(&key("lodash"), DocumentDetail::Abbreviated)
             .await
@@ -595,7 +616,7 @@ mod tests {
         let base =
             serve(Router::new().route("/lodash", get(|| async { "<html>not a packument</html>" })))
                 .await;
-        let client = Client::new(reqwest::Client::new(), base);
+        let client = Client::new(crate::service::Connection::default(), base);
 
         let fetched = client
             .packument(&key("lodash"), DocumentDetail::Abbreviated)
@@ -614,7 +635,10 @@ mod tests {
 
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         let not_json = scripted(vec![Answer::body("not json")]).await;
-        let client = Client::new(reqwest::Client::new(), format!("http://{not_json}"));
+        let client = Client::new(
+            crate::service::Connection::default(),
+            format!("http://{not_json}"),
+        );
         assert!(matches!(client.metadata(&key).await, Ok(Err(_))));
 
         let router = Router::new().fallback(get(|| async {
@@ -623,14 +647,20 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(axum::serve(listener, router).into_future());
-        let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
+        let client = Client::new(
+            crate::service::Connection::default(),
+            format!("http://{addr}"),
+        );
         assert!(matches!(
             client.full(&key).await,
             Err(FetchError::Undecodable(_))
         ));
 
         let cut = scripted(vec![Answer::cut_short()]).await;
-        let client = Client::new(reqwest::Client::new(), format!("http://{cut}"));
+        let client = Client::new(
+            crate::service::Connection::default(),
+            format!("http://{cut}"),
+        );
         assert!(matches!(
             client.full(&key).await,
             Err(FetchError::Transport(_))

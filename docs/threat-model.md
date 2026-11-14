@@ -25,13 +25,14 @@ package manager and the registry, and serves an artifact only after deciding on 
 | keys.openpgp.org and keyserver.ubuntu.com | the public key for a fingerprint that made a Maven `.asc` | whether the key is the publisher's: a key neither holds fails verification, and a key no earlier version used is the `signing_key_new` signal ([maven-signatures](engineering_decisions/0113-maven-signatures.md)) |
 | services.gradle.org | nothing: `byrle doctor` reads its list of releases to check a project's Gradle wrapper | the wrapper's download, which does not pass through byrle |
 | sum.golang.org | each Go module version's `h1:` for its zip and its `go.mod`, once its signed tree head verifies with the Go team's key and the record's inclusion and the tree's consistency are proved ([go-plan](go-plan.md) Q3) | a version it holds no record of, which has no strong digest |
+| index.golang.org | each entry's `Timestamp`, which places sum.golang.org's records in time to date a Go version ([go-versions-dated-by-the-checksum-database](engineering_decisions/0125-go-versions-dated-by-the-checksum-database.md)). Its answers are not signed | which version an entry names: its record number comes from a lookup sum.golang.org proves. Unreachable, a Go version older than the cooldown's start is dated by its `.info` `Time` |
 | A package's publisher | nothing | everything: this is who the policy and the analysis are about |
 | The intel streams (OSV, GitHub advisories, CISA KEV, Datadog) | what they report | completeness: a package no stream reports is not known to be clean |
 | VirusTotal, when `BYRLE_VIRUSTOTAL_API_KEY` is set | its engines' counts, a signal weighed in the risk score | anything else. It learns the SHA-256 of each artifact asked about, and with `BYRLE_VIRUSTOTAL_MODE=upload` it receives the bytes of an artifact it does not know from npm's or PyPI's public registry, which joins its dataset ([virustotal](engineering_decisions/0104-virustotal.md)) |
 | sigstore and the npm and PyPI attestation endpoints | an attestation that verifies against the pinned trust root | an attestation that does not verify, which counts as none |
 | The client machine | nothing beyond pointing at the proxy | its configuration: see Bypasses |
 | Whoever can reach the proxy's port | using it as a registry | nothing else; there is no account or credential yet |
-| Other users on the host | nothing | the spool: `Spool::open` refuses a spool directory that is a link, owned by another user, or writable by every user ([artifact-spool](engineering_decisions/0064-artifact-spool.md#another-users-directory)); a detector runs in a new, randomly named `0700` directory |
+| Other users on the host | nothing | the spool: `Spool::open` refuses a spool directory that is a link, owned by another user, or writable by every user, and reads only the inode it wrote ([artifact-spool](engineering_decisions/0064-artifact-spool.md#another-users-directory)); a detector runs in a new, randomly named `0700` directory |
 
 ## Threats and controls
 
@@ -39,13 +40,14 @@ package manager and the registry, and serves an artifact only after deciding on 
 |---|---|---|
 | A known-malicious version | `known_malware` weighs `risk_threshold`, so refuses alone, and no `packages` entry releases it; a policy that weighs it lower is reported as a loosening by `byrle policy diff` | `policy::decide`, [intel-in-decisions](engineering_decisions/0026-intel-in-decisions.md) |
 | A version published minutes ago by a hijacked account | `cooldown_days` quarantines it | [quarantine-filter-metadata](engineering_decisions/0013-quarantine-filter-metadata.md) |
-| An install script, declared or not | `install_scripts: block`, decided from the artifact's own `package.json`, sdist, a `.crate`'s `Cargo.toml`: a build script or a proc-macro, or a Maven jar's annotation processors. Before a `.crate` or a `.jar` is read, its version's is `not analyzed`. A Go build runs no module's code, so the check has no meaning for Go | [install-scripts-from-the-artifact](engineering_decisions/0062-install-scripts-from-the-artifact.md) |
+| An install script, declared or not | `install_scripts: block`, decided from the artifact's own `package.json`, sdist, a `.crate`'s `Cargo.toml`: a build script or a proc-macro, or the annotation processors of a Maven jar, or of any other Maven file that opens as a zip. Before a `.crate` or a `.jar` is read, its version's is `not analyzed`. A Go build runs no module's code, so the check has no meaning for Go | [install-scripts-from-the-artifact](engineering_decisions/0062-install-scripts-from-the-artifact.md) |
 | A release published outside the project's CI | `provenance: block` refuses a changed identity and an attestation that does not verify, and for a Maven jar an `.asc` that does not verify. A dropped attestation, or a jar with no `.asc` after a version with one, weighs half `risk_threshold` and a quarter of it per bit of surprise over its release line's history ([risk-score-plan](risk-score-plan.md) step 6): nx's 10 versions of 2025-08-26 score 155 to 162, @rspack/core 1.1.7 151, and axios 1.14.1, published with a stolen token on 2026-03-31, 108. crates.io and the Go module proxy serve no attestations, so it decides nothing for a crate or a module. Its unsigned `trustpub_data` is read for the `trustpub_dropped` and `trustpub_repository_changed` signals ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)) | [provenance-check](engineering_decisions/0066-provenance-check.md) |
 | A known vulnerability, or one being exploited | `max_cvss`, `kev` | `policy::decide` |
 | A registry, mirror or network path serving other bytes than the metadata describes | the digest is checked on the way through; the last chunk is held until it matches | [artifact-digest-verification](engineering_decisions/0017-artifact-digest-verification.md) |
 | An artifact on an origin the proxy does not serve, which the client would fetch directly | the version is removed from the metadata, and a pinned fetch is refused | [enforcement-tiers](engineering_decisions/0019-enforcement-tiers.md), tier 3 |
 | A file a client installs at a path the proxy cannot read, such as a PyPI `.tgz` sdist or an npm tarball not named `<name>-<version>.tgz` | refused as an unrecognised path: only path shapes an adapter lists are forwarded unread, and any other is refused, or forwarded and logged at WARN in observe mode | [unrecognised-paths-refused](engineering_decisions/0119-unrecognised-paths-refused.md) |
 | Serving before anything was checked | nothing with a strong digest is served until its analysis has finished; no metadata is not served | [request-flow](request-flow.md) |
+| An advisory stream served empty or cut short, by its host or a mirror under `BYRLE_STREAM_URLS` | a stream that parses to under half its source's stored rows is not loaded, and its last load stays, unless `byrle refresh --force <stream>` | [shrunk-stream-not-loaded](engineering_decisions/0130-shrunk-stream-not-loaded.md) |
 | The intel store cannot answer | 503, not a serve | [uncovered-ecosystem-fails-closed](engineering_decisions/0048-uncovered-ecosystem-fails-closed.md) |
 | An artifact built from other code than its repository holds | reported, not refused: each npm tarball, PyPI wheel and sdist is compared with GitHub's archive of the commit or tag it names, and what it adds is a signal in the log and the audit line. The publisher chooses the repository and the commit, so a publisher can name a repository that matches, which is why it is a signal | [source-diff](engineering_decisions/0091-source-diff.md) |
 | A verdict that cannot be explained later | each pinned audit line records every input; `byrle audit verify` decides it again | [reproducible-verdicts](engineering_decisions/0070-reproducible-verdicts.md) |
@@ -64,16 +66,20 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 
 | Input | Bound | Where |
 |---|---|---|
-| A metadata document | 64 MiB, applied to the decoded size, so a compression bomb stops at the limit; one over it is forwarded unread and logged `UNINSPECTED` | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
+| A request path | 400 for a `.` or `..` segment, `%2e` in any case, split on `/` or `\`, so the path asked upstream is the path classified | `route::rewritten_by_url_parser` |
+| A metadata document | 64 MiB, applied to the size sent and to the decoded size, so a compression bomb stops at the limit; one over it, or one that cannot be decoded, is answered 502 and logged `UNINSPECTED`, and forwarded unread in observe mode | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
+| A sidecar the proxy reads: a checksum, an `.asc`, a Go `.info`, a sumdb answer | 64 KiB as sent; an `.asc` over it fails to verify, and one LRU of 8,192 `.asc`s keeps at most 512 MiB | `http::MAX_SIDECAR_BYTES` |
+| A key server's copy of a key | 1 MiB; a longer copy is not used. A certification by another key, which keyserver.ubuntu.com accepts from anyone, is rejected by its issuer before any hashing (`pgp` 0.21.0 `match_identity`) | `maven::keys::MAX_KEY_BYTES` |
 | An archive member read into memory | 4 MiB | `analysis::MAX_MEMBER_BYTES` |
 | An artifact spooled for analysis | 1 GiB; one over it is stored as unreadable, which `install_scripts: block` refuses | `BYRLE_MAX_ARTIFACT_BYTES` |
-| An analysis job | 600 s | `analysis::run::DEADLINE` |
+| An analysis job | 600 s; a job past it stops reading its file on the blocking thread, as a source comparison and a signature check do | `analysis::run::DEADLINE`, `util::blocking::run` |
 | Concurrent work | 8 metadata documents and 8 analyses at once | `BYRLE_MAX_CONCURRENT_METADATA`, `BYRLE_MAX_CONCURRENT_ANALYSES` |
+| A remote `policy diff` | 10,000 package versions sent; one diff at a time, and another sent meanwhile is 429 | `BYRLE_MAX_DIFF_VERSIONS` |
 | An upstream that stops sending | 10 s to connect, 30 s between reads | `http::client_builder` |
 | A URL the metadata names | fetched only on an origin the proxy serves: the upstream, the default registry, or `BYRLE_ARTIFACT_ORIGINS`; attestations too | [enforcement-tiers](engineering_decisions/0019-enforcement-tiers.md) |
 | A package name and version a detector is run on | no shell; one argument each; a value starting with `-` is refused. The program gets `PATH`, `HOME`, `SOCKS` and the forward proxies, nothing else, a directory of its own, 300 s and 16 MiB of output | [detectors](engineering_decisions/0092-detectors.md) |
 | A repository and reference the metadata names | fetched only from `BYRLE_SOURCE_ARCHIVES`, `https://codeload.github.com` by default, as `/{owner}/{repo}/tar.gz/{ref}`; owner and repository are GitHub's name characters, `gitHead` 40 hex characters, and a tag has no `..`, `//` or characters outside `A-Z a-z 0-9 . _ - @ / +`. `off` fetches nothing | `analysis::source` |
-| A source archive | spooled under `BYRLE_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less; each member is hashed as it streams | `analysis::source::MAX_SOURCE_BYTES` |
+| A source archive | spooled under `BYRLE_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less and number 200,000 or fewer, and a tar decompresses to 512 MiB plus 4 KiB per member; each member is hashed as it streams | `analysis::source::CEILING` |
 
 - **What reaches the registry.** Of the client's headers, only `Accept`,
   `Accept-Encoding`, `If-None-Match` and `If-Modified-Since` are sent upstream
@@ -102,11 +108,11 @@ The console is on when `BYRLE_CONSOLE_URL` is set, and needs the database
 
 | Exposure | Control |
 |---|---|
-| The login form | Argon2id hashes; 5 failures per account and 20 per address in 15 minutes, then 429 unchecked; an unknown account takes as long as a known one; passwords hashed 2 at a time off the threads that answer requests |
+| The login form | Argon2id hashes; 5 failures per account and 20 per address in 15 minutes, then 429 unchecked, each login counted before its password is checked; an unknown account takes as long as a known one; passwords hashed 2 at a time off the threads that answer requests |
 | Who a request is from | the address of the peer, or the last `X-Forwarded-For` entry when the request carries `BYRLE_RP_KEY`, which nginx sets and a client cannot ([fronting-tls](fronting-tls.md)) |
 | Sessions and tokens | stored as their SHA-256, never as themselves; a session ends at logout, after `BYRLE_SESSION_HOURS`, or when its account is disabled |
 | The session cookie | `HttpOnly; Secure; SameSite=Strict`, under the console's path |
-| A request from another site | a `POST` with another `Origin` is 403; a request with the session cookie that changes something needs its CSRF token, as `X-Byrle-CSRF` or a form's `csrf` |
+| A request from another site | a console request other than `GET` or `HEAD` with another `Origin` is 403, whatever its credential (`routes::guarded`); a request with the session cookie that changes something needs its CSRF token, as `X-Byrle-CSRF` or a form's `csrf` |
 | Pages | `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'`; text from registries and logs, such as a username someone tried, is escaped |
 | Permissions | every route is in one table with its guard; a test checks each that needs a permission is 401 without credentials and 403 to an account without the role |
 | `GET api/v1/health` | answers without credentials, naming components, never addresses or errors; its checks run at most once per 5 s however often it is asked |
@@ -129,6 +135,7 @@ Each of these is a way for a package to be installed without byrle deciding on i
 | An artifact with no strong digest: an npm or PyPI file with SHA-1 only, a Go version sum.golang.org holds no record of, a Maven file with no sidecar | forwarded unverified and unanalysed, as `no_strong_digest` weighs 0 by default | `signal_weights: { no_strong_digest: 100 }` refuses it; each is logged at WARN |
 | A dropped attestation in a line with few attested versions before it | weighs under `risk_threshold` and is served: axios 0.30.4, of 2026-03-31, scores 50, and eslint-config-prettier's four of 2025-07-18, 50 to 62. Each was refused before the score | `signal_weights: { provenance_dropped: 100 }` refuses every drop alone, as before |
 | A weight lowered, or `risk_threshold` raised, in the policy | what it weighed under is served | `byrle policy diff` reports it as a loosening |
+| A metadata document over `BYRLE_MAX_METADATA_BYTES`, undecodable or in a media type its adapter does not read, or an npm packument or PyPI index the proxy could not read, filter or repoint, in observe mode | forwarded with the artifact URLs the upstream wrote: pnpm, yarn, bun and pip then fetch those artifacts from the origin. npm's default `replace-registry-host` sends its fetch to the proxy | logged `UNINSPECTED` and counted in `/-/byrle/health`; enforce mode answers 502 |
 | `BYRLE_MODE=observe` | what the policy refuses is served and logged | a startup warning and `byrle doctor`; never serves what cannot be assessed |
 | Break-glass installs | an install pointed at the registry while the proxy is down | [break-glass](break-glass.md); a lockfile the bypass changed must not be committed |
 | pnpm's lockfile | records no artifact URL, so it cannot evidence that the proxy was used | none in the lockfile |

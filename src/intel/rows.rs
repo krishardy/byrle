@@ -133,6 +133,8 @@ mod tests {
             (Ecosystem::Npm, "JSONStream"),
             (Ecosystem::Npm, "@babel/core"),
             (Ecosystem::Maven, "org.apache.commons:commons-lang3"),
+            (Ecosystem::Cargo, "serde_json"),
+            (Ecosystem::Cargo, "serde-json"),
         ] {
             let key = PackageKey::from_registry_name(ecosystem, written).expect("a name");
             let affected = Affected::new(ecosystem.as_str(), written, None);
@@ -150,6 +152,7 @@ mod tests {
         assert_eq!(Affected::new("pypi", "GitPython", None).name, "gitpython");
         assert_eq!(Affected::new("npm", "JSONStream", None).name, "JSONStream");
         assert_eq!(Affected::new("gem", "Serde", None).name, "Serde");
+        assert_eq!(crate::ecosystem::selector_name("gem", "Foo-Bar"), "Foo-Bar");
     }
 
     fn advisory(id: &str, cvss: Option<f64>, band: Option<&str>, aliases: &[&str]) -> Rows {

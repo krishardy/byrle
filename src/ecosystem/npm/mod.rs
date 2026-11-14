@@ -84,12 +84,15 @@ pub const REGISTRY: Registry = Registry {
     versions: VersionOrder::SemVer,
     split_name: paths::split_name,
     canonical_name: paths::canonical_name,
+    selector_name: paths::canonical_name,
+    intel_alias: |_| None,
+    filename_projects: |_| Vec::new(),
     published_name: Some(paths::published_name),
     upstream: crate::env::UPSTREAM_NPM,
     upstream_url: paths::upstream_url,
     read: |reading| {
         let crate::route::DocumentKind::Packument(detail) = reading.kind else {
-            return None;
+            return Ok(None);
         };
         let packument = read_packument(
             reading.decoded,
@@ -100,7 +103,7 @@ pub const REGISTRY: Registry = Registry {
             reading.parse_started,
             reading.path,
         )?;
-        Some(Box::new(Packument(packument)))
+        Ok(Some(Box::new(Packument(packument))))
     },
     reader: |_| Some(|file| crate::analysis::npm_install_scripts(file)),
     layout: |_| Some(crate::analysis::source::Layout::Tar),
@@ -167,7 +170,7 @@ impl crate::ecosystem::Document for Packument {
         Some(&self.0)
     }
 
-    fn rewrite(&self, r: &crate::ecosystem::Rewriting<'_>) -> Option<Vec<u8>> {
+    fn rewrite(&self, r: &crate::ecosystem::Rewriting<'_>) -> Result<Option<Vec<u8>>, String> {
         rewrite_packument(Rewrite {
             decoded: r.decoded,
             packument: &self.0,

@@ -35,7 +35,7 @@ async fn main() {
             .or_default()
             .insert(name.clone());
     }
-    let http = reqwest::Client::new();
+    let http = byrle::service::Connection::default();
     let registry = Client::new(http.clone(), "https://registry.npmjs.org");
     let index = PypiClient::new(http, byrle::ecosystem::pypi::INDEX);
     let now = jiff::Timestamp::now();

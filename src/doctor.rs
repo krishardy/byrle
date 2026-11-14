@@ -1040,6 +1040,16 @@ pub mod probe {
     /// How long a probe waits. A proxy or index that takes seconds is not working.
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+    /// The headers doctor sends an index or the proxy: the form it asks an index for.
+    pub const SERVICE: crate::service::Declared = crate::service::Declared {
+        name: "doctor's checks",
+        headers: &["accept"],
+    };
+
+    fn asking() -> crate::service::Service {
+        crate::service::Service::new(SERVICE, &crate::service::Connection::default())
+    }
+
     /// Run `program` with `args` and return what it printed, trimmed, empty included.
     /// `None` when it could not run or failed.
     pub fn run(program: &str, args: &[&str]) -> Option<String> {
@@ -1095,7 +1105,7 @@ pub mod probe {
     /// `application/vnd.pypi.simple.v1+json`, and www.piwheels.org, pypi.nvidia.com and
     /// download.pytorch.org answer `text/html`, to the same request.
     pub async fn index_content_type(index: &str, accept: &str) -> Option<String> {
-        let response = reqwest::Client::new()
+        let response = asking()
             .head(index)
             .timeout(TIMEOUT)
             .header(reqwest::header::ACCEPT, accept)
@@ -1118,8 +1128,7 @@ pub mod probe {
     /// The body `url` answers with a success status, or why there is none.
     pub async fn text(url: &str) -> Result<String, String> {
         let fetched = async {
-            let client = reqwest::Client::new();
-            let response = client.get(url).timeout(FETCH).send().await?;
+            let response = asking().get(url).timeout(FETCH).send().await?;
             response.error_for_status()?.text().await
         };
         fetched
@@ -1140,7 +1149,7 @@ pub mod probe {
         path: &str,
         timeout: std::time::Duration,
     ) -> Result<T, String> {
-        let response = reqwest::Client::new()
+        let response = asking()
             .get(format!("{proxy}{path}"))
             .timeout(timeout)
             .send()

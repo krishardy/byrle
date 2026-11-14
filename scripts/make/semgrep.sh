@@ -4,17 +4,8 @@
 # Complements `make lint`: clippy knows Rust semantics and catches misuse, semgrep
 # matches taint and pattern rules across languages.
 #
-# Shell rules come from `r/bash`, the registry namespace, because semgrep publishes no
-# `p/` pack for shell: p/sh, p/bash and p/shell are all 404. It is seven rules, and the
-# two that earn their place here are curl-pipe-bash and ifs-tampering; the unquoted
-# expansion rules overlap with shellcheck, which `make lint` already runs. Verified
-# against planted patterns rather than assumed: without r/bash the other three packs
-# match nothing at all in a shell file.
-#
-# `--metrics=off`, and rulesets are pinned rather than using `--config=auto`, which
-# resolves rules by uploading a project fingerprint to semgrep.dev. Rule *fetching*
-# still needs the network on first run; set SEMGREP_RULES to a local path for a fully
-# offline run.
+# The rules, excludes and exceptions report are in scripts/make/lib/semgrep_scan.sh, which
+# `make opengrep` runs too.
 #
 # A login is required, because an anonymous run silently resolves fewer rules from the
 # same pinned packs and still reports success. Measured on this repository, same 79 files
@@ -29,11 +20,6 @@
 #
 # SEMGREP_ALLOW_ANONYMOUS=1 runs without one, for an environment where logging in is not
 # possible. It says what it costs.
-#
-# After the scan, `==> exceptions` lists what it was told to leave alone: each finding a
-# suppression comment hides (file, line, rule, line text), suppression comments that hide
-# nothing, and each path not scanned with semgrep's reason. It is a report and does not
-# change the exit status. See scripts/make/lib/semgrep_exceptions.py.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -99,45 +85,6 @@ NOTE
     exit 1
 fi
 
-# Override with e.g. SEMGREP_RULES="--config /path/to/rules" for an offline run.
-if [[ -n "${SEMGREP_RULES:-}" ]]; then
-    read -r -a rules <<<"$SEMGREP_RULES"
-else
-    rules=(
-        --config p/rust            # Rust-specific patterns
-        --config p/secrets         # credentials committed by accident
-        --config p/security-audit  # cross-language audit rules
-        --config r/bash            # shell: see the note above on why r/ not p/
-    )
-fi
-
-# bad_syntax_*.yaml are the config-format spike's deliberately malformed policies, which
-# semgrep reports as parse errors.
-excludes=(--exclude=target --exclude='*.lock' --exclude='bad_syntax_*.yaml')
-
-note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
-
-status=0
-semgrep "${rules[@]}" --metrics=off --error \
-    "${excludes[@]}" "$@" . || status=$?
-
-# What the scan above was told to leave alone. semgrep reports a finding that a suppression
-# comment hides only when suppressions are off, so this is a second pass with
-# `--disable-nosem`, and `--verbose` is what adds the skipped paths to its JSON. With the
-# rules cached it took 5s over this repository. The exit status stays the first pass's,
-# unless this pass fails and the list cannot be shown.
-note "exceptions"
-json="$(mktemp)"
-errors="$(mktemp)"
-trap 'rm -f "$json" "$errors"' EXIT
-pass=0
-semgrep "${rules[@]}" --metrics=off --disable-nosem --json --verbose \
-    "${excludes[@]}" "$@" . >"$json" 2>"$errors" || pass=$?
-if [[ "$pass" == 0 ]]; then
-    python3 "$repo_root/scripts/make/lib/semgrep_exceptions.py" "$json"
-else
-    echo "the exceptions pass exited $pass, so they are not listed. semgrep said:"
-    grep -iE 'error|fail|invalid|timed? ?out' "$errors" | tail -10 || tail -10 "$errors"
-    [[ "$status" == 0 ]] && status=1
-fi
-exit "$status"
+# shellcheck source=scripts/make/lib/semgrep_scan.sh
+. "$repo_root/scripts/make/lib/semgrep_scan.sh"
+semgrep_scan semgrep "$@"

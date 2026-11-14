@@ -71,12 +71,36 @@ pub struct Attestation {
     pub url: String,
     /// The adapter's reader for that document, such as npm's `attestation::provenance_bundle`.
     pub bundle: fn(&[u8]) -> Result<Bundle, String>,
+    /// Published within the provenance window, so a 404 stores nothing (`attestation::recent`).
+    pub recent: bool,
 }
+
+/// The headers an artifact's host is sent for the analysis's own fetch: none.
+pub const ARTIFACTS: crate::service::Declared = crate::service::Declared {
+    name: "artifact hosts",
+    headers: &[],
+};
+
+/// The headers an attestation document's host is sent: none.
+pub const ATTESTATIONS: crate::service::Declared = crate::service::Declared {
+    name: "attestation hosts",
+    headers: &[],
+};
+
+/// The headers a source archive's host is sent: none.
+pub const ARCHIVES: crate::service::Declared = crate::service::Declared {
+    name: "source archives",
+    headers: &[],
+};
 
 /// Runs analyses in the background, one per digest at a time.
 #[derive(Clone)]
 pub struct Analyser {
-    client: reqwest::Client,
+    /// How each service's client connects: VirusTotal's is made from it later.
+    connection: crate::service::Connection,
+    artifacts: crate::service::Service,
+    attestations: crate::service::Service,
+    archives: crate::service::Service,
     spool: Arc<Spool>,
     store: Arc<dyn Analyses>,
     /// Bounds how many analyses run at once. A job waits for a slot; a request never does.
@@ -108,7 +132,7 @@ impl Analyser {
     }
 
     pub fn new(
-        client: reqwest::Client,
+        connection: crate::service::Connection,
         spool: Arc<Spool>,
         store: Arc<dyn Analyses>,
         max_concurrent: usize,
@@ -116,7 +140,10 @@ impl Analyser {
     ) -> Self {
         Self {
             recorder: recording::recorder(store.clone()),
-            client,
+            artifacts: crate::service::Service::new(ARTIFACTS, &connection),
+            attestations: crate::service::Service::new(ATTESTATIONS, &connection),
+            archives: crate::service::Service::new(ARCHIVES, &connection),
+            connection,
             spool,
             store,
             slots: Arc::new(Semaphore::new(max_concurrent.max(1))),
@@ -271,8 +298,8 @@ impl Analyser {
         timings
     }
 
-    /// Fetch the attestations document and verify it. A registry that cannot be reached,
-    /// or answers 5xx or 429, stores nothing, so the next request tries again: a flaky
+    /// Fetch the attestations document and verify it. No answer, a 5xx, a 429, or a 404
+    /// for a recent version stores nothing, so the next request tries again: a flaky
     /// registry must not refuse a package. Any other answer is stored, a failure included.
     /// Returns the milliseconds it took.
     async fn attest(&self, attestation: &Attestation) -> u64 {
@@ -301,15 +328,15 @@ impl Analyser {
     }
 
     /// The attestations document, or the failure a registry's 4xx answer is.
-    /// Returns `None` when nothing should be stored: no answer, a 5xx or a 429, or a body
-    /// that failed.
+    /// Returns `None` when nothing should be stored: no answer, a 5xx or a 429, a 404 for a
+    /// recent version, or a body that failed.
     async fn attestation_document(
         &self,
         attestation: &Attestation,
     ) -> Option<Result<bytes::Bytes, Attested>> {
         let url = &attestation.url;
         let response = self
-            .client
+            .attestations
             .get(url)
             .send()
             .await
@@ -320,6 +347,10 @@ impl Analyser {
         let status = response.status();
         if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             warn!(url.full = %url, http.response.status_code = status.as_u16(), "attestations: not answered, nothing stored");
+            return None;
+        }
+        if attestation.recent && status == reqwest::StatusCode::NOT_FOUND {
+            warn!(url.full = %url, http.response.status_code = status.as_u16(), "attestations: not served yet for a recent version, nothing stored");
             return None;
         }
         if !status.is_success() {
@@ -381,7 +412,7 @@ impl Analyser {
     /// The upstream's 2xx answer for the artifact at `url`. `None` when there is none.
     async fn fetch(&self, url: &str) -> Option<reqwest::Response> {
         match self
-            .client
+            .artifacts
             .get(url)
             .send()
             .await
@@ -406,11 +437,10 @@ impl Analyser {
         response: reqwest::Response,
         mut observe: impl FnMut(&[u8]) + Send,
     ) -> Option<Result<Spooled, WriteError>> {
-        let claimed = response.content_length();
         let mut verifier = digest.verifier();
         let written = self
             .spool
-            .write(response.bytes_stream(), claimed, |chunk| {
+            .write(response.bytes_stream(), |chunk| {
                 verifier.update(chunk);
                 observe(chunk);
             })
@@ -475,8 +505,9 @@ fn log_attested(attestation: &Attestation, attested: &Attested, fetch_ms: u64, v
 /// What `reader` reads from `file`, the artifact fetched from `url`. `None` when it cannot
 /// be read.
 async fn read(url: &str, file: std::io::Result<std::fs::File>, reader: Reader) -> Option<Scripts> {
-    let read = tokio::task::spawn_blocking(move || {
-        Ok(Scripts::of(reader(&mut std::io::BufReader::new(file?))))
+    let read = crate::util::blocking::run(move |stop| {
+        let file = stop.reading(file?);
+        Ok(Scripts::of(reader(&mut std::io::BufReader::new(file))))
     })
     .await
     .map_err(std::io::Error::other)
@@ -573,6 +604,16 @@ pub(crate) mod tests {
     pub(crate) async fn server(
         routes: Vec<(String, u16, Vec<u8>)>,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
+        server_at(|_| routes).await
+    }
+
+    /// [`server`], with routes made from its base URL.
+    pub(crate) async fn server_at(
+        routes: impl FnOnce(&str) -> Vec<(String, u16, Vec<u8>)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let routes = routes(&base);
         let asked = Arc::new(Mutex::new(Vec::new()));
         let seen = asked.clone();
         let routes: Arc<std::collections::HashMap<String, (u16, Vec<u8>)>> = Arc::new(
@@ -591,15 +632,19 @@ pub(crate) mod tests {
                     (axum::http::StatusCode::from_u16(status).unwrap(), body)
                 }
             });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
         tokio::spawn(axum::serve(listener, router).into_future());
-        (format!("http://{addr}"), asked)
+        (base, asked)
     }
 
     pub(crate) fn analyser(label: &str, ceiling: u64, store: Arc<dyn Analyses>) -> Analyser {
         let (spool, _) = Spool::open(&tempdir(label), ceiling).expect("opens");
-        Analyser::new(reqwest::Client::new(), Arc::new(spool), store, 2, 16)
+        Analyser::new(
+            crate::service::Connection::default(),
+            Arc::new(spool),
+            store,
+            2,
+            16,
+        )
     }
 
     fn job(digest: &Sri, url: &str) -> Job {
@@ -727,6 +772,27 @@ pub(crate) mod tests {
         );
     }
 
+    /// A `Content-Length` over the ceiling is not believed: the bytes are read, and a body
+    /// that ends before the length it declared stores nothing.
+    #[tokio::test]
+    async fn a_length_over_the_ceiling_alone_stores_nothing() {
+        use crate::util::test_support::{Answer, scripted};
+        let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
+        let digest = sri_of(&tarball);
+        let wrong = scripted(vec![Answer::Body {
+            bytes: tarball,
+            declared: Some(1 << 21),
+        }])
+        .await;
+        let analyser = analyser("run-claimed", 1 << 20, Arc::new(InProcess::new(8)));
+        analyser
+            .start(job(&digest, &format!("http://{wrong}/artifact")))
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(analyser.known(&digest).await, Known::Unknown);
+    }
+
     /// A failed fetch and a spool that cannot be written store nothing, so the next
     /// request starts another job.
     #[tokio::test]
@@ -778,6 +844,36 @@ pub(crate) mod tests {
         assert_eq!(analyser.in_flight(), 0);
     }
 
+    /// A reader that reads its file over and over stops once the job is past its deadline,
+    /// rather than holding its blocking thread.
+    #[tokio::test]
+    async fn a_reader_past_its_deadline_stops_reading() {
+        static SAID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
+        let digest = sri_of(&tarball);
+        let url = upstream(200, tarball).await;
+        let analyser = analyser("run-endless", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_deadline(Duration::from_millis(200));
+        let endless = Job {
+            reader: Some(|file| {
+                crate::util::blocking::testing::read_endlessly(file, &SAID);
+                Err(crate::analysis::ReadError::NothingToRead)
+            }),
+            ..job(&digest, &url)
+        };
+        let timings = analyser
+            .start(endless)
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert!(!timings.completed);
+        assert_eq!(
+            crate::util::blocking::testing::stopped(&SAID).await,
+            crate::util::blocking::STOPPED
+        );
+        assert_eq!(analyser.known(&digest).await, Known::Unknown);
+    }
+
     /// The attestations document at each path, with its status.
     async fn registry(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
         let mut router = Router::new();
@@ -823,7 +919,7 @@ pub(crate) mod tests {
         tokio::spawn(axum::serve(listener, router).into_future());
         let (spool, _) = Spool::open(&tempdir("run-phases"), 1 << 20).expect("opens");
         let one_slot = Analyser::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             Arc::new(spool),
             Arc::new(InProcess::new(8)),
             1,
@@ -835,6 +931,7 @@ pub(crate) mod tests {
                 digest: digest.clone(),
                 url: format!("{base}/attestations"),
                 bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                recent: false,
             }],
             ..job(&digest, &format!("{base}/artifact"))
         };
@@ -854,7 +951,7 @@ pub(crate) mod tests {
     }
 
     /// A real document verifies and is stored, a 404 or a non-document is stored as a
-    /// failure, and a 503 stores nothing, so the next request verifies again.
+    /// failure, and a 503 or a recent version's 404 stores nothing.
     #[tokio::test]
     async fn attestations_are_verified_and_only_a_real_answer_is_stored() {
         let sigstore = std::fs::read(concat!(
@@ -871,7 +968,7 @@ pub(crate) mod tests {
         .await;
         let store = Arc::new(InProcess::new(8));
         let analyser = analyser("run-attest", 1 << 20, store.clone());
-        let digests: Vec<Sri> = (1..=4).map(crate::analysis::store::tests::sri).collect();
+        let digests: Vec<Sri> = (1..=5).map(crate::analysis::store::tests::sri).collect();
         let real = Sri::parse(
             "sha512-hJqJfoG/e4qFQaauQL00c6J6FrHLBGKtkFvW3JbTSIEFOhLrSjdSM/gWd/yUOfYo/gsERehTXGC1VZWX+9X4Dg==",
         )
@@ -881,15 +978,18 @@ pub(crate) mod tests {
             (digests[1].clone(), "/missing"),
             (digests[2].clone(), "/html"),
             (digests[3].clone(), "/busy"),
+            (digests[4].clone(), "/missing"),
         ];
         let job = Job {
             reader: None,
             attestations: checks
                 .iter()
-                .map(|(digest, path)| Attestation {
+                .enumerate()
+                .map(|(i, (digest, path))| Attestation {
                     digest: digest.clone(),
                     url: format!("{base}{path}"),
                     bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                    recent: i == 4,
                 })
                 .collect(),
             ..job(&digests[0], &format!("{base}/never-fetched"))
@@ -899,7 +999,7 @@ pub(crate) mod tests {
             .expect("starts")
             .await
             .expect("finishes");
-        assert_eq!(timings.attestations, 4);
+        assert_eq!(timings.attestations, 5);
         assert_eq!(
             timings.fetch_ms, 0,
             "no reader, so the artifact is not fetched"
@@ -922,6 +1022,11 @@ pub(crate) mod tests {
         ));
         assert_eq!(analyser.attested(&digests[3]).await, None);
         assert_eq!(
+            analyser.attested(&digests[4]).await,
+            None,
+            "a recent version's 404 is asked for again"
+        );
+        assert_eq!(
             analyser.known(&digests[0]).await,
             Known::Unknown,
             "the artifact itself was not fetched: its analysis was not asked for"
@@ -940,6 +1045,7 @@ pub(crate) mod tests {
                 digest: digest.clone(),
                 url: format!("{}/attestations", crate::util::test_support::NO_UPSTREAM),
                 bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                recent: false,
             }],
             ..job(&digest, crate::util::test_support::NO_UPSTREAM)
         };
@@ -990,6 +1096,7 @@ pub(crate) mod tests {
                 digest: digest.clone(),
                 url: registry,
                 bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                recent: false,
             }],
             ..job(&digest, crate::util::test_support::NO_UPSTREAM)
         };
@@ -1023,6 +1130,7 @@ pub(crate) mod tests {
                 digest: digest.clone(),
                 url: format!("http://{cut}/attestations"),
                 bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                recent: false,
             }],
             ..job(&digest, crate::util::test_support::NO_UPSTREAM)
         };
@@ -1045,7 +1153,6 @@ pub(crate) mod tests {
             .spool
             .write(
                 futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from_static(b"x"))]),
-                None,
                 |_| {},
             )
             .await

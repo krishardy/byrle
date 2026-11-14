@@ -5,8 +5,9 @@ Every key a policy file takes, what each does, and which way it loosens. The rea
 
 The file is YAML, named by `BYRLE_POLICY`. The proxy loads it at startup and again on
 `SIGHUP` ([break-glass](break-glass.md)). `byrle policy check <file>` loads it as the proxy
-does, and exits 1 if the proxy would refuse it. `byrle policy diff <old> <new>` reports
-what a change loosens and tightens. An unknown key, or a value of the wrong kind, refuses the
+does, exits 1 if the proxy would refuse it, and lists each setting looser than its default.
+`byrle policy diff <old> <new>` reports what a change loosens and tightens: each setting,
+and each listed package ([settings-compared-directly](engineering_decisions/0132-settings-compared-directly.md)). An unknown key, or a value of the wrong kind, refuses the
 whole file.
 
 ## Example
@@ -133,7 +134,9 @@ Exceptions: a setting loosened for the packages a selector matches.
 | `has_install_scripts` | `true` or `false` |
 
 Names and versions compare the ecosystem's way: a PyPI name by PEP 503, so `Django` is
-`django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`. A Go module path compares as
+`django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`. A crate name compares as
+crates.io's `canon_crate_name` does, so `Foo-Bar`, `foo_bar` and `foo-*` all cover the crate
+`foo-bar` ([0136](engineering_decisions/0136-crate-names-compared-as-crates-io-does.md)). A Go module path compares as
 written, case included, and its purl is `pkg:golang/rsc.io/quote@v1.5.2`. A Go range may
 write its versions with or without the `v`: `vers:golang/>=v1.5.0|<v1.6.0` and
 `vers:golang/>=1.5.0|<1.6.0` both denied `rsc.io/quote@v1.5.2` on 2026-10-16. A Maven
@@ -205,6 +208,9 @@ for each bit: after 8 attested versions in its line a drop weighs 129, after 1 i
 and with none before it in its line, 50. A lower weight is a loosening,
 which `byrle policy diff` reports. A weight on a check its setting turns off, such as
 `install_scripts` under `install_scripts: allow`, is refused, as it would never be added.
+A weight is a whole number up to 4,294,967,295. A sum, or a surprise times its weight, that
+would pass that stops at it rather than wrapping to a small number: before 2026-11-05, a
+release build wrapped `known_malware: 4294967295` and any other signal of 1 to 0.
 
 The other rules' weights add to the same score on a pinned fetch, from the detectors'
 results stored by then and the advisories against the version, and the refusal names them
@@ -233,6 +239,7 @@ after a later build moves a default.
 | `no_strong_digest` | no strong digest is published for its artifact. Under the threshold, its bytes are forwarded unverified and unanalysed, so `install_scripts` and the detectors have no answer | 0 |
 | `digest_mismatch` | its bytes are not the ones its digest or claim names. Under the threshold, a claim that fails is fetched unverified, and bytes that do not match their digest are served whole, their last chunk released rather than held; neither is recorded as verified | `risk_threshold` |
 | `signature_failed` | a Maven `.pom` or `.module` whose signature fails. Under the threshold it is served against the digest its bytes matched | `risk_threshold` |
+| `cooldown_unanswered` | under a cooldown, a pinned file that neither the registry, the file host's `Last-Modified` nor its first sighting dates; the first sighting is missing only when the analysis store errors ([undated-files-first-seen](engineering_decisions/0129-undated-files-first-seen.md)) | `risk_threshold` |
 | `new_package` | the first version was published under 30 days ago | 1 |
 | `new_publisher` | no earlier version was published by this account | 1 |
 | `no_repository` | a full npm document names no repository | 1 |
@@ -246,14 +253,15 @@ after a later build moves a default.
 | `trustpub_repository_changed` | trusted publishing published a cargo version from another provider or repository than the latest earlier version it published | 1 |
 | `signing_key_new` | a Maven version's `.pom` was signed by a primary key that signed no version published 7 or more days before it | 1 |
 | `signing_key_expired` | the key, or the subkey, that signed a Maven version's `.pom` had expired when it signed | 1 |
+| `archive_suspicious` | its npm, sdist or `.crate` tarball has a shape no packer writes: more than one gzip member, bytes after the last, entries after a zero block, or two entries extracting to one path. Its detail names each | 1 |
 | `advisory_malware` | an advisory reports the version as malware | 8 |
 | `advisory_vulnerability` | an advisory reports a vulnerability in it | 4 |
 | `advisory_unsound` | RustSec reports unsound code in it | 3 |
 | `advisory_unmaintained` | RustSec reports the crate unmaintained | 2 |
 | `advisory_notice` | RustSec published a notice about it, or a kind this build does not know | 1 |
 
-`unservable`, `no_strong_digest`, `digest_mismatch` and `signature_failed` are the proxy's
-own refusals. `no_strong_digest` weighs 0 unless weighed, so with no policy, or one that
+`unservable`, `no_strong_digest`, `digest_mismatch`, `signature_failed` and
+`cooldown_unanswered` are the proxy's own refusals. `no_strong_digest` weighs 0 unless weighed, so with no policy, or one that
 does not weigh it, such an artifact is forwarded unverified. One that weighs the threshold alone answers as it always has. When only a sum
 reaches it, with another of them or with the checks, the refusal is the policy's, naming
 them. Observe mode still refuses a version when they weigh the threshold alone; a version
@@ -262,13 +270,15 @@ Maven `.pom` or `.module`, is decided by no check, so it is refused only when th
 weighs the threshold alone: with no claim (`no_strong_digest`), a claim its bytes do not
 match (`digest_mismatch`), or a signature that fails (`signature_failed`).
 
-The keys above are the rules of the policy's checks, of the proxy's refusals, of the five detectors built in,
-`metadata`, `source`, `virustotal`, `trustpub` and `signing`, and of the advisories the
+The keys above are the rules of the policy's checks, of the proxy's refusals, of the six detectors built in,
+`metadata`, `source`, `virustotal`, `trustpub`, `signing` and `archive`, and of the advisories the
 intel store holds, which are named without the detector. An unsound, unmaintained or notice advisory refuses
 nothing: it is a signal only. A vulnerability or malware advisory is also refused by
 `max_cvss` or `known_malware`. Another detector's rule is weighed as `detector.rule`, such
 as `guarddog.threat-process-hooks: 3`, 1 unless set. A rule the detector does not have is refused, as an unknown key is. The rules
-are in [detectors](engineering_decisions/0092-detectors.md).
+are in [detectors](engineering_decisions/0092-detectors.md). `guarddog.error` fires when a
+run reports a rule that could not run, and `guarddog.whois_error` when that rule is one of the
+two that use WHOIS on TCP port 43 ([detector-run-failures](engineering_decisions/0131-detector-run-failures.md)).
 
 Each weight is a whole number, 0 or more. The signals are in
 [metadata-heuristics](engineering_decisions/0090-metadata-heuristics.md),

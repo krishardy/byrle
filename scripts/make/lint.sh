@@ -60,6 +60,13 @@ if ! "$repo_root/scripts/make/comments.py"; then
     failed=1
 fi
 
+note "rust (clients)"
+# Only src/service.rs builds a reqwest client, so every request is checked against the
+# headers its service declares. See docs/engineering_decisions/0133-a-client-for-each-service.md.
+if ! "$repo_root/scripts/make/clients.py"; then
+    failed=1
+fi
+
 note "shell (shellcheck)"
 if ! command -v shellcheck >/dev/null 2>&1; then
     echo "shellcheck is not installed. Run 'make dev-setup'."

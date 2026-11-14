@@ -11,6 +11,7 @@ use crate::analysis::{InstallScripts, ReadError};
 use crate::ecosystem::Signature;
 use crate::integrity::Sri;
 use crate::util::lru::Lru;
+use jiff::Timestamp;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -38,6 +39,14 @@ impl Scripts {
     pub fn names(&self) -> Option<&[String]> {
         match self {
             Self::Declared(found) => Some(&found.names),
+            Self::Unreadable(_) => None,
+        }
+    }
+
+    /// What it found in the tarball's shape. `None` when it could not be read.
+    pub fn anomalies(&self) -> Option<&[crate::analysis::Anomaly]> {
+        match self {
+            Self::Declared(found) => Some(&found.anomalies),
             Self::Unreadable(_) => None,
         }
     }
@@ -87,7 +96,7 @@ impl std::error::Error for AnalysisError {}
 pub type Stored<'a, T> = Pin<Box<dyn Future<Output = Result<T, AnalysisError>> + Send + 'a>>;
 
 /// Where analyses are kept.
-pub trait Analyses: Send + Sync {
+pub trait Analyses: Trees {
     /// What was found in these bytes before. `Ok(None)` is an artifact nothing has
     /// analysed, which the fetch path defers and analyses.
     fn get<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Analysis>>;
@@ -170,6 +179,24 @@ pub trait Analyses: Send + Sync {
         verifier: &'a str,
         signature: &'a Signature,
     ) -> Stored<'a, ()>;
+
+    /// When the file `filename` of `purl` was first asked of this store, recording now when
+    /// it was not. A later call returns the first time, never a new one.
+    fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp>;
+
+    /// When the file `filename` of `purl` was first asked of this store, recording nothing.
+    /// `None` when it never was.
+    fn sighted<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Option<Timestamp>>;
+}
+
+/// Where a checksum database's largest tree is kept past a restart.
+pub trait Trees: Send + Sync {
+    /// The largest tree of the checksum database `database` kept, its size and root.
+    fn checksum_tree<'a>(&'a self, database: &'a str) -> Stored<'a, Option<(u64, [u8; 32])>>;
+
+    /// Keep `tree`, a size and root, as `database`'s, unless a larger one is kept.
+    fn keep_checksum_tree<'a>(&'a self, database: &'a str, tree: (u64, [u8; 32]))
+    -> Stored<'a, ()>;
 }
 
 /// The decisions this process has recorded, the oldest dropped past its budget.
@@ -191,6 +218,8 @@ pub struct InProcess(
     Mutex<Decisions>,
     Mutex<Lru<String, Sri>>,
     Mutex<Lru<(Sri, String, String), Signature>>,
+    Mutex<Lru<(String, String), Timestamp>>,
+    Mutex<std::collections::HashMap<String, (u64, [u8; 32])>>,
 );
 
 impl InProcess {
@@ -211,7 +240,20 @@ impl InProcess {
             }),
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
+            Mutex::new(Lru::new(max_entries)),
+            Mutex::default(),
         )
+    }
+
+    /// When `filename` of `purl` was first seen, without recording it.
+    #[cfg(test)]
+    pub fn seen(&self, purl: &str, filename: &str) -> Option<Timestamp> {
+        let key = (purl.to_owned(), filename.to_owned());
+        self.9
+            .lock()
+            .expect("first-seen store lock")
+            .get(&key)
+            .copied()
     }
 
     fn decisions_held(&self) -> std::sync::MutexGuard<'_, Decisions> {
@@ -450,6 +492,54 @@ impl Analyses for InProcess {
             Ok(())
         })
     }
+
+    fn first_seen<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Timestamp> {
+        Box::pin(async move {
+            let key = (purl.to_owned(), filename.to_owned());
+            let mut held = self.9.lock().expect("first-seen store lock");
+            if let Some(at) = held.get(&key) {
+                return Ok(*at);
+            }
+            let now = Timestamp::now();
+            held.insert(key, now);
+            Ok(now)
+        })
+    }
+
+    fn sighted<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Option<Timestamp>> {
+        let key = (purl.to_owned(), filename.to_owned());
+        let held = self
+            .9
+            .lock()
+            .expect("first-seen store lock")
+            .get(&key)
+            .copied();
+        Box::pin(async move { Ok(held) })
+    }
+}
+
+impl Trees for InProcess {
+    fn checksum_tree<'a>(&'a self, database: &'a str) -> Stored<'a, Option<(u64, [u8; 32])>> {
+        let kept = self
+            .10
+            .lock()
+            .expect("tree store lock")
+            .get(database)
+            .copied();
+        Box::pin(async move { Ok(kept) })
+    }
+
+    fn keep_checksum_tree<'a>(
+        &'a self,
+        database: &'a str,
+        tree: (u64, [u8; 32]),
+    ) -> Stored<'a, ()> {
+        let mut kept = self.10.lock().expect("tree store lock");
+        if kept.get(database).is_none_or(|(size, _)| *size < tree.0) {
+            kept.insert(database.to_owned(), tree);
+        }
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[cfg(test)]
@@ -536,6 +626,21 @@ pub(crate) mod tests {
         ) -> Stored<'a, ()> {
             broken()
         }
+        fn first_seen<'a>(&'a self, _: &'a str, _: &'a str) -> Stored<'a, Timestamp> {
+            broken()
+        }
+        fn sighted<'a>(&'a self, _: &'a str, _: &'a str) -> Stored<'a, Option<Timestamp>> {
+            broken()
+        }
+    }
+
+    impl Trees for Broken {
+        fn checksum_tree<'a>(&'a self, _: &'a str) -> Stored<'a, Option<(u64, [u8; 32])>> {
+            broken()
+        }
+        fn keep_checksum_tree<'a>(&'a self, _: &'a str, _: (u64, [u8; 32])) -> Stored<'a, ()> {
+            broken()
+        }
     }
 
     pub fn sri(seed: u8) -> Sri {
@@ -557,7 +662,19 @@ pub(crate) mod tests {
         Scripts::Declared(InstallScripts {
             names: vec![name.to_owned()],
             bodies: vec![(name.to_owned(), body.to_owned())],
+            anomalies: Vec::new(),
         })
+    }
+
+    /// Reading a sighting records none; the first one recorded is read back.
+    #[tokio::test]
+    async fn a_sighting_is_read_without_being_recorded() {
+        let store = InProcess::new(4);
+        let (purl, file) = ("pkg:npm/x@1.0.0", "x-1.0.0.tgz");
+        assert_eq!(store.sighted(purl, file).await.expect("reads"), None);
+        assert_eq!(store.sighted(purl, file).await.expect("reads"), None);
+        let first = store.first_seen(purl, file).await.expect("records");
+        assert_eq!(store.sighted(purl, file).await.expect("reads"), Some(first));
     }
 
     #[tokio::test]
@@ -671,6 +788,7 @@ pub(crate) mod tests {
         let scripts = Scripts::of(Ok(InstallScripts {
             names: vec!["postinstall".to_owned()],
             bodies: vec![("postinstall".to_owned(), "node install.js".to_owned())],
+            anomalies: Vec::new(),
         }));
         assert_eq!(scripts.names(), Some(&["postinstall".to_owned()][..]));
     }

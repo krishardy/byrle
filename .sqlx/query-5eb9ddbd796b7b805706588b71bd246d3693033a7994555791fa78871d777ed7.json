@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT source AS \"source!\", count(*) AS \"rows!\" FROM advisory GROUP BY source\n               UNION ALL\n               SELECT source, count(*) FROM exploited_cve GROUP BY source",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "source!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "rows!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "5eb9ddbd796b7b805706588b71bd246d3693033a7994555791fa78871d777ed7"
+}

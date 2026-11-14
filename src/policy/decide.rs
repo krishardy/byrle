@@ -275,11 +275,12 @@ pub const NAME: &str = "policy";
 pub const PROXY: &str = "proxy";
 
 /// The rules of the proxy's own refusals, each weighing the threshold unless weighed or passed.
-pub const PROXY_RULES: [&str; 4] = [
+pub const PROXY_RULES: [&str; 5] = [
     "no_strong_digest",
     "unservable",
     "digest_mismatch",
     "signature_failed",
+    "cooldown_unanswered",
 ];
 
 /// The rules of the checks' signals, as [`Check::rule`] names them.
@@ -321,17 +322,24 @@ pub fn default_weight(key: &str, threshold: u32) -> u32 {
     }
 }
 
+/// `weights` summed, stopping at `u32::MAX`, so a large weight cannot wrap the sum to under
+/// the threshold.
+pub fn total(weights: impl Iterator<Item = u32>) -> u32 {
+    weights.fold(0, u32::saturating_add)
+}
+
 /// Whether `keys`, summed, reach the threshold: `policy`'s, or the defaults' with none.
 pub fn weighs(policy: Option<&crate::policy::Policy>, keys: &[String]) -> bool {
     let (weight, threshold): (u32, u32) = match policy {
         Some(policy) => (
-            keys.iter().map(|key| policy.weight_of(key)).sum(),
+            total(keys.iter().map(|key| policy.weight_of(key))),
             policy.risk_threshold,
         ),
         None => (
-            keys.iter()
-                .map(|key| default_weight(key, DEFAULT_RISK_THRESHOLD))
-                .sum(),
+            total(
+                keys.iter()
+                    .map(|key| default_weight(key, DEFAULT_RISK_THRESHOLD)),
+            ),
             DEFAULT_RISK_THRESHOLD,
         ),
     };
@@ -341,8 +349,16 @@ pub fn weighs(policy: Option<&crate::policy::Policy>, keys: &[String]) -> bool {
 impl Decision {
     /// The weights of the checks that failed and of the other signals, summed.
     pub fn score(&self) -> u32 {
-        let checks: u32 = self.results.iter().map(|r| r.weight).sum();
-        checks + self.signals.iter().map(|s| s.weight).sum::<u32>()
+        total(
+            [self.checks()]
+                .into_iter()
+                .chain(self.signals.iter().map(|s| s.weight)),
+        )
+    }
+
+    /// The weights of the checks that failed, summed.
+    pub fn checks(&self) -> u32 {
+        total(self.results.iter().map(|r| r.weight))
     }
 
     /// With the signals `keys` name, each weighed by `policy`, each rule once.
@@ -445,7 +461,8 @@ pub fn check_weight(policy: &Policy, check: Check, provenance: &Provenance) -> u
     match (check, provenance) {
         (Check::Provenance, Provenance::Dropped { history, .. }) => {
             let millibits = history.surprise(policy.provenance_half_life);
-            weight + (policy.weight_of(PER_BIT) * millibits + 500) / 1000
+            let bits = policy.weight_of(PER_BIT).saturating_mul(millibits);
+            weight.saturating_add(bits.saturating_add(500) / 1000)
         }
         _ => weight,
     }
@@ -810,6 +827,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(weighs(&set, vec![true]), 50 + 3);
+        let huge =
+            Policy::parse("version: 1\nsignal_weights: { provenance_surprise: 4294967295 }\n")
+                .unwrap();
+        assert_eq!(
+            weighs(&huge, vec![true; 8]),
+            50 + u32::MAX / 1000,
+            "the surprise's product stops at the top, not wrapped"
+        );
+        let both = Policy::parse(
+            "version: 1\nsignal_weights: { provenance_dropped: 4294967295, provenance_surprise: 1 }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            weighs(&both, vec![true; 8]),
+            u32::MAX,
+            "the sum stops at the top"
+        );
         let facts = |attested: Vec<bool>| Facts {
             provenance: dropped(attested),
             ..clean()
@@ -859,6 +893,27 @@ mod tests {
         assert_eq!((two.score(), two.action()), (10, Action::Block));
         assert_eq!(two.reasons().len(), 2);
         assert_eq!(weighed(&[(Action::Block, 0)], 10).reasons().len(), 0);
+    }
+
+    /// Weights that would wrap a `u32` stop at its top, so the score still reaches the
+    /// threshold: `known_malware: 4294967295` and a signal of 1 refuse.
+    #[test]
+    fn weights_past_a_u32_sum_to_its_top() {
+        let policy = Policy::parse(
+            "version: 1\nsignal_weights: { known_malware: 4294967295, near_name: 1 }\n",
+        )
+        .unwrap();
+        let keys = ["near_name".to_owned()];
+        let decided = weighed(&[(Action::Block, u32::MAX)], 100).with_signals(&keys, &policy);
+        assert_eq!(
+            (decided.score(), decided.action()),
+            (u32::MAX, Action::Block)
+        );
+        let two = weighed(&[(Action::Block, u32::MAX), (Action::Block, 2)], 100);
+        assert_eq!(two.checks(), u32::MAX);
+        let keys = ["known_malware".to_owned(), "near_name".to_owned()];
+        assert!(weighs(Some(&policy), &keys));
+        assert_eq!(total([u32::MAX, 1, 1].into_iter()), u32::MAX);
     }
 
     /// The other signals add to the score, each rule once, weighed by the policy.

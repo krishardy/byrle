@@ -6,37 +6,69 @@
       {
         "ordinal": 0,
         "name": "id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "served_version",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "account",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "served_version",
+            "name": "account"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "ecosystem",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "served_version",
+            "name": "ecosystem"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "name",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "served_version",
+            "name": "name"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "version",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "served_version",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "first_served!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
         "name": "last_served!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       }
     ],
     "parameters": {

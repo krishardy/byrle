@@ -18,9 +18,15 @@ fn artifact(file: &File) -> crate::record::Artifact {
             .and_then(crate::integrity::sri_from_sha256_hex),
         legacy_sha1: None,
         attestation_url: file.provenance.clone(),
+        published_at: published(file),
         file_count: None,
         unpacked_size: None,
     }
+}
+
+/// When `file` was uploaded, `None` when the index does not say or says it unreadably.
+fn published(file: &File) -> Option<jiff::Timestamp> {
+    file.upload_time.as_deref()?.parse().ok()
 }
 
 /// One [`crate::record::PackageRecord`] per version, holding every file, wheels first, each
@@ -54,10 +60,7 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
         out.push(PackageRecord {
             package,
             detail: DocumentDetail::Full,
-            published_at: file
-                .upload_time
-                .as_deref()
-                .and_then(|t| t.parse::<jiff::Timestamp>().ok()),
+            published_at: oldest(&artifacts),
             maintainers: None,
             repository: None,
             deprecated: None,
@@ -88,6 +91,17 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
         records: out,
         skipped,
     })
+}
+
+/// When the oldest of `artifacts` was uploaded, which is when the version was published.
+/// `None` when any is undated, as a file the index does not date may be the newest.
+fn oldest(artifacts: &[crate::record::Artifact]) -> Option<jiff::Timestamp> {
+    artifacts
+        .iter()
+        .map(|a| a.published_at)
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .min()
 }
 
 #[cfg(test)]
@@ -161,6 +175,47 @@ mod tests {
         assert!(
             record.runs_install_scripts(Some("x-1.0.tar.gz")),
             "asking for the sdist is asking for the bytes that run setup.py"
+        );
+    }
+
+    /// A version is as old as its oldest file, and each file as old as its own upload. A
+    /// file the index does not date leaves the version undated.
+    #[test]
+    fn a_version_is_dated_by_its_oldest_file_and_a_file_by_its_own() {
+        let document = br#"{"name":"x","files":[
+            {"filename":"x-1.0.tar.gz","url":"https://files/x-1.0.tar.gz","hashes":{},
+             "upload-time":"2024-01-01T00:00:00Z"},
+            {"filename":"x-1.0-py3-none-manylinux_2_17_x86_64.whl",
+             "url":"https://files/x-1.0-py3-none-manylinux_2_17_x86_64.whl","hashes":{},
+             "upload-time":"2026-10-28T00:00:00Z"},
+            {"filename":"x-1.0-py3-none-any.whl","url":"https://files/x-1.0-py3-none-any.whl",
+             "hashes":{},"upload-time":"2024-01-01T00:00:01Z"},
+            {"filename":"x-2.0.tar.gz","url":"https://files/x-2.0.tar.gz","hashes":{},
+             "upload-time":"2024-02-01T00:00:00Z"},
+            {"filename":"x-2.0-py3-none-any.whl","url":"https://files/x-2.0-py3-none-any.whl",
+             "hashes":{}}
+        ]}"#;
+        let project = parse("x", document).expect("reads");
+        let records = normalize(&project).expect("records").records;
+        let at = |text: &str| Some(text.parse::<jiff::Timestamp>().expect("a time"));
+        assert_eq!(
+            records[0].published_at,
+            at("2024-01-01T00:00:00Z"),
+            "the oldest file"
+        );
+        let file = |name: &str| records[0].narrowed_to(name).expect("a file").published_at;
+        assert_eq!(file("x-1.0-py3-none-any.whl"), at("2024-01-01T00:00:01Z"));
+        assert_eq!(
+            file("x-1.0-py3-none-manylinux_2_17_x86_64.whl"),
+            at("2026-10-28T00:00:00Z")
+        );
+        assert_eq!(records[1].published_at, None, "a file is undated");
+        assert_eq!(
+            records[1]
+                .narrowed_to("x-2.0.tar.gz")
+                .expect("a file")
+                .published_at,
+            at("2024-02-01T00:00:00Z")
         );
     }
 

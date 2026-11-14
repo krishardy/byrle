@@ -174,13 +174,26 @@ safe call for it. Tested 2026-10-12 with a directory `podman unshare chown 1:1` 
 `777`: the build before this opened it and logged `spool open`; this one refuses with
 `is owned by uid 100000`.
 
+A group member can rename a file of their own over a spool file in a group-writable
+directory. Each reader opens the file by its path after the digest was taken from the
+stream, so before 2026-11-05 it read the renamed file. `Spooled` now keeps the device and
+inode it wrote, and `Spooled::reader` errors with `... is not the file written` when the
+file at the path has others. The file is `0600`, so the group cannot write to the inode.
+
 ## The ceiling, and what it is for
 
-`Content-Length` is a claim. The write is bounded by `BYRLE_MAX_ARTIFACT_BYTES`,
-defaulting to 1 GiB. An artifact past it is stored as unreadable, with the ceiling and the
+The write is bounded by `BYRLE_MAX_ARTIFACT_BYTES`, defaulting to 1 GiB, counted on the
+bytes that arrive. An artifact past it is stored as unreadable, with the ceiling and the
 variable named, so the retry is decided rather than deferred again.
 
-The number is a guard against an artifact that claims to be 100 GB, not a size policy. It
+Until 2026-11-08 a `Content-Length` over the ceiling was refused before any byte was read
+and stored as unreadable, with no digest check, so a mirror's wrong header made a clean
+artifact count as running install scripts (finding 38 of the security review). The header
+is no longer read. A body that ends before its header's length stores nothing. An artifact
+that is over the ceiling costs the ceiling's bytes, once. The bytes past the ceiling are not
+hashed, so an artifact stored as unreadable was not checked against its digest.
+
+The number is a guard against an artifact that is 100 GB, not a size policy. It
 sits an order of magnitude above the largest artifact measured, so it should never fire for
 a package anyone publishes, and a job that trips it is logged at WARN for that reason.
 `analysis::MAX_MEMBER_BYTES`, 4 MiB, is the separate bound on one member inside the archive,

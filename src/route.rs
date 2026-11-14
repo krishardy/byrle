@@ -77,3 +77,47 @@ pub fn classify(path: &str) -> Option<(crate::ecosystem::Repository, RequestTarg
     let repository = crate::ecosystem::serving(path)?;
     Some((repository, repository.registry().classify(path)))
 }
+
+/// Whether a request path, its query left out, has a segment the upstream URL's parser
+/// would remove: `.` or `..`, with `%2e` in any case, split on `/` or `\`. The fetched path
+/// would then differ from the one classified.
+pub fn rewritten_by_url_parser(path: &str) -> bool {
+    let path = crate::http::url_path(path);
+    path.split(['/', '\\']).any(|segment| {
+        let dots = segment.to_ascii_lowercase().replace("%2e", ".");
+        dots == "." || dots == ".."
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_segment_the_url_parser_removes_is_found() {
+        for path in [
+            "/npm/-/npm/v1/attestations/../../evil/-/evil-6.6.6.tgz",
+            "/npm/-/npm/v1/attestations/%2e%2e/%2E%2e/evil",
+            "/npm/-/npm/v1/attestations/.%2E/evil",
+            "/npm/-/npm/v1/attestations/%2e/evil",
+            "/npm/./lodash",
+            "/npm/-/npm/v1/attestations\\..\\evil",
+        ] {
+            assert!(rewritten_by_url_parser(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_path_the_url_parser_keeps_is_not() {
+        for path in [
+            "/npm/-/v1/search?text=../..",
+            "/npm/lodash/-/lodash-4.17.21.tgz",
+            "/npm/-/npm/v1/attestations/..%5cevil",
+            "/npm/-/npm/v1/attestations/..%2fevil",
+            "/npm/-/npm/v1/attestations/...",
+            "/pypi/simple/a.b/",
+        ] {
+            assert!(!rewritten_by_url_parser(path), "{path}");
+        }
+    }
+}

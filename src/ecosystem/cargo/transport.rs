@@ -7,19 +7,25 @@ use crate::identity::PackageKey;
 use super::paths::index_path;
 use super::wire::normalize;
 
+/// The headers the cargo index is sent.
+pub const SERVICE: crate::service::Declared = crate::service::Declared {
+    name: "the cargo index",
+    headers: &["accept-encoding"],
+};
+
 /// Fetches index files from one sparse index.
 #[derive(Debug, Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    http: crate::service::Service,
     index: String,
     max_bytes: usize,
 }
 
 impl Client {
     /// `index` is a base URL such as `https://index.crates.io`. A trailing slash is trimmed.
-    pub fn new(http: reqwest::Client, index: &str, max_bytes: usize) -> Self {
+    pub fn new(connection: crate::service::Connection, index: &str, max_bytes: usize) -> Self {
         Self {
-            http,
+            http: crate::service::Service::new(SERVICE, &connection),
             index: index.trim_end_matches('/').to_owned(),
             max_bytes,
         }
@@ -43,8 +49,7 @@ impl Client {
             .get(reqwest::header::CONTENT_ENCODING)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let body = response
-            .bytes()
+        let body = crate::http::capped_body(response, self.max_bytes)
             .await
             .map_err(|e| format!("index request failed: {e}"))?;
         let decoded = crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes)
@@ -81,7 +86,7 @@ mod tests {
     async fn client(answers: Vec<Answer>, max_bytes: usize) -> Client {
         let addr = scripted(answers).await;
         Client::new(
-            reqwest::Client::new(),
+            crate::service::Connection::default(),
             &format!("http://{addr}/"),
             max_bytes,
         )
@@ -91,12 +96,22 @@ mod tests {
     #[tokio::test]
     async fn a_crate_s_index_file_is_fetched_from_its_index_path() {
         let (addr, requests) = recorded(vec![Answer::body(super::super::fixture())]).await;
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         let metadata = Fetch::metadata(&client, &itoa()).await.expect("fetched");
         assert_eq!(metadata.expect("read").records.len(), 37);
         let request = String::from_utf8(requests.lock().unwrap()[0].clone()).unwrap();
         assert!(request.starts_with("GET /it/oa/itoa HTTP/1.1"), "{request}");
         assert!(Fetch::full(&client, &itoa()).await.unwrap().is_none());
+        let listed = Fetch::listing(&client, &[itoa()], "itoa-1.0.0.crate").await;
+        assert!(
+            listed.unwrap().is_none(),
+            "a crate's file names it: nothing is asked"
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     /// An index answering gzip, as index.crates.io does when asked, is read decoded.
@@ -106,6 +121,7 @@ mod tests {
         let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         gzip.write_all(&super::super::fixture()).unwrap();
         let body = gzip.finish().unwrap();
+        let sent = body.len();
         let app = axum::Router::new().fallback(move || {
             let body = body.clone();
             async move { ([(axum::http::header::CONTENT_ENCODING, "gzip")], body) }
@@ -113,9 +129,26 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await });
-        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let client = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            1 << 20,
+        );
         let metadata = client.metadata(&itoa()).await.expect("fetched");
         assert_eq!(metadata.expect("read").records.len(), 37);
+        let small = Client::new(
+            crate::service::Connection::default(),
+            &format!("http://{addr}"),
+            sent,
+        );
+        let error = small
+            .metadata(&itoa())
+            .await
+            .expect_err("decodes past the limit");
+        assert!(
+            error.starts_with("index body could not be decoded"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -127,7 +160,7 @@ mod tests {
             (
                 Answer::body("x".repeat(64)),
                 8,
-                "index body could not be decoded",
+                "index request failed: the body is over 8 bytes",
             ),
         ] {
             let error = client(vec![answer], max_bytes)

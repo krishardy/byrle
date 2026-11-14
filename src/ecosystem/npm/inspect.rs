@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::http::{DecodeError, decode_for_parsing};
 use crate::origin::OriginPolicy;
@@ -39,7 +39,7 @@ pub fn inspect_packument(
 }
 
 /// Read a packument the proxy forwarded: normalise it, keep its records, and say what it
-/// holds. `None` when it did not normalise, which is logged as UNINSPECTED.
+/// contains. `Err` says why it did not normalise.
 ///
 /// The records are built from the bytes that arrived, not the rewritten document, which
 /// would name the proxy's own origin as every artifact's upstream.
@@ -51,7 +51,7 @@ pub fn read_packument(
     encoded_bytes: usize,
     parse_started: Instant,
     path: &str,
-) -> Option<Box<PackageMetadata>> {
+) -> Result<Box<PackageMetadata>, String> {
     match normalize_packument(decoded, detail) {
         Ok(p) => {
             let p = Box::new(p);
@@ -74,12 +74,9 @@ pub fn read_packument(
                 byrle.store.records = held_records,
                 "packument normalized"
             );
-            Some(p)
+            Ok(p)
         }
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: packument did not normalize");
-            None
-        }
+        Err(e) => Err(format!("the packument did not normalize: {e}")),
     }
 }
 

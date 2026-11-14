@@ -103,9 +103,10 @@ pub async fn closing_server() -> std::net::SocketAddr {
 }
 
 /// The address of a server that sends response headers and then nothing, holding the
-/// connection open. For a test that a read timeout ends a stalled body.
+/// connection open. For a test that a read timeout ends a stalled body. It reads the
+/// request's headers first: hyper 1.12 refuses an answer sent before its request.
 pub async fn stalling_server() -> std::net::SocketAddr {
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -116,6 +117,14 @@ pub async fn stalling_server() -> std::net::SocketAddr {
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
             tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => request.extend_from_slice(&chunk[..n]),
+                    }
+                }
                 let _ = stream
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n")
                     .await;
@@ -280,6 +289,12 @@ pub fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
 /// A gzipped tar holding `files`, as an npm tarball or an sdist is.
 pub fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
+    crate::http::gzip(&tar(files, true))
+}
+
+/// A tar holding `files`, ended by its two zero blocks when `ended`, so that a tar after it
+/// reads as more entries of this one.
+pub fn tar(files: &[(&str, &[u8])], ended: bool) -> Vec<u8> {
     let mut builder = tar::Builder::new(Vec::new());
     for (path, bytes) in files {
         let mut header = tar::Header::new_gnu();
@@ -290,10 +305,11 @@ pub fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
             .append_data(&mut header, path, *bytes)
             .expect("appends");
     }
-    let tar = builder.into_inner().expect("builds");
-    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    std::io::Write::write_all(&mut gz, &tar).expect("compresses");
-    gz.finish().expect("finishes")
+    let mut tar = builder.into_inner().expect("builds");
+    if !ended {
+        tar.truncate(tar.len() - 1024);
+    }
+    tar
 }
 
 /// Each thread capturing logs: the most verbose level it keeps, and its buffer.

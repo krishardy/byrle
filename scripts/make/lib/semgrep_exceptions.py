@@ -1,14 +1,16 @@
 """What `make semgrep` was told to leave alone.
 
-Reads the JSON of a scan run with `--disable-nosem --json --verbose`, from the file named on
-the command line, and prints three lists:
+Reads the output of a scan run with `--json --verbose --sarif-output=<file>`: the JSON file
+named first on the command line, then the SARIF file. Prints three lists:
 
 - each finding a `nosemgrep` comment suppresses: file, line, rule, and the line's text
 - `nosemgrep` comments in tracked files that suppress nothing
-- each path semgrep did not scan, with semgrep's reason
+- each path the engine did not scan, with its reason, from the JSON
 
-semgrep reports a suppressed finding only when suppressions are off, where it marks the
-finding `is_ignored`. A comment suppresses a finding on its own line or on the line after it.
+Suppressed findings come from the SARIF, where both semgrep and opengrep keep each one with
+`suppressions`. semgrep 1.185.0's JSON omits them, and with `--disable-nosem` it does not
+mark them `is_ignored`. A comment suppresses a finding on its own line or on the line after
+it.
 """
 
 import json
@@ -42,18 +44,28 @@ def comments() -> list[tuple[str, int, str]]:
 def main() -> None:
     with open(sys.argv[1], encoding="utf-8") as f:
         scan = json.load(f)
+    with open(sys.argv[2], encoding="utf-8") as f:
+        sarif = json.load(f)
 
     ignored = sorted(
-        (r for r in scan["results"] if r["extra"].get("is_ignored")),
-        key=lambda r: (r["path"], r["start"]["line"]),
+        (
+            (
+                r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+                r["locations"][0]["physicalLocation"]["region"]["startLine"],
+                r["ruleId"],
+                r["locations"][0]["physicalLocation"]["region"]["snippet"]["text"],
+            )
+            for run in sarif["runs"]
+            for r in run["results"]
+            if r.get("suppressions")
+        ),
     )
     print(f"suppressed by nosemgrep: {len(ignored)}")
-    for r in ignored:
-        first = r["extra"]["lines"].strip().splitlines()[0]
-        print(f"  {r['path']}:{r['start']['line']}  {r['check_id']}")
-        print(f"      {first}")
+    for path, line, rule, text in ignored:
+        print(f"  {path}:{line}  {rule}")
+        print(f"      {text.strip().splitlines()[0]}")
 
-    live = {(r["path"], r["start"]["line"]) for r in ignored}
+    live = {(path, line) for path, line, _, _ in ignored}
     stale = [
         (path, number, text)
         for path, number, text in comments()

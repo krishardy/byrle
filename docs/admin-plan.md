@@ -46,6 +46,7 @@ From [request-flow](request-flow.md). R6 needs each one counted.
 | refused by policy | refusal status, 403 by default | yes, `refused` |
 | origin the proxy does not serve | refusal status | yes, `unservable` |
 | no strong digest | refusal status | yes, `no-strong-digest` |
+| under a cooldown, nothing dates it | refusal status | yes, `undated` |
 | metadata names neither the version nor the file | refusal status | yes, `not-listed` |
 | registry gave no metadata for the package | 502 | yes, `no-metadata` |
 | upstream bytes did not match their digest | 502 | yes, `upstream-mismatch` |

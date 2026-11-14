@@ -47,6 +47,7 @@ document, September 2026. The set mixes current packages with ones published in 
 | install scripts, abbreviated against full | agreed on all 24,852 pairs | |
 | `deprecated` | `false` in the full documents of `react` (1,079 versions), `react-dom` and `scheduler`, 2026-09-30 | read as absent. As a string field, it made each whole document unreadable |
 | `repository` | `{}`, with no `url`, in `qs` | read as absent, as any `repository` or `gitHead` of another shape is. It made the document unreadable |
+| `scripts` | an object as a value, `blanket` and `travis-cov`, in `joi` 0.1.0 to 0.2.0's full document, 2026-11-05 | the version is skipped, and removed from the document with the `dist-tags` naming it |
 
 `real_packuments_normalise_without_skipping_anything` checks this against a corpus on disk.
 
@@ -88,7 +89,13 @@ installing a registry tarball. A maintainer entry with no name keeps an empty na
 than being dropped, since the number of maintainers is itself a signal.
 
 `real_packuments_normalise_without_skipping_anything` runs over a corpus on disk and is
-ignored by default. Fill one directory per document kind and name them in
+ignored by default. It also filters and repoints each document as the proxy serves it, as
+`rewrite_packument` failing answers 502. On 2026-11-05, 157 packages, 86,202 abbreviated and
+86,197 full versions: no document failed, and joi's five versions were the only skips.
+
+Amended 2026-11-05, for the security review: a skipped version is removed from the
+document the client gets, with each tag naming it. Left in, its tarball URL was not pointed
+at the proxy, and pnpm and yarn fetched it from the origin. Fill one directory per document kind and name them in
 `BYRLE_NPM_CORPUS` (abbreviated) and `BYRLE_NPM_CORPUS_FULL`:
 
 ```text

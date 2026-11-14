@@ -20,6 +20,15 @@ author's email.
 
 No contributor licence agreement is asked for.
 
+## Signatures
+
+Every commit is signed, with a GPG, SSH or S/MIME key registered on your GitHub account
+(Settings, "SSH and GPG keys"), and the commit's email is one of that account's. A pull
+request with a commit GitHub does not show as "Verified" fails CI's `signatures` job,
+`make pr-signatures PR=<number>`. `git commit -S` signs one commit. `git config
+commit.gpgsign true` signs each. `make commit-fixup CHECKS=signature FIX=1` signs the
+commits on a branch that are not pushed.
+
 ## Developer's Certificate of Origin
 
 ```
