@@ -1,4 +1,5 @@
-# Lint, unit tests, the offline query cache check, and a pull request's sign-offs.
+# Lint, unit tests, the offline query cache check, and a pull request's sign-offs and
+# signatures.
 #
 # Each job runs a `make` target, so what CI checks is what a contributor runs. The logic
 # lives in `scripts/make/`, per CLAUDE.md; nothing here is more than an invocation.
@@ -66,3 +67,20 @@ jobs:
       - run: make commit-fixup BASE="origin/$BASE_REF" CHECKS=sign-off
         env:
           BASE_REF: ${{ github.base_ref }}
+
+  # Pull requests only: each commit in the pull request has a signature GitHub verified
+  # against its author's registered keys.
+  signatures:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make pr-signatures PR="$PR"
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}

@@ -518,6 +518,10 @@ Items that I've added that are not stage-bound.
     Tried in `make sast` and removed from it. `make opengrep` stays, sharing
     `scripts/make/lib/semgrep_scan.sh` with `make semgrep`. No CI step: CI runs no
     `make sast` job.
+55. [x] Check in CI that each commit in a pull request is signed with a valid signature.
+    Raised 2026-11-14. Done 2026-11-14:
+    [pr-commit-signatures](docs/engineering_decisions/0139-pr-commit-signatures.md). The
+    `signatures` job runs `make pr-signatures`, which fails on a commit GitHub did not verify.
 
 ## Architecture Refactor
 
