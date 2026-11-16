@@ -1,0 +1,7 @@
+# The policy byrle enforces, installed at /etc/byrle/policy.yaml. `version: 1` alone
+# is the defaults. Every key is in docs/policy-reference.md.
+#
+# Run the playbook after changing it: it installs the file and reloads byrle, with no
+# restart. byrle_policy_src names another file.
+
+version: 1

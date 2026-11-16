@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-compose ansible-check terraform-check smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
@@ -33,6 +33,10 @@ help:
 	@echo "  smoke-npm-clients  whether npm's other four clients route artifacts through it"
 	@echo "  smoke-proxy    whether upstream traffic honours HTTP_PROXY, HTTPS_PROXY and NO_PROXY"
 	@echo "  smoke-tls-front  the proxy behind nginx on TLS, checked with npm and pip"
+	@echo "  smoke-compose  deployment/compose up with a local CA, checked through nginx;"
+	@echo "                 BYRLE_IMAGE=<image>, COMPOSE=<command>"
+	@echo "  ansible-check  syntax-check and ansible-lint deployment/ansible, with pinned versions"
+	@echo "  terraform-check  tofu fmt and validate deployment/terraform-aws, with a pinned OpenTofu"
 	@echo "  smoke-console    the Stage 4.9 exit test: installs, the console API, alerts, Dex login"
 	@echo "  bench          install times through the proxy against direct, for npm and uv"
 	@echo "  memory         the proxy's peak, median and idle RSS under install and document loads"
@@ -158,6 +162,15 @@ smoke-proxy:
 
 smoke-tls-front:
 	@scripts/make/smoke-tls-front.sh
+
+smoke-compose:
+	@scripts/make/smoke-compose.sh
+
+ansible-check:
+	@scripts/make/ansible-check.sh
+
+terraform-check:
+	@scripts/make/terraform-check.sh
 
 smoke-console:
 	@scripts/make/smoke-console.sh

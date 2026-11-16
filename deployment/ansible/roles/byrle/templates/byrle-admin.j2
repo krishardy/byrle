@@ -1,0 +1,6 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Runs byrle as the service does: as the byrle user, with /etc/byrle/byrle.env. For the
+# commands that use the database, such as `byrle-admin account create alice`.
+exec systemd-run --quiet --pipe --wait --collect --service-type=exec \
+    -p User=byrle -p EnvironmentFile=/etc/byrle/byrle.env /usr/local/bin/byrle "$@"

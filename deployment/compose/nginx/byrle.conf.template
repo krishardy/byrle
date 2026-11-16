@@ -1,0 +1,22 @@
+# docs/fronting-tls.md's server block, for the compose network. The nginx image writes this
+# to /etc/nginx/conf.d/byrle.conf with BYRLE_RP_KEY filled in. The certificate and key are
+# BYRLE_TLS_CERT and BYRLE_TLS_KEY on the host. It is the only server on 443, so it answers
+# every name.
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    ssl_certificate /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+
+    location / {
+        proxy_pass http://byrle:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Byrle-RP-Key ${BYRLE_RP_KEY};
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+    }
+}

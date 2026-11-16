@@ -211,6 +211,54 @@ report_pin Gradle "$(curl -sSf https://services.gradle.org/versions/current \
     | sed -n 's/^  "version" : "\(.*\)",$/\1/p' || true)" \
     "$gradle_version" scripts/make/lib/gradle.sh
 
+# A PyPI project's newest release.
+pypi_version() {
+    curl -sSf "https://pypi.org/pypi/$1/json" \
+        | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["info"]["version"])'
+}
+
+# shellcheck source=scripts/make/lib/ansible.sh
+. "$repo_root/scripts/make/lib/ansible.sh"
+report_pin ansible-core "$(pypi_version ansible-core || true)" \
+    "$ansible_core_version" scripts/make/lib/ansible.sh
+report_pin ansible-lint "$(pypi_version ansible-lint || true)" \
+    "$ansible_lint_version" scripts/make/lib/ansible.sh
+
+# shellcheck source=scripts/make/lib/terraform.sh
+. "$repo_root/scripts/make/lib/terraform.sh"
+report_pin OpenTofu "$(curl -sSf https://api.github.com/repos/opentofu/opentofu/releases/latest \
+    | tag_name | sed 's/^v//' || true)" \
+    "$tofu_version" scripts/make/lib/terraform.sh
+
+# A provider's pin in deployment/terraform-aws/versions.tf: the `version` after `$1 = {`.
+provider_pin() {
+    awk -v name="$1" '$1 == name && $3 == "{" { found = 1 }
+        found && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' \
+        "$repo_root/deployment/terraform-aws/versions.tf"
+}
+for provider in aws random; do
+    report_pin "terraform provider $provider" \
+        "$(curl -sSf "https://api.github.com/repos/hashicorp/terraform-provider-$provider/releases/latest" \
+        | tag_name | sed 's/^v//' || true)" \
+        "$(provider_pin "$provider")" deployment/terraform-aws/versions.tf
+done
+
+note "deployment images"
+# Each image deployment/ pins by digest, against the digest its tag has now. Reported, and
+# failed on only with CHECK_DEPS_STRICT=1.
+images=0
+python3 -I "$repo_root/scripts/make/lib/image_digests.py" \
+    "$repo_root/deployment/compose/compose.yaml" "$repo_root/deployment/compose/env.example" \
+    "$repo_root/deployment/terraform-aws/ecs.tf" \
+    | sed "s|$repo_root/||" || images=$?
+if [[ "$images" -ne 0 ]]; then
+    if [[ "${CHECK_DEPS_STRICT:-0}" == "1" ]]; then
+        failed=1
+    else
+        echo "    (moved, unpinned or unread, not failing; set CHECK_DEPS_STRICT=1 to enforce)"
+    fi
+fi
+
 note "result"
 if [[ "$failed" -ne 0 ]]; then
     echo "FAIL: see above."

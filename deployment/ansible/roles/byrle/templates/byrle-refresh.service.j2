@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Loads byrle's intel once. Run by byrle-refresh.timer. It exits 1 when a stream did not
+# load and its last load stays, and systemd reports that as a failure.
+[Unit]
+Description=byrle refresh
+Wants=network-online.target
+After=network-online.target{{ ' postgresql.service' if byrle_postgres_local else '' }}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/byrle refresh
+{% include 'hardening.j2' %}

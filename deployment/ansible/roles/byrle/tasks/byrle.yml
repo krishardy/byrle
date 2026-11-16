@@ -1,0 +1,98 @@
+- name: Create the byrle system user
+  ansible.builtin.user:
+    name: byrle
+    system: true
+    home: /var/lib/byrle
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create /opt/byrle
+  ansible.builtin.file:
+    path: /opt/byrle
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the release
+  ansible.builtin.get_url:
+    url: "{{ byrle_release_url }}/v{{ byrle_version }}/{{ byrle_release }}.tar.gz"
+    dest: "/opt/byrle/{{ byrle_release }}.tar.gz"
+    checksum: "sha256:{{ byrle_release_sha256[ansible_facts['architecture']] }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Unpack the release
+  ansible.builtin.unarchive:
+    src: "/opt/byrle/{{ byrle_release }}.tar.gz"
+    dest: /opt/byrle
+    remote_src: true
+    creates: "/opt/byrle/{{ byrle_release }}/byrle"
+
+- name: Link /usr/local/bin/byrle to the release
+  ansible.builtin.file:
+    src: "/opt/byrle/{{ byrle_release }}/byrle"
+    dest: /usr/local/bin/byrle
+    state: link
+  notify: Restart byrle
+
+- name: Create /etc/byrle
+  ansible.builtin.file:
+    path: /etc/byrle
+    state: directory
+    owner: root
+    group: byrle
+    mode: "0750"
+
+- name: Install the policy
+  ansible.builtin.copy:
+    src: "{{ byrle_policy_src }}"
+    dest: /etc/byrle/policy.yaml
+    owner: root
+    group: byrle
+    mode: "0640"
+  notify: Reload byrle
+
+- name: Install the environment file
+  ansible.builtin.template:
+    src: byrle.env.j2
+    dest: /etc/byrle/byrle.env
+    owner: root
+    group: byrle
+    mode: "0640"
+  notify: Restart byrle
+
+- name: Install the systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - byrle.service
+    - byrle-refresh.service
+    - byrle-refresh.timer
+  notify: Restart byrle
+
+- name: Install byrle-admin
+  ansible.builtin.template:
+    src: byrle-admin.j2
+    dest: /usr/local/sbin/byrle-admin
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Start byrle
+  ansible.builtin.systemd_service:
+    name: byrle.service
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Start the refresh timer
+  ansible.builtin.systemd_service:
+    name: byrle-refresh.timer
+    state: started
+    enabled: true

@@ -1,0 +1,7 @@
+# The policy byrle enforces, mounted read-only at /etc/byrle/policy.yaml. `version: 1` alone
+# is the defaults. Every key is in docs/policy-reference.md.
+#
+# After editing it, reload it without a restart:
+#   docker compose kill -s HUP byrle
+
+version: 1

@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# Runs byrle-refresh.service on byrle_refresh_on_calendar, a minute after the timer starts,
+# and at boot if a run was missed.
+[Unit]
+Description=byrle refresh on a schedule
+
+[Timer]
+OnCalendar={{ byrle_refresh_on_calendar }}
+OnActiveSec=1min
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

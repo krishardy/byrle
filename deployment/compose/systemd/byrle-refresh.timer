@@ -1,0 +1,11 @@
+# Runs byrle-refresh.service every 6 hours, and at boot if a run was missed.
+[Unit]
+Description=byrle refresh every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

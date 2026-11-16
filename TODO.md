@@ -412,7 +412,8 @@ Items that I've added that are not stage-bound.
     Each key takes the last matching entry's value; ids add up; overlaps load; `policy
     check` reports an entry that never applies and one that sets a key back.
 39. Terraform deployment scripts for dev, staging and prod. Raised 2026-10-16. Done in a
-    separate repository, `byrle-deploy`, not this one.
+    separate repository, `byrle-deploy`, not this one. Replaced 2026-11-15 by #56, in this
+    repository.
 40. End-to-end tests run against each environment after a deployment. Raised 2026-10-16.
     Done in `byrle-deploy`, with #39.
 41. A byrle CLI a remote user runs against a deployed byrle, for analysis commands such as
@@ -522,6 +523,28 @@ Items that I've added that are not stage-bound.
     Raised 2026-11-14. Done 2026-11-14:
     [pr-commit-signatures](docs/engineering_decisions/0139-pr-commit-signatures.md). The
     `signatures` job runs `make pr-signatures`, which fails on a commit GitHub did not verify.
+56. Deployment scripts in `deployment/`, one directory per target. Raised 2026-11-15.
+    [deployment-targets](docs/engineering_decisions/0140-deployment-targets.md).
+    - [ ] `deployment/compose/`: Docker Compose or Podman Compose, with the release image,
+          Postgres 18 and nginx on TLS. Started 2026-11-15: `compose.yaml`, `env.example`,
+          the nginx template, a systemd timer for `refresh`, and `make smoke-compose`.
+          Left: run `make smoke-compose` with Docker and with Podman, and add it to CI.
+    - [ ] For the user: pin `BYRLE_IMAGE` in `deployment/compose/env.example` by digest.
+          Run `docker buildx imagetools inspect ghcr.io/krishardy/byrle:0.1.0` on a machine
+          that reaches ghcr.io and set `ghcr.io/krishardy/byrle:0.1.0@sha256:<its Digest:>`.
+          ghcr.io answered the egress proxy of the machine that pinned the others with 403.
+          `make check-deps` reports it as not pinned until then. Raised 2026-11-16.
+    - [ ] `deployment/ansible/`: byrle directly on a host, from the release tarball, with
+          a systemd unit, Postgres, nginx and the refresh timer. Started 2026-11-16: the
+          `byrle` role, `site.yml`, and `make ansible-check`, which passes ansible-lint's
+          production profile. Left: run it against Debian 13 and Ubuntu 26.04 hosts, in
+          a test that CI can run.
+    - [ ] `deployment/terraform-aws/`: byrle on AWS, with RDS for Postgres. Started
+          2026-11-16: ECS Fargate, RDS, an ALB with ACM, EFS for the logs, EventBridge
+          Scheduler for `refresh`, and `make terraform-check`, which passes `tofu validate`.
+          Left: apply it to an AWS account; check that ECS Exec runs `byrle` in the
+          distroless image; check that RDS offers Postgres 18; add `make terraform-check`
+          to CI.
 
 ## Architecture Refactor
 
