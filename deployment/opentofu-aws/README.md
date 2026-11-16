@@ -1,11 +1,11 @@
-# byrle on AWS, with Terraform
+# byrle on AWS, with OpenTofu
 
 The release image on ECS Fargate, RDS for Postgres, and an Application Load Balancer on TLS
 with an ACM certificate. [runbook](../../docs/runbook.md) says what to run in what order once
-it is up. `make terraform-check` runs `tofu fmt -check` and `tofu validate`. Nothing here has
+it is up. `make opentofu-check` runs `tofu fmt -check` and `tofu validate`. Nothing here has
 been planned or applied against an AWS account yet.
 
-It needs Terraform 1.11 or OpenTofu 1.11, for write-only arguments.
+It needs OpenTofu 1.13 or later. `make opentofu-check` runs 1.13.9.
 
 | Piece | Where |
 |---|---|
@@ -49,13 +49,13 @@ Configure a backend for the state before the first apply. The state holds no pas
 ## 2. Apply
 
 ```
-terraform init
-terraform apply
-eval "$(terraform output -raw refresh_now)"
+tofu init
+tofu apply
+eval "$(tofu output -raw refresh_now)"
 curl https://byrle.example.com/-/byrle/ready
 ```
 
-`init` writes `.terraform.lock.hcl`. Keep it with the state's backend configuration.
+`init` checks the providers against `.terraform.lock.hcl`.
 
 byrle applies its migrations at startup. `/-/byrle/ready` answers 200 once the first refresh
 has loaded intel. Until then, an artifact answers 503.
@@ -76,9 +76,9 @@ It needs the Session Manager plugin for the AWS CLI.
 
 | Change | Then |
 |---|---|
-| `policy.yaml`, a variable, a new release | `terraform apply`. A new task starts once the old one has stopped, so installs go unanswered for about a minute |
-| a new database password | raise `db_password_version`, `terraform apply`, then `aws ecs update-service --cluster byrle --service byrle --force-new-deployment` |
-| a new `BYRLE_RP_KEY` | raise `rp_key_version`, `terraform apply`, then the same `update-service` |
+| `policy.yaml`, a variable, a new release | `tofu apply`. A new task starts once the old one has stopped, so installs go unanswered for about a minute |
+| a new database password | raise `db_password_version`, `tofu apply`, then `aws ecs update-service --cluster byrle --service byrle --force-new-deployment` |
+| a new `BYRLE_RP_KEY` | raise `rp_key_version`, `tofu apply`, then the same `update-service` |
 | a new nginx | set the digest in `ecs.tf`. `make check-deps` reports a tag that moved |
 
 One task runs at a time, because two would append to the same logs on EFS.

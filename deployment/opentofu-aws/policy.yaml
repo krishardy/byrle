@@ -1,5 +1,5 @@
 # The policy byrle enforces. `version: 1` alone is the defaults. Every key is in
-# docs/policy-reference.md. A change reaches byrle on the next `terraform apply`, which starts
+# docs/policy-reference.md. A change reaches byrle on the next `tofu apply`, which starts
 # a new task.
 
 version: 1

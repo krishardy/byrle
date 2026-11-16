@@ -539,11 +539,11 @@ Items that I've added that are not stage-bound.
           `byrle` role, `site.yml`, and `make ansible-check`, which passes ansible-lint's
           production profile. Left: run it against Debian 13 and Ubuntu 26.04 hosts, in
           a test that CI can run.
-    - [ ] `deployment/terraform-aws/`: byrle on AWS, with RDS for Postgres. Started
+    - [ ] `deployment/opentofu-aws/`: byrle on AWS, with RDS for Postgres. Started
           2026-11-16: ECS Fargate, RDS, an ALB with ACM, EFS for the logs, EventBridge
-          Scheduler for `refresh`, and `make terraform-check`, which passes `tofu validate`.
+          Scheduler for `refresh`, and `make opentofu-check`, which passes `tofu validate`.
           Left: apply it to an AWS account; check that ECS Exec runs `byrle` in the
-          distroless image; check that RDS offers Postgres 18; add `make terraform-check`
+          distroless image; check that RDS offers Postgres 18; add `make opentofu-check`
           to CI.
 
 ## Architecture Refactor

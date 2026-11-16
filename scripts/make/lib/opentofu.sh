@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# The OpenTofu release `make terraform-check` runs, and the SHA-256 of its tarball per
+# The OpenTofu release `make opentofu-check` runs, and the SHA-256 of its tarball per
 # platform, from the release's tofu_<version>_SHA256SUMS. Sourced, not executed.
-#
-# OpenTofu, not Terraform: its releases are on GitHub, and HashiCorp's download and registry
-# hosts refuse the machine this was written on. deployment/terraform-aws runs on both.
 # shellcheck disable=SC2034  # read by the scripts that source this
 
 tofu_version="1.13.9"

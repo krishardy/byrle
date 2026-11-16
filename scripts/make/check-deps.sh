@@ -224,23 +224,23 @@ report_pin ansible-core "$(pypi_version ansible-core || true)" \
 report_pin ansible-lint "$(pypi_version ansible-lint || true)" \
     "$ansible_lint_version" scripts/make/lib/ansible.sh
 
-# shellcheck source=scripts/make/lib/terraform.sh
-. "$repo_root/scripts/make/lib/terraform.sh"
+# shellcheck source=scripts/make/lib/opentofu.sh
+. "$repo_root/scripts/make/lib/opentofu.sh"
 report_pin OpenTofu "$(curl -sSf https://api.github.com/repos/opentofu/opentofu/releases/latest \
     | tag_name | sed 's/^v//' || true)" \
-    "$tofu_version" scripts/make/lib/terraform.sh
+    "$tofu_version" scripts/make/lib/opentofu.sh
 
-# A provider's pin in deployment/terraform-aws/versions.tf: the `version` after `$1 = {`.
+# A provider's pin in deployment/opentofu-aws/versions.tf: the `version` after `$1 = {`.
 provider_pin() {
     awk -v name="$1" '$1 == name && $3 == "{" { found = 1 }
         found && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' \
-        "$repo_root/deployment/terraform-aws/versions.tf"
+        "$repo_root/deployment/opentofu-aws/versions.tf"
 }
 for provider in aws random; do
-    report_pin "terraform provider $provider" \
-        "$(curl -sSf "https://api.github.com/repos/hashicorp/terraform-provider-$provider/releases/latest" \
+    report_pin "OpenTofu provider $provider" \
+        "$(curl -sSf "https://api.github.com/repos/opentofu/terraform-provider-$provider/releases/latest" \
         | tag_name | sed 's/^v//' || true)" \
-        "$(provider_pin "$provider")" deployment/terraform-aws/versions.tf
+        "$(provider_pin "$provider")" deployment/opentofu-aws/versions.tf
 done
 
 note "deployment images"
@@ -249,7 +249,7 @@ note "deployment images"
 images=0
 python3 -I "$repo_root/scripts/make/lib/image_digests.py" \
     "$repo_root/deployment/compose/compose.yaml" "$repo_root/deployment/compose/env.example" \
-    "$repo_root/deployment/terraform-aws/ecs.tf" \
+    "$repo_root/deployment/opentofu-aws/ecs.tf" \
     | sed "s|$repo_root/||" || images=$?
 if [[ "$images" -ne 0 ]]; then
     if [[ "${CHECK_DEPS_STRICT:-0}" == "1" ]]; then

@@ -8,7 +8,7 @@ sets out. [runbook](../docs/runbook.md) applies to each once it is up.
 |---|---|---|
 | Docker Compose or Podman Compose, on one host | [compose/](compose/README.md) | Started. `make smoke-compose` checks it; not yet run |
 | Directly on a host, with Ansible | [ansible/](ansible/README.md) | Started. `make ansible-check` passes; not yet run against a host |
-| AWS, with Terraform | [terraform-aws/](terraform-aws/README.md) | Started. `make terraform-check` passes; not yet applied to an AWS account |
+| AWS, with OpenTofu | [opentofu-aws/](opentofu-aws/README.md) | Started. `make opentofu-check` passes; not yet applied to an AWS account |
 
 `container/compose.yaml` is the development environment, built from source by `make
 run-dev`. It is not a deployment.

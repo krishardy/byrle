@@ -2,9 +2,9 @@
 
 - **Number:** 0140
 - **Status:** Started 2026-11-15, for TODO.md ad-hoc #56: `deployment/compose/`,
-  `deployment/ansible/` and `deployment/terraform-aws/` are written and not yet run.
+  `deployment/ansible/` and `deployment/opentofu-aws/` are written and not yet run.
 - **Where:** `deployment/`, `scripts/make/smoke-compose.sh`, `scripts/make/ansible-check.sh`,
-  `scripts/make/terraform-check.sh`
+  `scripts/make/opentofu-check.sh`
 - **Related:** [tls-front-nginx](0100-tls-front-nginx.md),
   [release-provenance](0108-release-provenance.md)
 
@@ -16,10 +16,11 @@ Deployment scripts are kept in this repository, under `deployment/`, one directo
 |---|---|
 | Docker Compose or Podman Compose, on one host | `compose/` |
 | Directly on a host, with Ansible | `ansible/` |
-| AWS, with Terraform | `terraform-aws/` |
+| AWS, with OpenTofu | `opentofu-aws/` |
 
 This replaces TODO.md ad-hoc #39, which put Terraform in a separate repository,
-`byrle-deploy`. Decided by the user 2026-11-15.
+`byrle-deploy`. Decided by the user 2026-11-15. The AWS target uses OpenTofu, not Terraform.
+Decided by the user 2026-11-16.
 
 ## `compose/`
 
@@ -57,7 +58,7 @@ pip install with a token made through `exec`. It removes the containers and volu
 `scripts/make/lib/ansible.sh`, and runs `--syntax-check` and ansible-lint's `production`
 profile. `make check-deps` reports a newer release of either.
 
-## `terraform-aws/`
+## `opentofu-aws/`
 
 | Choice | Why |
 |---|---|
@@ -71,13 +72,12 @@ profile. `make check-deps` reports a newer release of either.
 | One task, replaced only after the old one stops | Two would append to the same logs on EFS. An apply that changes the task leaves installs unanswered for about a minute |
 | Tasks in public subnets with public addresses, admitting only the load balancer | Their requests to the registries would go through a NAT gateway otherwise, charged by the gigabyte |
 | `refresh` as its own task definition, started by EventBridge Scheduler | The proxy's task definition has nginx, which never exits |
-| Provider versions pinned exactly in `versions.tf`, and no lock file committed | Terraform records `registry.terraform.io` in the lock, OpenTofu `registry.opentofu.org`. An operator keeps the lock their own `init` writes |
+| Provider versions pinned exactly in `versions.tf`, and `.terraform.lock.hcl` committed | The lock holds each provider's `h1:` hash for linux_amd64, linux_arm64, darwin_amd64 and darwin_arm64, so `init` refuses a provider package that differs. `tofu providers lock` computed them from the providers' GitHub release zips, each checked against the release's `SHA256SUMS` |
 
-`make terraform-check` downloads OpenTofu 1.13.9 from its GitHub release, checks it against
-the SHA-256 in `scripts/make/lib/terraform.sh`, and runs `tofu fmt -check` and `tofu
-validate`. OpenTofu, because HashiCorp's download and registry hosts answered this machine's
-egress proxy with 403. `make check-deps` reports a newer OpenTofu, AWS provider or random
-provider, and checks `ecs.tf`'s nginx digest.
+`make opentofu-check` downloads OpenTofu 1.13.9 from its GitHub release, checks it against
+the SHA-256 in `scripts/make/lib/opentofu.sh`, and runs `tofu fmt -check`, `tofu init
+-lockfile=readonly` and `tofu validate`. `make check-deps` reports a newer OpenTofu, AWS
+provider or random provider, and checks `ecs.tf`'s nginx digest.
 
 ## Not verified here
 
@@ -91,8 +91,8 @@ machine and read.
 `env.example` names the release image by tag alone. ghcr.io answered this machine's egress
 proxy with 403, so its digest was not read, and `make check-deps` reports it as not pinned.
 
-`deployment/terraform-aws/` has not been planned or applied: there is no AWS account here.
-`make terraform-check` ran with the providers from OpenTofu's GitHub releases in a local
+`deployment/opentofu-aws/` has not been planned or applied: there is no AWS account here.
+`make opentofu-check` ran with the providers from OpenTofu's GitHub releases in a local
 mirror, since registry.opentofu.org also answered 403. Not known: whether ECS Exec runs
 `byrle` in the distroless image, and whether RDS offers Postgres 18 in a given region.
 `config.sh` ran on this machine with its paths moved and a stand-in for `envsubst`, and

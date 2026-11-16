@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Check deployment/terraform-aws: `tofu fmt -check` and `tofu validate`, with the OpenTofu
-# release pinned in scripts/make/lib/terraform.sh. It is downloaded into target/tofu and
+# Check deployment/opentofu-aws: `tofu fmt -check` and `tofu validate`, with the OpenTofu
+# release pinned in scripts/make/lib/opentofu.sh. It is downloaded into target/tofu and
 # checked against the pinned SHA-256.
 #
 # Nothing is planned or applied: no AWS account is used. `tofu init` fetches the providers
-# versions.tf pins, into target/tofu/data. The .terraform.lock.hcl it writes is ignored by git:
-# an operator keeps the one their own `init` writes.
+# versions.tf pins, into target/tofu/data, and checks them against the committed
+# .terraform.lock.hcl.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=scripts/make/lib/terraform.sh
-. "$repo_root/scripts/make/lib/terraform.sh"
+# shellcheck source=scripts/make/lib/opentofu.sh
+. "$repo_root/scripts/make/lib/opentofu.sh"
 
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) platform=linux_amd64 ;;
@@ -31,8 +31,8 @@ if [[ ! -x "$tofu" ]]; then
     rm "$dir/$tarball"
 fi
 
-cd "$repo_root/deployment/terraform-aws"
+cd "$repo_root/deployment/opentofu-aws"
 export TF_DATA_DIR="$repo_root/target/tofu/data" TF_IN_AUTOMATION=1
 "$tofu" fmt -check -diff
-"$tofu" init -backend=false -input=false
+"$tofu" init -backend=false -input=false -lockfile=readonly
 "$tofu" validate
