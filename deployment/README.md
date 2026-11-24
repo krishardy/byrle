@@ -10,5 +10,5 @@ sets out. [runbook](../docs/runbook.md) applies to each once it is up.
 | Directly on a host, with Ansible | [ansible/](ansible/README.md) | Started. `make ansible-check` passes; not yet run against a host |
 | AWS, with OpenTofu | [opentofu-aws/](opentofu-aws/README.md) | Started. `make opentofu-check` passes; not yet applied to an AWS account |
 
-`container/compose.yaml` is the development environment, built from source by `make
-run-dev`. It is not a deployment.
+`container/compose.yaml` is the development Postgres, started by `make start-dev-db`. It
+is not a deployment.

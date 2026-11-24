@@ -1,8 +1,8 @@
-# The policy the development environment enforces. container/compose.yaml mounts it read-only at
-# /etc/byrle/policy.yaml and sets BYRLE_POLICY to that path.
+# The policy the development server enforces. `make start-dev-server` sets BYRLE_POLICY to
+# this file.
 #
 # Edit it, then reload it without a restart:
-#   podman kill -s HUP byrle-dev
+#   kill -HUP <the byrle daemon pid>
 #
 # Every key is in docs/policy-reference.md, with comments in examples/policy.yaml.
 

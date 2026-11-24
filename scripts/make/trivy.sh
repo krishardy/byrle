@@ -3,7 +3,7 @@
 #
 # Two passes, both run even if the first fails:
 #   config  misconfigurations in container/Containerfile. trivy has no checks for compose.yaml
-#   image   known vulnerabilities in the packages of the image `make run-dev` runs
+#   image   known vulnerabilities in the packages of the development image built from it
 #
 # The image is built here with podman, from the build cache, so the scan is of the current
 # Containerfile. It is handed to trivy as a `podman save` archive, which needs no podman

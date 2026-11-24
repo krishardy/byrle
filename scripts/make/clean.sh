@@ -2,7 +2,7 @@
 # Remove what the build and the make targets write into the checkout: the cargo target
 # directories of byrle and the config-format spike, dist/, and Python's __pycache__.
 #
-# The run-dev Postgres volume and .env are left alone: one holds data, the other a token.
+# The development Postgres volume and .env are left alone: one holds data, the other a token.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

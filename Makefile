@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context release-image verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-compose ansible-check opentofu-check smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-compose ansible-check opentofu-check smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup start-dev-db start-dev-server
 
 help:
 	@echo "byrle targets:"
@@ -24,8 +24,8 @@ help:
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
-	@echo "  run            run the proxy in the foreground"
-	@echo "  run-dev        build byrle and start it with Postgres in podman-compose"
+	@echo "  start-dev-db   start the development Postgres in podman-compose, on 127.0.0.1:DEV_DB_PORT"
+	@echo "  start-dev-server  start-dev-db, then byrle on the host with cargo run, in the foreground"
 	@echo "  smoke-npm      what the proxy does, checked with npm"
 	@echo "  smoke-python   what the proxy does for PyPI, checked with pip and uv"
 	@echo "  smoke-cargo    what the proxy does for crates.io, checked with cargo"
@@ -62,12 +62,14 @@ help:
 #   make trufflehog TRUFFLEHOG_REPO_ROOT=/pwd
 TRUFFLEHOG_REPO_ROOT ?= $(CURDIR)
 
-# The development database's role, password and database, for run-dev. Postgres reads
-# them only when it creates its volume; see container/compose.yaml.
+# The development database's role, password, database and host port, for start-dev-db and
+# start-dev-server. Postgres reads the first three only when it creates its volume; see
+# container/compose.yaml.
 DEV_DB_USER ?= byrle
 DEV_DB_PASSWORD ?= byrle
 DEV_DB_NAME ?= byrle
-DEV_DB_ARGS = $(DEV_DB_USER) $(DEV_DB_PASSWORD) $(DEV_DB_NAME)
+DEV_DB_PORT ?= 5433
+DEV_DB_ARGS = $(DEV_DB_USER) $(DEV_DB_PASSWORD) $(DEV_DB_NAME) $(DEV_DB_PORT)
 
 # Recipes stay one-line wrappers; the logic lives in scripts/make/<target>.sh
 dev-setup:
@@ -137,11 +139,11 @@ check-deps:
 update-deps:
 	@scripts/make/update-deps.sh
 
-run:
-	@scripts/make/run.sh
+start-dev-db:
+	@scripts/make/start-dev-db.sh $(DEV_DB_ARGS)
 
-run-dev:
-	@scripts/make/run-dev.sh $(DEV_DB_ARGS)
+start-dev-server: start-dev-db
+	@scripts/make/start-dev-server.sh $(DEV_DB_ARGS)
 
 smoke-npm:
 	@scripts/make/smoke-npm.sh

@@ -1,8 +1,8 @@
-# byrle for the development environment in compose.yaml, started by `make run-dev`. Its
-# build context is the repository root.
+# A development image of byrle, built and scanned by `make trivy`. Its build context is the
+# repository root.
 #
 # A debug build, as `cargo run` makes. `.sqlx/` holds the query cache, so the build needs
-# no database. The runtime image keeps a shell, so `podman exec -it byrle-dev sh` can run
+# no database. The runtime image keeps a shell, so `podman exec -it <container> sh` can run
 # byrle's other commands next to the daemon.
 
 FROM docker.io/library/rust:1-slim-trixie AS build
