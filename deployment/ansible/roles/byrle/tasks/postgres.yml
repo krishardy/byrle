@@ -1,3 +1,10 @@
+# deb822_repository imports the `debian` Python module on the host, which a fresh Debian or
+# Ubuntu does not have.
+- name: Install python3-debian, for deb822_repository
+  ansible.builtin.apt:
+    name: python3-debian
+    update_cache: true
+
 - name: Add the PostgreSQL apt repository
   ansible.builtin.deb822_repository:
     name: pgdg
