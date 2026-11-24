@@ -112,7 +112,7 @@ Implemented means it is in the code, and the file names where.
 | 0098 | [The console's web interface: Rust, HTML from maud](0098-console-web-interface.md) | Decided 2026-10-11 |  |
 | 0099 | [Logs are files, rotated daily, compressed after 3 days, kept 365 days](0099-log-rotation.md) | Decided 2026-10-11 |  |
 | 0100 | [The TLS front is nginx, not Caddy](0100-tls-front-nginx.md) | Implemented 2026-10-12 |  |
-| 0101 | [The development environment runs in podman-compose](0101-dev-environment-compose.md) | Implemented 2026-10-12 |  |
+| 0101 | [The development environment runs in podman-compose](0101-dev-environment-compose.md) | Superseded 2026-11-25 by dev-db-and-host-server | [0141](0141-dev-db-and-host-server.md) |
 | 0102 | [`advisory.cached`: when byrle first stored an advisory](0102-advisory-cached.md) | Implemented 2026-10-12 |  |
 | 0103 | [Trufflehog findings are allowed by exact value](0103-credential-scan-allowlist.md) | Implemented 2026-10-12 |  |
 | 0104 | [VirusTotal reports a signal on an artifact](0104-virustotal.md) | Implemented 2026-10-13 |  |
@@ -153,3 +153,4 @@ Implemented means it is in the code, and the file names where.
 | 0139 | [Each commit in a pull request has a signature GitHub verified](0139-pr-commit-signatures.md) | Implemented 2026-11-14 |  |
 | 0140 | [Deployment scripts in `deployment/`, one directory per target, compose first](0140-deployment-targets.md) | Started 2026-11-15 |  |
 | 0141 | [A release verifies only as `release.yml`'s run for its tag, and no third-party action runs while one is made](0141-release-trust.md) | Implemented 2026-11-24 |  |
+| 0142 | [The development Postgres runs in podman-compose, and byrle on the host](0142-dev-db-and-host-server.md) | Implemented 2026-11-25 |  |

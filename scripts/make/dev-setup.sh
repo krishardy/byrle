@@ -117,8 +117,8 @@ else
     echo "    https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh"
 fi
 
-echo "==> podman-compose (the development environment, used by 'make run-dev')"
-system_package podman-compose podman-compose "'make run-dev' cannot start byrle and Postgres."
+echo "==> podman-compose (the development environment, used by 'make start-dev-db')"
+system_package podman-compose podman-compose "'make start-dev-db' cannot start Postgres."
 
 echo "==> trivy (container scanning, used by 'make sast')"
 # Not in Debian's or Ubuntu's archive; apt-get needs Aqua Security's repository first.
