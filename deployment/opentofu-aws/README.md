@@ -31,7 +31,7 @@ cp terraform.tfvars.example terraform.tfvars
 | Variable | Default | Set to |
 |---|---|---|
 | `region` | none, required | the AWS region |
-| `byrle_image` | none, required | the release by digest, `ghcr.io/krishardy/byrle:<version>@sha256:<digest>`, after `gh attestation verify oci://<image> --repo krishardy/byrle` |
+| `byrle_image` | none, required | the release by digest, `ghcr.io/krishardy/byrle:<version>@sha256:<digest>`, after verifying it as [runbook](../../docs/runbook.md#1-install-and-verify) says |
 | `proxy_url` | none, required | the load balancer's address as installing machines reach it. Lockfiles record it |
 | `certificate_arn` | none, required | an ACM certificate for `proxy_url`'s name, in `region` |
 | `allowed_cidrs` | none, required | the addresses of the machines that install through byrle |

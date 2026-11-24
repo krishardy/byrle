@@ -4,7 +4,9 @@
 - **Status:** Implemented 2026-10-14: `.github/workflows/release.yml`. v0.1.0 published
   2026-10-14 by run 38519157946; its tarballs' and image's attestations pass
   `gh attestation verify`, checked by the user.
-- **Related:** [provenance-check](0066-provenance-check.md), [ci-gates](0044-ci-gates.md)
+- **Related:** [provenance-check](0066-provenance-check.md), [ci-gates](0044-ci-gates.md),
+  [release-trust](0141-release-trust.md), which adds three flags to the commands under Verifying
+  and builds the image without third-party actions
 
 ## Decision
 

@@ -1,5 +1,5 @@
-# The release, and the SHA-256 of each architecture's tarball. Verify a new release with
-# `gh attestation verify <tarball> --repo krishardy/byrle` before setting these.
+# The release, and the SHA-256 of each architecture's tarball. Verify a new release as
+# docs/runbook.md's "1. Install and verify" says before setting these.
 byrle_version: "0.1.0"
 byrle_release_sha256:
   x86_64: ca99560d25c6705ee985a4d24381a3f125214b5753d99a30d1116ba7c7bf5fac

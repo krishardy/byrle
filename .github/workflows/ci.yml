@@ -19,6 +19,11 @@ on:
 # Each job's tools come from `make ci-setup JOB=<job>`, whose versions are pinned in
 # scripts/make/lib/ beside the ones make dev-setup uses. rust-cache restores first, so a
 # cached sqlx-cli is found rather than built again.
+# The token reads the repository and nothing else, whatever the repository's default is. A job
+# that needs more names it.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 

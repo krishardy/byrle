@@ -10,7 +10,7 @@ variable "name" {
 }
 
 variable "byrle_image" {
-  description = "The release image by digest: ghcr.io/krishardy/byrle:<version>@sha256:<digest>, after `gh attestation verify oci://<image> --repo krishardy/byrle`."
+  description = "The release image by digest: ghcr.io/krishardy/byrle:<version>@sha256:<digest>, after verifying it as docs/runbook.md says."
   type        = string
 
   validation {

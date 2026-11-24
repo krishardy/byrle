@@ -31,7 +31,7 @@ Fill in `.env`. Each line is passed to the `byrle` container, so any setting `by
 
 | Setting | Set to |
 |---|---|
-| `BYRLE_IMAGE` | the release by digest, `ghcr.io/krishardy/byrle:<version>@sha256:<digest>`, after `gh attestation verify oci://<image> --repo krishardy/byrle` |
+| `BYRLE_IMAGE` | the release by digest, `ghcr.io/krishardy/byrle:<version>@sha256:<digest>`, after verifying it as [runbook](../../docs/runbook.md#1-install-and-verify) says |
 | `BYRLE_PROXY_URL` | nginx's address as installing machines reach it, with its port if not 443 |
 | `BYRLE_TLS_CERT`, `BYRLE_TLS_KEY` | the certificate chain and key on the host |
 | `POSTGRES_PASSWORD`, `BYRLE_RP_KEY` | `openssl rand -hex 32` each |
