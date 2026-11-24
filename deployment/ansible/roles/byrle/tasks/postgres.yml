@@ -1,0 +1,59 @@
+# deb822_repository imports the `debian` Python module on the host, which a fresh Debian or
+# Ubuntu does not have.
+- name: Install python3-debian, for deb822_repository
+  ansible.builtin.apt:
+    name: python3-debian
+    update_cache: true
+
+- name: Add the PostgreSQL apt repository
+  ansible.builtin.deb822_repository:
+    name: pgdg
+    uris: https://apt.postgresql.org/pub/repos/apt
+    suites: "{{ ansible_facts['distribution_release'] }}-pgdg"
+    components: main
+    signed_by: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
+- name: Install Postgres
+  ansible.builtin.apt:
+    name: "postgresql-{{ byrle_postgres_version }}"
+    update_cache: true
+
+- name: Start Postgres
+  ansible.builtin.service:
+    name: postgresql
+    state: started
+    enabled: true
+
+# The byrle role, with no password: byrle connects over the socket as the system user of the
+# same name, and Debian's pg_hba.conf accepts that by peer authentication.
+- name: Read whether the byrle role exists
+  ansible.builtin.command:
+    cmd: psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'byrle'"
+  become: true
+  become_user: postgres
+  register: byrle_role
+  changed_when: false
+
+- name: Create the byrle role
+  ansible.builtin.command:
+    cmd: createuser byrle
+  become: true
+  become_user: postgres
+  when: byrle_role.stdout != '1'
+  changed_when: true
+
+- name: Read whether the byrle database exists
+  ansible.builtin.command:
+    cmd: psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'byrle'"
+  become: true
+  become_user: postgres
+  register: byrle_database
+  changed_when: false
+
+- name: Create the byrle database
+  ansible.builtin.command:
+    cmd: createdb --owner byrle byrle
+  become: true
+  become_user: postgres
+  when: byrle_database.stdout != '1'
+  changed_when: true

@@ -16,3 +16,12 @@ mutants.out.old/
 # Dot-directories that are part of the repository.
 !/.sqlx/
 !/.github/
+
+# An operator's settings and secrets for deployment/.
+/deployment/compose/.env
+/deployment/ansible/inventory.yml
+/deployment/ansible/group_vars/
+/deployment/opentofu-aws/.terraform/
+/deployment/opentofu-aws/terraform.tfvars
+/deployment/opentofu-aws/*.tfstate
+/deployment/opentofu-aws/*.tfstate.*

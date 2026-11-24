@@ -1,0 +1,7 @@
+# Installs byrle on each host in the `byrle` group: Postgres 18, the release binary under
+# systemd, the refresh timer, and nginx on TLS in front.
+- name: Byrle
+  hosts: byrle
+  become: true
+  roles:
+    - byrle

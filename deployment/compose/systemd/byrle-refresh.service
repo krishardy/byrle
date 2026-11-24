@@ -1,0 +1,12 @@
+# Loads byrle's intel once, through the compose file's `refresh` service.
+# WorkingDirectory is where compose.yaml and .env are. With Podman, ExecStart is
+# /usr/bin/podman compose --profile refresh run --rm refresh
+[Unit]
+Description=byrle refresh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/byrle
+ExecStart=/usr/bin/docker compose --profile refresh run --rm refresh

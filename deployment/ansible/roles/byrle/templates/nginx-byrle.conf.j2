@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# docs/fronting-tls.md's server block, in front of byrle at {{ byrle_listen }}.
+server {
+    listen {{ byrle_https_port }} ssl default_server;
+    server_name _;
+    ssl_certificate {{ byrle_tls_cert }};
+    ssl_certificate_key {{ byrle_tls_key }};
+
+    location / {
+        proxy_pass http://{{ byrle_listen }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Byrle-RP-Key {{ byrle_rp_key }};
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+    }
+}

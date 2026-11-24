@@ -1,0 +1,14 @@
+# Copy to inventory.yml and fill in. Secrets belong in an ansible-vault file:
+#   ansible-vault create group_vars/byrle/vault.yml
+# README.md lists every setting.
+byrle:
+  hosts:
+    byrle.example.com:
+  vars:
+    byrle_proxy_url: https://byrle.example.com
+    byrle_tls_cert: /etc/letsencrypt/live/byrle.example.com/fullchain.pem
+    byrle_tls_key: /etc/letsencrypt/live/byrle.example.com/privkey.pem
+    # openssl rand -hex 32, kept in the vault file.
+    byrle_rp_key: "{{ vault_byrle_rp_key }}"
+    # observe for the first week. Set it to "" to enforce.
+    byrle_mode: observe

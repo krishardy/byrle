@@ -1,0 +1,92 @@
+# byrle from its release image, with Postgres and nginx on TLS in front, for Docker Compose
+# or Podman Compose. Settings are read from .env in this directory: copy env.example to it.
+# README.md has the steps.
+#
+# Only nginx publishes a port. byrle and Postgres are reached on the compose network alone.
+#
+# Each image is pinned by its tag's index digest, which covers amd64 and arm64. The tag is
+# kept beside it to be read; the engine pulls by the digest. `make check-deps` reports a tag
+# that has moved past its digest.
+
+name: byrle
+
+services:
+  db:
+    image: docker.io/library/postgres:18-alpine@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: byrle
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: byrle
+    # Postgres 18 keeps its data in /var/lib/postgresql/18/docker, and its entrypoint
+    # refuses to start with a mount at /var/lib/postgresql/data.
+    volumes:
+      - db:/var/lib/postgresql
+    # Over TCP rather than the socket: see scripts/make/lib/postgres.sh.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U byrle -d byrle"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  byrle:
+    image: ${BYRLE_IMAGE:?set BYRLE_IMAGE in .env}
+    restart: unless-stopped
+    # byrle handles SIGHUP only. As PID 1 the kernel ignores a SIGTERM with no handler.
+    # Under the engine's init, SIGTERM ends it, and SIGHUP is passed on to it.
+    init: true
+    env_file: .env
+    environment: &byrle-environment
+      BYRLE_DATABASE_URL: postgres://byrle:${POSTGRES_PASSWORD}@db:5432/byrle?sslmode=disable
+      BYRLE_LISTEN: 0.0.0.0:8080
+      BYRLE_PROXY_URL: ${BYRLE_PROXY_URL:?set BYRLE_PROXY_URL in .env}
+      BYRLE_POLICY: /etc/byrle/policy.yaml
+      BYRLE_SPOOL_DIR: /home/nonroot/spool
+      BYRLE_AUDIT_LOG: /home/nonroot/audit.jsonl
+      BYRLE_ACCOUNT_EVENT_LOG: /home/nonroot/account-events.jsonl
+    # The image runs as nonroot (65532) and has no shell. A named volume mounted on a
+    # directory the image has takes that directory's owner, and /home/nonroot is 65532's.
+    # A volume on a directory the image lacks would be owned by root.
+    volumes:
+      - state:/home/nonroot
+      - ./policy:/etc/byrle:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Not started by `up`. A timer on the host runs it: systemd/byrle-refresh.timer.
+  refresh:
+    image: ${BYRLE_IMAGE}
+    profiles: [refresh]
+    init: true
+    env_file: .env
+    environment: *byrle-environment
+    command: ["refresh"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  nginx:
+    image: docker.io/library/nginx:1.30-alpine@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a
+    restart: unless-stopped
+    # The image fills /etc/nginx/templates/*.template from its environment and writes the
+    # result to /etc/nginx/conf.d/. It replaces only variables that are set, so nginx's own,
+    # such as $http_host, are left as they are.
+    environment:
+      BYRLE_RP_KEY: ${BYRLE_RP_KEY:?set BYRLE_RP_KEY in .env}
+    volumes:
+      - ./nginx:/etc/nginx/templates:ro
+      # Files, not their directory: certbot's live/<name>/ holds symlinks into ../../archive/,
+      # which do not resolve inside a mount of that directory. The engine resolves a file's
+      # symlink when it creates the container, so a renewed certificate needs
+      # `up -d --force-recreate nginx`.
+      - ${BYRLE_TLS_CERT:?set BYRLE_TLS_CERT in .env}:/etc/nginx/tls/fullchain.pem:ro
+      - ${BYRLE_TLS_KEY:?set BYRLE_TLS_KEY in .env}:/etc/nginx/tls/privkey.pem:ro
+    ports:
+      - "${BYRLE_HTTPS_PORT:-443}:443"
+    depends_on:
+      - byrle
+
+volumes:
+  db:
+  state:

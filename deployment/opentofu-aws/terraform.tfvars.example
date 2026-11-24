@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars. Every variable is in variables.tf.
+
+region          = "us-east-1"
+byrle_image     = "ghcr.io/krishardy/byrle:0.1.0@sha256:<digest>"
+proxy_url       = "https://byrle.example.com"
+certificate_arn = "arn:aws:acm:us-east-1:111111111111:certificate/<id>"
+allowed_cidrs   = ["192.0.2.0/24"]
+
+# route53_zone_id         = "Z0123456789ABCDEFGHIJ"
+# github_token_secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:github-token-AbCdEf"

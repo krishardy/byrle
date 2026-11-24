@@ -1,0 +1,25 @@
+- name: Install nginx
+  ansible.builtin.apt:
+    name: nginx
+    update_cache: true
+
+# root alone reads it: it has byrle_rp_key in it. nginx reads its configuration as root.
+- name: Install the nginx server block
+  ansible.builtin.template:
+    src: nginx-byrle.conf.j2
+    dest: /etc/nginx/conf.d/byrle.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Reload nginx
+
+- name: Check the nginx configuration
+  ansible.builtin.command:
+    cmd: nginx -t
+  changed_when: false
+
+- name: Start nginx
+  ansible.builtin.systemd_service:
+    name: nginx.service
+    state: started
+    enabled: true

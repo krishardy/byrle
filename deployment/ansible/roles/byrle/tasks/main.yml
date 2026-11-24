@@ -1,0 +1,24 @@
+- name: Check the settings
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['architecture'] in byrle_release_sha256
+      - byrle_proxy_url is match('https://')
+      - byrle_rp_key | length >= 32
+      - not byrle_nginx or (byrle_tls_cert | length > 0 and byrle_tls_key | length > 0)
+    fail_msg: >-
+      Needs Debian or Ubuntu on x86_64 or aarch64, byrle_proxy_url starting https://,
+      byrle_rp_key of at least 32 bytes, and with byrle_nginx byrle_tls_cert and
+      byrle_tls_key. See README.md.
+    quiet: true
+
+- name: Postgres
+  ansible.builtin.import_tasks: postgres.yml
+  when: byrle_postgres_local
+
+- name: Byrle
+  ansible.builtin.import_tasks: byrle.yml
+
+- name: Nginx
+  ansible.builtin.import_tasks: nginx.yml
+  when: byrle_nginx

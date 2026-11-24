@@ -1,0 +1,41 @@
+# The release, and the SHA-256 of each architecture's tarball. Verify a new release with
+# `gh attestation verify <tarball> --repo krishardy/byrle` before setting these.
+byrle_version: "0.1.0"
+byrle_release_sha256:
+  x86_64: ca99560d25c6705ee985a4d24381a3f125214b5753d99a30d1116ba7c7bf5fac
+  aarch64: 471063f2b5903a55f7e9a3d0ab23053da3d943f45ab249639d5ddfe8a2886a52
+byrle_release_url: https://github.com/krishardy/byrle/releases/download
+
+# Required: nginx's address as installing machines reach it, and its certificate and key
+# on the host. Lockfiles record the address.
+byrle_proxy_url: ""
+byrle_tls_cert: ""
+byrle_tls_key: ""
+# Required: at least 32 bytes, `openssl rand -hex 32`. nginx sends it as X-Byrle-RP-Key.
+byrle_rp_key: ""
+
+# "observe" serves what the policy refuses and logs it; "" enforces.
+byrle_mode: observe
+# Where byrle listens. nginx is its only client.
+byrle_listen: 127.0.0.1:8080
+byrle_https_port: 443
+# The policy file, from the controller. `version: 1` is the defaults.
+byrle_policy_src: policy.yaml
+# Optional: byrle refresh loads GitHub's Advisory Database with it.
+byrle_github_token: ""
+# Any other setting `byrle --help` lists, as NAME: value.
+byrle_environment: {}
+# systemd OnCalendar for `byrle refresh`.
+byrle_refresh_on_calendar: "*-*-* 00/6:00:00"
+
+# Postgres 18 from apt.postgresql.org on this host, reached over its socket with peer
+# authentication. False: set byrle_database_url to another server.
+byrle_postgres_local: true
+byrle_database_url: "postgres:///byrle?host=/var/run/postgresql&user=byrle"
+byrle_postgres_version: 18
+
+# nginx on this host, in front of byrle. False: put another front at byrle_listen.
+byrle_nginx: true
+
+# The release's directory and tarball name, for this host's architecture.
+byrle_release: "byrle-{{ byrle_version }}-{{ ansible_facts['architecture'] }}-unknown-linux-musl"

@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+[Unit]
+Description=byrle dependency firewall
+Wants=network-online.target
+After=network-online.target{{ ' postgresql.service' if byrle_postgres_local else '' }}
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/byrle daemon
+# byrle reads its policy again on SIGHUP.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+{% include 'hardening.j2' %}
+
+
+[Install]
+WantedBy=multi-user.target
