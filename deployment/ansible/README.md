@@ -34,7 +34,7 @@ ansible-vault create group_vars/byrle/vault.yml    # vault_byrle_rp_key: <openss
 | `byrle_mode` | `observe` | `""` to enforce |
 | `byrle_github_token` | `""` | a token, for GitHub's Advisory Database |
 | `byrle_environment` | `{}` | any other setting `byrle --help` lists, as `NAME: value` |
-| `byrle_version`, `byrle_release_sha256` | 0.1.0 | a new release, after `gh attestation verify <tarball> --repo krishardy/byrle` |
+| `byrle_version`, `byrle_release_sha256` | 0.1.0 | a new release, after verifying it as [runbook](../../docs/runbook.md#1-install-and-verify) says |
 | `byrle_postgres_local` | `true` | `false`, with `byrle_database_url`, for another Postgres |
 | `byrle_nginx` | `true` | `false` to put another front at `byrle_listen` |
 

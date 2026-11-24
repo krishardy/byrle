@@ -234,9 +234,17 @@ Each release's binaries and image carry SLSA build provenance, signed through Si
 the workflow that built them ([release-provenance](docs/engineering_decisions/0108-release-provenance.md)):
 
 ```
-gh attestation verify byrle-<version>-x86_64-unknown-linux-musl.tar.gz --repo krishardy/byrle
-gh attestation verify oci://ghcr.io/krishardy/byrle:<version> --repo krishardy/byrle
+gh attestation verify byrle-<version>-x86_64-unknown-linux-musl.tar.gz --repo krishardy/byrle \
+    --signer-workflow krishardy/byrle/.github/workflows/release.yml \
+    --source-ref refs/tags/v<version> --deny-self-hosted-runners
+gh attestation verify oci://ghcr.io/krishardy/byrle:<version> --repo krishardy/byrle \
+    --signer-workflow krishardy/byrle/.github/workflows/release.yml \
+    --source-ref refs/tags/v<version> --deny-self-hosted-runners
 ```
+
+`--repo` alone accepts an attestation from any workflow in the repository, run from any branch.
+The other three accept only `release.yml`, run for that version's tag on a GitHub-hosted
+runner ([release-trust](docs/engineering_decisions/0141-release-trust.md)).
 
 ## License
 

@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-compose ansible-check opentofu-check smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context release-image verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-compose ansible-check opentofu-check smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
@@ -20,6 +20,7 @@ help:
 	@echo "  release-check  whether TAG names the version in Cargo.toml"
 	@echo "  release-binary a release tarball for this machine in dist/, with its sha256"
 	@echo "  release-image-context  unpack dist/ tarballs for container/Containerfile.release"
+	@echo "  release-image  build and push the release image from dist/image; TAG=, REPO="
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
@@ -123,6 +124,9 @@ release-binary:
 
 release-image-context:
 	@scripts/make/release-image-context.sh
+
+release-image:
+	@TAG="$(TAG)" REPO="$(REPO)" scripts/make/release-image.sh
 
 verify:
 	@scripts/make/verify.sh

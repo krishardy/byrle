@@ -21,15 +21,21 @@ shell.
 
 ```
 curl -sSLO https://github.com/krishardy/byrle/releases/download/v0.1.0/byrle-0.1.0-x86_64-unknown-linux-musl.tar.gz
-gh attestation verify byrle-0.1.0-x86_64-unknown-linux-musl.tar.gz --repo krishardy/byrle
+gh attestation verify byrle-0.1.0-x86_64-unknown-linux-musl.tar.gz --repo krishardy/byrle \
+    --signer-workflow krishardy/byrle/.github/workflows/release.yml \
+    --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
 tar -xzf byrle-0.1.0-x86_64-unknown-linux-musl.tar.gz
 
-gh attestation verify oci://ghcr.io/krishardy/byrle:0.1.0 --repo krishardy/byrle
+gh attestation verify oci://ghcr.io/krishardy/byrle:0.1.0 --repo krishardy/byrle \
+    --signer-workflow krishardy/byrle/.github/workflows/release.yml \
+    --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
 docker run --rm ghcr.io/krishardy/byrle:0.1.0 --version
 ```
 
-Each attestation names `.github/workflows/release.yml` and the commit it built
-([release-provenance](engineering_decisions/0108-release-provenance.md)).
+Each attestation names `.github/workflows/release.yml`, the tag it ran for and the commit it
+built ([release-provenance](engineering_decisions/0108-release-provenance.md)). `--repo` alone
+would accept one from any workflow in the repository, run from any branch
+([release-trust](engineering_decisions/0141-release-trust.md)).
 
 ## 2. Configure
 

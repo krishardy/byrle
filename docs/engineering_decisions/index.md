@@ -152,3 +152,4 @@ Implemented means it is in the code, and the file names where.
 | 0138 | [Opengrep tried beside semgrep in `make sast`, and kept out of it](0138-opengrep-trial.md) | Trial ended 2026-11-13 |  |
 | 0139 | [Each commit in a pull request has a signature GitHub verified](0139-pr-commit-signatures.md) | Implemented 2026-11-14 |  |
 | 0140 | [Deployment scripts in `deployment/`, one directory per target, compose first](0140-deployment-targets.md) | Started 2026-11-15 |  |
+| 0141 | [A release verifies only as `release.yml`'s run for its tag, and no third-party action runs while one is made](0141-release-trust.md) | Implemented 2026-11-24 |  |

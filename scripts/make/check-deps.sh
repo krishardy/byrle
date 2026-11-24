@@ -249,7 +249,7 @@ note "deployment images"
 images=0
 python3 -I "$repo_root/scripts/make/lib/image_digests.py" \
     "$repo_root/deployment/compose/compose.yaml" "$repo_root/deployment/compose/env.example" \
-    "$repo_root/deployment/opentofu-aws/ecs.tf" \
+    "$repo_root/deployment/opentofu-aws/ecs.tf" "$repo_root/scripts/make/release-image.sh" \
     | sed "s|$repo_root/||" || images=$?
 if [[ "$images" -ne 0 ]]; then
     if [[ "${CHECK_DEPS_STRICT:-0}" == "1" ]]; then

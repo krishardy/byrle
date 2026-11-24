@@ -546,6 +546,21 @@ Items that I've added that are not stage-bound.
           distroless image; check that RDS offers Postgres 18; add `make opentofu-check`
           to CI.
 
+57. Close the GitHub Actions path to a release that verifies. Raised 2026-11-24.
+    [release-trust](docs/engineering_decisions/0141-release-trust.md).
+    - [x] The verify command names `release.yml`, the version's tag and GitHub-hosted
+          runners. Done 2026-11-24.
+    - [x] No third-party action in `release.yml`: `make release-image` builds and pushes
+          the image. `ci.yml`'s token reads only. Done 2026-11-24. Left: its first run, on
+          the next tag.
+    - [ ] For the user, in the repository's settings: a `v*` tag ruleset that lets only
+          the owner create one; a `release` environment with the owner as required
+          reviewer, then named by the `release` and `image` jobs; Actions allowed only
+          `actions/*` and `Swatinem/rust-cache`; default workflow permissions read-only.
+    - [ ] Measure whether `make release-binary` is reproducible: build v0.1.0 on another
+          machine and compare with the release's `.sha256` files. If it is, publish the
+          sums only after an independent rebuild matches, signed with the owner's key.
+
 ## Architecture Refactor
 
 Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here
