@@ -100,10 +100,10 @@ elif [[ "${ALL:-}" == 1 ]]; then
     described="on $branch"
 else
     scope=(HEAD --not --remotes)
-    described="on $branch and on no remote"
+    described="on $branch (and on no remote)"
 fi
 
-# Of the commits on stdin, those that fail a check: "<hash> <date> <failures> <subject>".
+# Of the commits on stdin, those that fail checks: "<hash> <date> <failures> <subject>".
 failing() {
     local commit failed
     while IFS= read -r commit; do
@@ -118,7 +118,7 @@ pushed_failing() {
     local count
     count="$(comm -23 <(git rev-list HEAD | sort) <(git rev-list HEAD --not --remotes | sort) \
         | failing | wc -l)"
-    [[ "$count" -eq 0 ]] || echo "$count pushed commit(s) on $branch fail a check too; ALL=1 includes them."
+    [[ "$count" -eq 0 ]] || echo "$count pushed commit(s) on $branch fail checks; ALL=1 includes them."
 }
 
 show() { cut -c1-12,41- <<<"$1" | sed 's/^/  /'; }
@@ -129,7 +129,7 @@ if [[ -z "$list" ]]; then
     pushed_failing
     exit 0
 fi
-echo "FAIL: $(wc -l <<<"$list") commit(s) $described fail a check ($checks):"
+echo "FAIL: $(wc -l <<<"$list") commit(s) $described fail checks ($checks):"
 show "$list"
 pushed_failing
 
