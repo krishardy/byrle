@@ -155,3 +155,4 @@ Implemented means it is in the code, and the file names where.
 | 0141 | [A release verifies only as `release.yml`'s run for its tag, and no third-party action runs while one is made](0141-release-trust.md) | Implemented 2026-11-24 |  |
 | 0142 | [The development Postgres runs in podman-compose, and byrle on the host](0142-dev-db-and-host-server.md) | Implemented 2026-11-25 |  |
 | 0143 | [`byrle explain` takes a purl with `--purl`, or npm's `name@version` with `--npm`](0143-explain-by-npm-name.md) | Implemented 2026-11-25 |  |
+| 0144 | [`latest` naming a removed npm version moves to the highest release below it](0144-latest-moves-off-a-removed-version.md) | Implemented 2026-11-25 |  |
