@@ -363,10 +363,11 @@ project with a BOM, lombok and a portal plugin, on 2026-10-17, it warmed 32 and 
 ## 9. Read what it would refuse
 
 In observe mode, each refusal is a WARN line starting `observe:`, and the audit log holds
-one line per decision. `byrle explain` answers for one package:
+one line per decision. `byrle explain` answers for one package, given as a purl with
+`--purl` or, for npm, as the `name@version` npm prints with `--npm`:
 
 ```
-byrle explain pkg:npm/express@4.21.2
+byrle explain --npm express@4.21.2
 
   denials          pass
   known_malware    pass

@@ -1487,13 +1487,14 @@ mod table {
         found
     }
 
-    /// Stage 6's interface: only declarations name an ecosystem outside its adapter, the
-    /// `Ecosystem` enum, `TABLE` and the environment's variables (docs/cargo-plan.md step 1).
+    /// Only declarations name an ecosystem outside its adapter (docs/cargo-plan.md step 1),
+    /// and `explain --npm`'s call to npm's (0143-explain-by-npm-name.md).
     #[test]
     fn only_the_adapters_name_an_ecosystem() {
         let allowed: std::collections::BTreeMap<String, usize> = [
             ("src/ecosystem.rs", 5),
             ("src/env.rs", 8),
+            ("src/explain.rs", 1),
             ("src/identity.rs", 15),
         ]
         .into_iter()

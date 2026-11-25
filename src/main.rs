@@ -198,11 +198,14 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     match remote("explain") {
         Err(code) => return code,
         Ok(Some(remote)) => {
-            let query: Vec<(&str, String)> = target
-                .purl
-                .iter()
-                .map(|purl| ("purl", purl.clone()))
-                .collect();
+            let purl = match explain::purl_of(&target) {
+                Ok(purl) => purl,
+                Err(e) => {
+                    eprintln!("byrle explain: {e}");
+                    return std::process::ExitCode::from(2);
+                }
+            };
+            let query: Vec<(&str, String)> = purl.into_iter().map(|purl| ("purl", purl)).collect();
             let printed = remote
                 .get("explain", byrle::console::routes::EXPLAIN_PATH, &query)
                 .await;

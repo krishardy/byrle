@@ -49,6 +49,7 @@ async fn explained(site: &Site, parts: &Parts) -> Result<Printed, Refused> {
     let target = crate::cli::Explain {
         policy: asked.purl.is_none(),
         purl: asked.purl,
+        npm: None,
     };
     let policy = proxy.policy();
     let store = proxy.intel_store();
