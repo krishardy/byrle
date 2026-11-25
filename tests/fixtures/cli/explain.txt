@@ -1,10 +1,9 @@
 Why a package is allowed or refused
 
-Usage: byrle explain <--policy|PURL>
-
-Arguments:
-  [PURL]  One package version, for example pkg:npm/lodash@4.17.21
+Usage: byrle explain <--policy|--purl <PURL>|--npm <NAME@VERSION>>
 
 Options:
-      --policy  The policy in BYRLE_POLICY as loaded, and which checks can fire
-  -h, --help    Print help
+      --policy              The policy in BYRLE_POLICY as loaded, and which checks can fire
+      --purl <PURL>         One package version, for example pkg:npm/lodash@4.17.21
+      --npm <NAME@VERSION>  One npm package version as npm's errors print it, for example @babel/core@7.0.0
+  -h, --help                Print help

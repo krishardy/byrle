@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The development database from container/compose.yaml, for start-dev-db and
-# start-dev-server.
+# The development database from container/compose.yaml, for start-dev-db,
+# start-dev-server and reset-dev-db.
 #
 # Sourced, not executed. `dev_db_args "$@"` checks USER PASSWORD DATABASE PORT and exports
 # them as DEV_DB_USER, DEV_DB_PASSWORD, DEV_DB_NAME and DEV_DB_PORT for compose.yaml.

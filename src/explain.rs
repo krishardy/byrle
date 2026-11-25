@@ -362,7 +362,7 @@ async fn answer_using<L: Fn(&str) -> Option<OsString>>(
     policy: &Policy,
     store: Option<&dyn IntelStore>,
 ) -> Result<String, Stopped> {
-    match target.purl.as_deref() {
+    match purl_of(target).map_err(|e| stopped(2, e))?.as_deref() {
         Some(argument) => {
             let reader = crate::dating::Reader::from_env(environment)
                 .await
@@ -381,14 +381,27 @@ pub async fn run_on(
     store: Option<&dyn IntelStore>,
     reader: &crate::dating::Reader,
 ) -> Answered {
-    let answered_on = match (policy, target.purl.as_deref()) {
+    let answered_on = match (policy, purl_of(target)) {
         (None, _) => Err(stopped(2, "the deployment has no policy in force")),
-        (Some(policy), Some(argument)) => package_answer(policy, store, argument, reader).await,
-        (Some(policy), None) => consulted(store)
+        (Some(_), Err(e)) => Err(stopped(2, e)),
+        (Some(policy), Ok(Some(argument))) => {
+            package_answer(policy, store, &argument, reader).await
+        }
+        (Some(policy), Ok(None)) => consulted(store)
             .await
             .map(|intel| policy_report(policy, intel)),
     };
     answered(answered_on)
+}
+
+/// The purl `target` asks about: `--purl` as given, or `--npm`'s name and version as a
+/// purl. `None` for `--policy`.
+pub fn purl_of(target: &crate::cli::Explain) -> Result<Option<String>, String> {
+    match (&target.purl, &target.npm) {
+        (Some(purl), _) => Ok(Some(purl.clone())),
+        (None, Some(spec)) => crate::ecosystem::npm::paths::printed_purl(spec).map(Some),
+        (None, None) => Ok(None),
+    }
 }
 
 /// Whether the checks that need intel can be enforced. A store with no snapshot answers
@@ -577,6 +590,7 @@ mod run_tests {
         crate::cli::Explain {
             purl: purl.map(str::to_owned),
             policy: purl.is_none(),
+            npm: None,
         }
     }
 
@@ -611,6 +625,54 @@ mod run_tests {
             answered.answer
         );
         assert!(answered.notes.is_empty());
+    }
+
+    /// `--purl` is used as given, `--npm` becomes a purl, and `--policy` is neither.
+    #[test]
+    fn the_purl_asked_about_comes_from_purl_or_npm() {
+        let npm = crate::cli::Explain {
+            npm: Some("@babel/core@7.0.0".to_owned()),
+            ..crate::cli::Explain::default()
+        };
+        assert_eq!(
+            purl_of(&npm),
+            Ok(Some("pkg:npm/%40babel/core@7.0.0".to_owned()))
+        );
+        assert_eq!(
+            purl_of(&asked(Some("pkg:npm/a@1.0.0"))),
+            Ok(Some("pkg:npm/a@1.0.0".to_owned()))
+        );
+        assert_eq!(purl_of(&asked(None)), Ok(None));
+    }
+
+    /// An `--npm` argument that is not a name@version is exit 2, from a local policy or a
+    /// deployment's.
+    #[tokio::test]
+    async fn an_npm_argument_that_does_not_parse_is_refused() {
+        let path = written("explain-npm", "version: 1\ncooldown_days: 0\n");
+        let target = crate::cli::Explain {
+            npm: Some("lodash".to_owned()),
+            ..crate::cli::Explain::default()
+        };
+        let note = "`lodash` is not an npm name@version: it has no @version";
+        let answered = run(
+            &target,
+            &with(&[(crate::env::POLICY, &path.display().to_string())]),
+        )
+        .await;
+        assert_eq!(
+            (answered.code, answered.notes.as_slice()),
+            (2, [note.to_owned()].as_slice())
+        );
+        let policy = Policy::load(&path).expect("loads");
+        let reader = crate::dating::Reader::from_env(&with(&[]))
+            .await
+            .expect("reads");
+        let answered = run_on(&target, Some(&policy), None, &reader).await;
+        assert_eq!(
+            (answered.code, answered.notes.as_slice()),
+            (2, [note.to_owned()].as_slice())
+        );
     }
 
     /// A purl that does not parse is exit 2, before anything is fetched.

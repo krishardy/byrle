@@ -238,8 +238,8 @@ pub struct History {
 /// How many entries `intel history` prints unless told.
 pub const DEFAULT_HISTORY_LIMIT: u32 = 20;
 
-/// `explain --policy` or `explain <purl>`, exactly one.
-#[derive(Debug, PartialEq, Args)]
+/// `explain --policy`, `--purl <purl>` or `--npm <name@version>`, exactly one.
+#[derive(Debug, Default, PartialEq, Args)]
 #[group(required = true, multiple = false)]
 pub struct Explain {
     #[arg(long, help = format!(
@@ -248,7 +248,11 @@ pub struct Explain {
     ))]
     pub policy: bool,
     /// One package version, for example pkg:npm/lodash@4.17.21
+    #[arg(long, value_name = "PURL")]
     pub purl: Option<String>,
+    /// One npm package version as npm's errors print it, for example @babel/core@7.0.0
+    #[arg(long, value_name = "NAME@VERSION")]
+    pub npm: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Subcommand)]
@@ -595,16 +599,25 @@ mod tests {
             parse(&["explain", "--policy"]).expect("parses").command,
             Command::Explain(Explain {
                 policy: true,
-                purl: None
+                ..Explain::default()
             })
         );
         assert_eq!(
-            parse(&["explain", "pkg:npm/lodash@4.17.21"])
+            parse(&["explain", "--purl", "pkg:npm/lodash@4.17.21"])
                 .expect("parses")
                 .command,
             Command::Explain(Explain {
-                policy: false,
-                purl: Some("pkg:npm/lodash@4.17.21".to_owned())
+                purl: Some("pkg:npm/lodash@4.17.21".to_owned()),
+                ..Explain::default()
+            })
+        );
+        assert_eq!(
+            parse(&["explain", "--npm", "@babel/core@7.0.0"])
+                .expect("parses")
+                .command,
+            Command::Explain(Explain {
+                npm: Some("@babel/core@7.0.0".to_owned()),
+                ..Explain::default()
             })
         );
         assert_eq!(
@@ -803,13 +816,14 @@ mod tests {
             (&["explain"], ErrorKind::MissingRequiredArgument),
             (&["explain", "--polcy"], ErrorKind::UnknownArgument),
             (
-                &["explain", "--policy", "pkg:npm/a@1.0.0"],
+                &["explain", "--policy", "--purl", "pkg:npm/a@1.0.0"],
                 ErrorKind::ArgumentConflict,
             ),
             (
-                &["explain", "pkg:npm/a@1.0.0", "extra"],
-                ErrorKind::UnknownArgument,
+                &["explain", "--purl", "pkg:npm/a@1.0.0", "--npm", "a@1.0.0"],
+                ErrorKind::ArgumentConflict,
             ),
+            (&["explain", "pkg:npm/a@1.0.0"], ErrorKind::UnknownArgument),
             (&["doctor", "extra"], ErrorKind::UnknownArgument),
             (&["policy", "check"], ErrorKind::MissingRequiredArgument),
             (&["policy", "check", "a", "b"], ErrorKind::UnknownArgument),

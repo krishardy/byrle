@@ -1363,14 +1363,14 @@ mod tests {
             (vec![], env::POLICY),
             (vec![], env::AUDIT_LOG),
             (vec![], env::SPOOL_DIR),
-            (vec![(env::SPOOL_DIR, &spool)], env::MAX_ARTIFACT_BYTES),
-            (vec![(env::SPOOL_DIR, &spool)], env::MAX_CONCURRENT_ANALYSES),
-            (vec![(env::SPOOL_DIR, &spool)], env::SOURCE_ARCHIVES),
-            (vec![(env::SPOOL_DIR, &spool)], env::DETECTORS),
-            (vec![(env::SPOOL_DIR, &spool)], env::MAX_TRAFFIC_CLIENTS),
-            (vec![(env::SPOOL_DIR, &spool)], env::WATCH_MAX_VERSIONS),
-            (vec![(env::SPOOL_DIR, &spool)], env::MAX_INDEXES_PER_FILE),
-            (vec![(env::SPOOL_DIR, &spool)], env::WATCH_INTERVAL),
+            (vec![], env::MAX_ARTIFACT_BYTES),
+            (vec![], env::MAX_CONCURRENT_ANALYSES),
+            (vec![], env::SOURCE_ARCHIVES),
+            (vec![], env::DETECTORS),
+            (vec![], env::MAX_TRAFFIC_CLIENTS),
+            (vec![], env::WATCH_MAX_VERSIONS),
+            (vec![], env::MAX_INDEXES_PER_FILE),
+            (vec![], env::WATCH_INTERVAL),
         ];
         if cfg!(debug_assertions) {
             cases.push((vec![], env::DEFER_TEST));
@@ -1384,11 +1384,14 @@ mod tests {
             vec![(env::AUDIT_LOG, "audit.jsonl")],
             env::LOG_RETENTION_DAYS,
         ));
-        cases.push((vec![(env::SPOOL_DIR, &spool)], env::DECISION_RETENTION_DAYS));
+        cases.push((vec![], env::DECISION_RETENTION_DAYS));
         cases.push((vec![], env::REQUIRE_TOKEN));
         for (mut pairs, var) in cases {
             if var != env::REQUIRE_TOKEN {
                 pairs.push((env::REQUIRE_TOKEN, "0"));
+            }
+            if var != env::SPOOL_DIR {
+                pairs.push((env::SPOOL_DIR, &spool));
             }
             let started = proxy(&with_unreadable(&pairs, var)).await.map(drop);
             let Err(StartupError::Env(e)) = started else {

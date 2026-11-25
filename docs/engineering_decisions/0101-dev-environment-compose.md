@@ -1,7 +1,7 @@
 # The development environment runs in podman-compose
 
 - **Number:** 0101
-- **Superseded by:** [0141-dev-db-and-host-server](0141-dev-db-and-host-server.md)
+- **Superseded by:** [0142-dev-db-and-host-server](0142-dev-db-and-host-server.md)
 - **Status:** Implemented 2026-10-12. `compose.yaml`, `Containerfile`, `.dockerignore`,
   `scripts/make/run-dev.sh`. `compose.yaml` and `Containerfile` moved to `container/` on
   2026-10-19 (TODO.md ad-hoc #47); the build context is still the repository root, where

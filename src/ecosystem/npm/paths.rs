@@ -34,6 +34,25 @@ pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError>
     Ok((Some(scope.to_owned()), rest.to_owned()))
 }
 
+/// The purl for `spec`, an npm `name@version` as npm prints it in an error, such as
+/// `@babel/core@7.0.0`. A trailing `.`, where npm ends its sentence, is dropped. The version
+/// starts at the last `@` past the first character, so a scope's `@` stays in the name, and
+/// must be one version, not a range.
+pub fn printed_purl(spec: &str) -> Result<String, String> {
+    let trimmed = spec.trim().trim_end_matches('.');
+    let refused = |why: String| format!("`{spec}` is not an npm name@version: {why}");
+    let Some(at) = trimmed.get(1..).and_then(|rest| rest.rfind('@')) else {
+        return Err(refused("it has no @version".to_owned()));
+    };
+    let (name, version) = (&trimmed[..=at], &trimmed[at + 2..]);
+    semver::Version::parse(version)
+        .map_err(|e| refused(format!("`{version}` is not one version: {e}")))?;
+    PackageKey::from_registry_name(Ecosystem::Npm, name)
+        .and_then(|key| key.at_version(version))
+        .map(|reference| reference.to_string())
+        .map_err(|e| refused(e.to_string()))
+}
+
 /// Whether npm could publish `name`: the scope and the name in characters
 /// `encodeURIComponent` leaves alone, and an unscoped name not starting with `.` or `_`.
 pub fn published_name(name: &str) -> bool {
@@ -176,6 +195,48 @@ mod tests {
     use super::*;
 
     use crate::ecosystem::npm::{NormalizeError, normalize_packument, normalized};
+
+    /// `explain --npm` takes the name@version npm prints, scoped or not, with the `.` that ends
+    /// npm's sentence.
+    #[test]
+    fn an_npm_name_at_version_is_its_purl() {
+        for (spec, purl) in [
+            ("lodash@4.17.21", "pkg:npm/lodash@4.17.21"),
+            (
+                "@anthropic-ai/sdk@1.14.0",
+                "pkg:npm/%40anthropic-ai/sdk@1.14.0",
+            ),
+            (
+                "@anthropic-ai/sdk@1.14.0.",
+                "pkg:npm/%40anthropic-ai/sdk@1.14.0",
+            ),
+            (
+                " @babel/runtime@7.29.15 ",
+                "pkg:npm/%40babel/runtime@7.29.15",
+            ),
+            ("ms@1.0.0-rc.1", "pkg:npm/ms@1.0.0-rc.1"),
+        ] {
+            assert_eq!(printed_purl(spec).as_deref(), Ok(purl), "{spec}");
+        }
+    }
+
+    /// Without one exact version there is nothing to decide about.
+    #[test]
+    fn an_npm_name_without_one_version_is_refused() {
+        for (spec, why) in [
+            ("lodash", "it has no @version"),
+            ("@babel/core", "it has no @version"),
+            ("", "it has no @version"),
+            ("lodash@^4.17.0", "`^4.17.0` is not one version"),
+            ("lodash@", "`` is not one version"),
+            ("@4.17.21", "it has no @version"),
+            ("a/b@1.0.0", "malformed"),
+        ] {
+            let refused = printed_purl(spec).expect_err(spec);
+            let start = format!("`{spec}` is not an npm name@version: {why}");
+            assert!(refused.starts_with(&start), "{spec}: {refused}");
+        }
+    }
 
     fn key(name: &str) -> PackageKey {
         PackageKey::from_registry_name(Ecosystem::Npm, name).unwrap()

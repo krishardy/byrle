@@ -274,7 +274,7 @@ step "9/9  the analysis commands are answered by the deployment, for a reader"
 [[ "$(remote "$carol_token" explain --policy)" == "0" ]] \
     || fail "explain --policy: $(cat "$workdir/remote.err")"
 grep -q "cooldown_days    0" "$workdir/remote.out" || fail "explain --policy printed $(head -5 "$workdir/remote.out")"
-remote "$carol_token" explain pkg:npm/is-number@7.0.0 >/dev/null
+remote "$carol_token" explain --npm is-number@7.0.0 >/dev/null
 grep -q "known_malware    FAIL" "$workdir/remote.out" \
     || fail "explain is-number printed $(head -20 "$workdir/remote.out") $(cat "$workdir/remote.err")"
 [[ "$(remote "$carol_token" artifact show pkg:npm/is-number@7.0.0)" == "0" ]] \

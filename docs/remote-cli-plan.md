@@ -21,7 +21,7 @@ Decided by the user 2026-10-19:
 
 | Command | Reads locally |
 |---|---|
-| `explain <purl>` | `BYRLE_POLICY`, the registries (`BYRLE_UPSTREAM_*`), the intel store when `BYRLE_DATABASE_URL` is set |
+| `explain --purl <purl>`, `explain --npm <name@version>` | `BYRLE_POLICY`, the registries (`BYRLE_UPSTREAM_*`), the intel store when `BYRLE_DATABASE_URL` is set |
 | `explain --policy` | `BYRLE_POLICY`, the intel store |
 | `artifact show`, `artifact export` | the analysis store, `BYRLE_DATABASE_URL` required |
 | `intel history` | the intel store |

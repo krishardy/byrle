@@ -72,7 +72,9 @@ For each refusal, decide one of:
 | the package is needed and the refusal is a false positive | a `packages` exception with a reason and an expiry ([policy-reference](policy-reference.md)) |
 | the version is needed and another one will do | change the lockfile |
 
-`byrle explain pkg:npm/<name>@<version>` says why one version is refused. From another
+`byrle explain --npm <name>@<version>` says why one version is refused, with the name and
+version as npm's error prints them, such as `--npm @anthropic-ai/sdk@1.14.0`. For other
+ecosystems, `--purl` takes a purl, such as `--purl pkg:pypi/idna@3.10`. From another
 machine, set `BYRLE_REMOTE_URL` to the console's URL and `BYRLE_TOKEN` to a token of an
 account with the `reader` or `admin` role: `explain`, `artifact show` and `export`, `intel
 history`, `status`, and `policy check` and `policy diff <candidate>` are then answered by

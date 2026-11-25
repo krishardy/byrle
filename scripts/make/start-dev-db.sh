@@ -20,5 +20,5 @@ Postgres is listening on 127.0.0.1:$DEV_DB_PORT.
   url:     $(dev_db_url)
   psql:    psql '$(dev_db_url)'
   stop:    podman-compose -f container/compose.yaml stop db
-  delete:  podman-compose -f container/compose.yaml down -v    (the database too)
+  reset:   make reset-dev-db    (deletes the database, then starts an empty one)
 EOF
