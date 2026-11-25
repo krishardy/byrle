@@ -1,0 +1,9 @@
+Delete what was found in each artifact named, so the proxy analyses it again on its next fetch: install scripts, source, attestations, signatures, VirusTotal and each detector. Decisions are kept. Exits 1 when nothing is recorded on it
+
+Usage: byrle artifact reanalyse <--digest <DIGEST>|--purl <PURL>|--npm <NAME@VERSION>>
+
+Options:
+      --digest <DIGEST>     One artifact's digest, for example sha512-...
+      --purl <PURL>         One package version, for example pkg:npm/ms@2.1.3. A PyPI version has one artifact per file
+      --npm <NAME@VERSION>  One npm package version as npm's errors print it, for example @babel/core@7.0.0
+  -h, --help                Print help

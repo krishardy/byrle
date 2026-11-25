@@ -3,9 +3,10 @@ Print what each artifact was decided on, and what was decided
 Usage: byrle artifact <COMMAND>
 
 Commands:
-  show    The latest decision on each artifact named: its features and its disposition, as a list, or as JSON Lines with -o json. Exits 1 when none is recorded
-  export  Every decision recorded, oldest first, as JSON Lines
-  help    Print this message or the help of the given subcommand(s)
+  show       The latest decision on each artifact named: its features and its disposition, as a list, or as JSON Lines with -o json. Exits 1 when none is recorded
+  export     Every decision recorded, oldest first, as JSON Lines
+  reanalyse  Delete what was found in each artifact named, so the proxy analyses it again on its next fetch: install scripts, source, attestations, signatures, VirusTotal and each detector. Decisions are kept. Exits 1 when nothing is recorded on it
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help  Print help

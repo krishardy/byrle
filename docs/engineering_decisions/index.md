@@ -159,3 +159,4 @@ Implemented means it is in the code, and the file names where.
 | 0145 | [`byrle artifact show` prints a list unless asked for `-o json`](0145-artifact-show-output.md) | Implemented 2026-11-25 |  |
 | 0146 | [GuardDog runs in its own container](0146-guarddog-container.md) | Implemented 2026-11-25 |  |
 | 0147 | [A decision records each detector with no result, and why](0147-detector-states.md) | Implemented 2026-11-26 |  |
+| 0148 | [`byrle artifact reanalyse` deletes an artifact's stored results](0148-artifact-reanalyse.md) | Implemented 2026-11-26 |  |

@@ -7,13 +7,13 @@ use crate::analysis::decision::{Artifact, Decided, Page};
 use crate::analysis::detector::Detection;
 use crate::analysis::source::{COMPARER, Sourced};
 use crate::analysis::store::DetectionKey;
-use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored};
+use crate::analysis::store::{Analyses, Analysis, AnalysisError, Forgotten, Scripts, Stored};
 use crate::analysis::virustotal::{Counts, Scanned, Verdict};
 use crate::analysis::{Anomaly, InstallScripts};
 use crate::ecosystem::Signature;
 use crate::integrity::Sri;
 use jiff::Timestamp;
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 
 /// The stores a proxy decides with: the intel store, when one is configured, with the
 /// analyses kept beside it in the same database; otherwise the analyses in memory, at most
@@ -324,6 +324,15 @@ impl PgAnalyses {
     }
 }
 
+/// Tables keyed by artifact digest. `artifact_install_script` goes with `artifact_analysis`.
+const DIGEST_KEYED: [&str; 5] = [
+    "artifact_analysis",
+    "artifact_source",
+    "artifact_attestation",
+    "artifact_signature",
+    "artifact_virustotal",
+];
+
 impl Analyses for PgAnalyses {
     fn get<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Analysis>> {
         Box::pin(self.read(digest))
@@ -391,6 +400,10 @@ impl Analyses for PgAnalyses {
 
     fn forget_decisions<'a>(&'a self, day: &'a str) -> Stored<'a, u64> {
         Box::pin(self.delete_decisions(day))
+    }
+
+    fn forget_analyses<'a>(&'a self, artifact: &'a Artifact) -> Stored<'a, Forgotten> {
+        Box::pin(self.delete_analyses(artifact))
     }
 
     fn claimed<'a>(&'a self, claim: &'a str) -> Stored<'a, Option<Sri>> {
@@ -791,6 +804,85 @@ impl PgAnalyses {
             .iter()
             .filter_map(|row| Decided::from_json(row))
             .collect())
+    }
+
+    /// [`Analyses::forget_analyses`]: the artifacts a decision or an analysis names, then
+    /// each table's results on them, in one transaction. The tables keyed by digest are
+    /// named in [`DIGEST_KEYED`], a constant, which is all `format!` puts in a statement.
+    async fn delete_analyses(&self, artifact: &Artifact) -> Result<Forgotten, AnalysisError> {
+        let (digest, ecosystem, name, version) = match artifact {
+            Artifact::Digest(digest) => (Some(digest.as_str()), None, None, None),
+            Artifact::Version {
+                ecosystem,
+                name,
+                version,
+            } => (
+                None,
+                Some(ecosystem.as_str()),
+                Some(name.as_str()),
+                Some(version.as_str()),
+            ),
+        };
+        let found = sqlx::query!(
+            r#"
+            SELECT digest AS "digest!", ecosystem AS "ecosystem!", name AS "name!",
+                   version AS "version!"
+            FROM (
+                SELECT digest, ecosystem, name, version FROM artifact_decision
+                WHERE digest IS NOT NULL
+                  AND (digest = $1 OR (ecosystem = $2 AND name = $3 AND version = $4))
+                UNION
+                SELECT digest, ecosystem, name, version FROM artifact_analysis
+                WHERE digest = $1 OR (ecosystem = $2 AND name = $3 AND version = $4)
+            ) found
+            ORDER BY digest
+            "#,
+            digest,
+            ecosystem,
+            name,
+            version,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        let mut digests: Vec<String> = found.iter().map(|row| row.digest.clone()).collect();
+        digests.dedup();
+        let (mut repositories, mut names, mut versions) = (Vec::new(), Vec::new(), Vec::new());
+        for row in &found {
+            for repository in crate::analysis::store::repositories(&row.ecosystem) {
+                repositories.push(repository.to_owned());
+                names.push(row.name.clone());
+                versions.push(row.version.clone());
+            }
+        }
+        let mut tx = self.pool.begin().await.map_err(AnalysisError::Backend)?;
+        let mut results = 0;
+        for table in DIGEST_KEYED {
+            results += sqlx::query(AssertSqlSafe(format!(
+                "DELETE FROM {table} WHERE digest = ANY($1)"
+            )))
+            .bind(&digests)
+            .execute(&mut *tx)
+            .await
+            .map_err(AnalysisError::Backend)?
+            .rows_affected();
+        }
+        results += sqlx::query!(
+            r#"
+            DELETE FROM version_detection v
+            USING unnest($1::text[], $2::text[], $3::text[]) AS t(repository, name, version)
+            WHERE v.repository = t.repository AND v.name = t.name AND v.version = t.version
+            "#,
+            &repositories,
+            &names,
+            &versions,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(AnalysisError::Backend)?
+        .rows_affected();
+        tx.commit().await.map_err(AnalysisError::Backend)?;
+        Ok(Forgotten { digests, results })
     }
 
     async fn delete_decisions(&self, day: &str) -> Result<u64, AnalysisError> {

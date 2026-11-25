@@ -147,6 +147,11 @@ pub trait Analyses: Trees {
     /// Delete each decision made before `day`, YYYY-MM-DD in UTC. Returns how many.
     fn forget_decisions<'a>(&'a self, day: &'a str) -> Stored<'a, u64>;
 
+    /// Delete every result on each artifact a decision or analysis names as `artifact`, so
+    /// its next fetch analyses it again: install scripts, source, attestations, signatures,
+    /// VirusTotal and detectors. Decisions and first sightings stay (0148).
+    fn forget_analyses<'a>(&'a self, artifact: &'a Artifact) -> Stored<'a, Forgotten>;
+
     /// The digest of the bytes found to be what `claim` names, such as a Go zip's `h1:`.
     /// `Ok(None)` is a claim not checked yet.
     fn claimed<'a>(&'a self, claim: &'a str) -> Stored<'a, Option<Sri>>;
@@ -179,6 +184,31 @@ pub trait Analyses: Trees {
     /// When the file `filename` of `purl` was first asked of this store, recording nothing.
     /// `None` when it never was.
     fn sighted<'a>(&'a self, purl: &'a str, filename: &'a str) -> Stored<'a, Option<Timestamp>>;
+}
+
+/// What [`Analyses::forget_analyses`] deleted.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Forgotten {
+    /// The digest of each artifact found, sorted.
+    pub digests: Vec<String>,
+    /// How many results were deleted.
+    pub results: u64,
+}
+
+/// The name of each repository of `ecosystem`, as `Repository::name` gives it, under which a
+/// detector's result on one of its versions is kept.
+pub fn repositories(ecosystem: &str) -> Vec<&'static str> {
+    crate::ecosystem::Repository::all()
+        .filter(|repository| repository.ecosystem().as_str() == ecosystem)
+        .map(crate::ecosystem::Repository::name)
+        .collect()
+}
+
+/// One version a result may be kept under: its ecosystem's repositories, name and version.
+type Versioned = (Vec<&'static str>, String, String);
+
+fn versioned(ecosystem: &str, name: &str, version: &str) -> Versioned {
+    (repositories(ecosystem), name.to_owned(), version.to_owned())
 }
 
 /// Where a checksum database's largest tree is kept past a restart.
@@ -430,6 +460,83 @@ impl Analyses for InProcess {
         })
     }
 
+    fn forget_analyses<'a>(&'a self, artifact: &'a Artifact) -> Stored<'a, Forgotten> {
+        Box::pin(async move {
+            let mut digests = std::collections::BTreeSet::new();
+            let mut versions = std::collections::BTreeSet::new();
+            for (_, decided) in self
+                .decisions_held()
+                .held
+                .iter()
+                .filter(|(_, d)| artifact.matches(d))
+            {
+                digests.extend(decided.digest.clone());
+                versions.insert(versioned(
+                    &decided.ecosystem,
+                    &decided.name,
+                    &decided.version,
+                ));
+            }
+            let mut results = self.held().retain(|digest, analysis| {
+                let named = match artifact {
+                    Artifact::Digest(asked) => digest.to_string() == *asked,
+                    Artifact::Version {
+                        ecosystem,
+                        name,
+                        version,
+                    } => {
+                        (&analysis.ecosystem, &analysis.name, &analysis.version)
+                            == (ecosystem, name, version)
+                    }
+                };
+                if named {
+                    digests.insert(digest.to_string());
+                    versions.insert(versioned(
+                        &analysis.ecosystem,
+                        &analysis.name,
+                        &analysis.version,
+                    ));
+                }
+                !named
+            });
+            let kept = |digest: &Sri| !digests.contains(&digest.to_string());
+            results += self
+                .1
+                .lock()
+                .expect("attestation store lock")
+                .retain(|d, _| kept(d));
+            results += self
+                .2
+                .lock()
+                .expect("source store lock")
+                .retain(|d, _| kept(d));
+            results += self
+                .4
+                .lock()
+                .expect("virustotal store lock")
+                .retain(|d, _| kept(d));
+            results += self
+                .8
+                .lock()
+                .expect("signature store lock")
+                .retain(|(d, _, _), _| kept(d));
+            results += self
+                .3
+                .lock()
+                .expect("detection store lock")
+                .retain(|key, _| {
+                    !versions.iter().any(|(repositories, name, version)| {
+                        repositories.contains(&key.repository.as_str())
+                            && (&key.name, &key.version) == (name, version)
+                    })
+                });
+            Ok(Forgotten {
+                digests: digests.into_iter().collect(),
+                results: results as u64,
+            })
+        })
+    }
+
     fn claimed<'a>(&'a self, claim: &'a str) -> Stored<'a, Option<Sri>> {
         Box::pin(async move {
             Ok(self
@@ -595,6 +702,9 @@ pub(crate) mod tests {
         fn forget_decisions<'a>(&'a self, _: &'a str) -> Stored<'a, u64> {
             broken()
         }
+        fn forget_analyses<'a>(&'a self, _: &'a Artifact) -> Stored<'a, Forgotten> {
+            broken()
+        }
         fn claimed<'a>(&'a self, _: &'a str) -> Stored<'a, Option<Sri>> {
             broken()
         }
@@ -725,6 +835,133 @@ pub(crate) mod tests {
         let not = Sourced::NotCompared("why".to_owned());
         store.put_sourced(&sri(1), &not).await.expect("writes");
         assert_eq!(store.sourced(&sri(1)).await.expect("answers"), Some(not));
+    }
+
+    /// A version's results go, by digest and by name and version; another version's and the
+    /// decisions stay. An artifact nothing names finds nothing.
+    #[tokio::test]
+    async fn forgetting_an_artifact_deletes_each_result_on_it() {
+        use crate::analysis::decision::tests::decided;
+        let store = InProcess::new(8);
+        let widget = sri(3).to_string();
+        store
+            .put_decisions(&[decided("widget", &widget)])
+            .await
+            .expect("writes");
+        store
+            .put(&sri(1), &analysis(Scripts::Unreadable("x".to_owned())))
+            .await
+            .expect("writes");
+        store
+            .put_attested(
+                &sri(1),
+                &Attested::Failed {
+                    why: "x".to_owned(),
+                },
+            )
+            .await
+            .expect("writes");
+        store
+            .put_sourced(&sri(3), &Sourced::NotCompared("x".to_owned()))
+            .await
+            .expect("writes");
+        let scanned = Scanned {
+            sha256: "x".to_owned(),
+            verdict: crate::analysis::virustotal::Verdict::Unknown,
+            asked: 0,
+        };
+        store.put_scanned(&sri(3), &scanned).await.expect("writes");
+        let signed = Signature::Failed {
+            why: "x".to_owned(),
+        };
+        store
+            .put_signature(&sri(3), "npm", "v", &signed)
+            .await
+            .expect("writes");
+        let run = |name: &str, version: &str| DetectionKey {
+            detector: "guarddog".to_owned(),
+            detector_version: "3.2.0".to_owned(),
+            repository: "npm".to_owned(),
+            name: name.to_owned(),
+            version: version.to_owned(),
+        };
+        let maven = DetectionKey {
+            repository: "gradle-plugins".to_owned(),
+            ..run("widget", "1.0.0")
+        };
+        store
+            .put_detected(&maven, &Detection::default())
+            .await
+            .expect("writes");
+        for key in [
+            run("widget", "1.0.0"),
+            run("widget", "2.0.0"),
+            run("bufferutil", "4.1.0"),
+        ] {
+            store
+                .put_detected(&key, &Detection::default())
+                .await
+                .expect("writes");
+        }
+
+        let version = Artifact::Version {
+            ecosystem: "npm".to_owned(),
+            name: "widget".to_owned(),
+            version: "1.0.0".to_owned(),
+        };
+        let forgotten = store.forget_analyses(&version).await.expect("deletes");
+        assert_eq!(
+            forgotten,
+            Forgotten {
+                digests: vec![widget.clone()],
+                results: 4
+            },
+            "its source, VirusTotal answer, signature and detection"
+        );
+        assert_eq!(store.sourced(&sri(3)).await.expect("reads"), None);
+        assert_eq!(
+            store
+                .detected(&run("widget", "1.0.0"))
+                .await
+                .expect("reads"),
+            None
+        );
+        assert!(
+            store
+                .detected(&run("widget", "2.0.0"))
+                .await
+                .expect("reads")
+                .is_some()
+        );
+        assert!(
+            store.detected(&maven).await.expect("reads").is_some(),
+            "another ecosystem's repository"
+        );
+        assert_eq!(store.dispositions(&version).await.expect("reads").len(), 1);
+
+        let digest = Artifact::Digest(sri(1).to_string());
+        let forgotten = store.forget_analyses(&digest).await.expect("deletes");
+        assert_eq!(
+            forgotten,
+            Forgotten {
+                digests: vec![sri(1).to_string()],
+                results: 3
+            },
+            "its analysis, attestation and detection"
+        );
+        assert_eq!(store.get(&sri(1)).await.expect("reads"), None);
+        assert_eq!(
+            store.forget_analyses(&digest).await.expect("deletes"),
+            Forgotten::default()
+        );
+    }
+
+    /// A detector's result on a Maven version is kept under either of its repositories.
+    #[test]
+    fn an_ecosystem_names_each_repository_it_serves_from() {
+        assert_eq!(repositories("maven"), ["maven", "gradle-plugins"]);
+        assert_eq!(repositories("npm"), ["npm"]);
+        assert!(repositories("gem").is_empty());
     }
 
     /// Two clients asking for one artifact at once both analysed the same bytes.

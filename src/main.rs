@@ -329,6 +329,15 @@ async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
                     }
                     printed
                 }
+                cli::ArtifactCommand::Reanalyse(_) => {
+                    eprintln!(
+                        "byrle artifact reanalyse: it deletes from the database at {}, and a \
+                         deployment at {} does not offer it",
+                        env::DATABASE_URL.name,
+                        env::REMOTE_URL.name
+                    );
+                    return std::process::ExitCode::from(2);
+                }
                 cli::ArtifactCommand::Export(args) => {
                     let query: Vec<(&str, String)> =
                         [("since", &args.since), ("until", &args.until)]
@@ -371,6 +380,9 @@ async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
         }
         cli::ArtifactCommand::Export(args) => {
             command::export(&store, args.since, args.until, &mut out, &mut err).await
+        }
+        cli::ArtifactCommand::Reanalyse(args) => {
+            command::reanalyse(&store, args.target.artifact(), &mut out, &mut err).await
         }
     })
 }

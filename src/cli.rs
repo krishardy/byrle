@@ -71,6 +71,19 @@ pub enum ArtifactCommand {
     Show(ShowArtifact),
     /// Every decision recorded, oldest first, as JSON Lines
     Export(ExportDecisions),
+    #[command(
+        about = "Delete what was found in each artifact named, so the proxy analyses it again \
+                       on its next fetch: install scripts, source, attestations, signatures, \
+                       VirusTotal and each detector. Decisions are kept. Exits 1 when nothing \
+                       is recorded on it"
+    )]
+    Reanalyse(ReanalyseArtifact),
+}
+
+#[derive(Debug, Default, PartialEq, Args)]
+pub struct ReanalyseArtifact {
+    #[command(flatten)]
+    pub target: ArtifactTarget,
 }
 
 #[derive(Debug, Default, PartialEq, Args)]
@@ -659,6 +672,17 @@ mod tests {
             assert_eq!(show.target.artifact(), &shown, "{flag}");
             assert_eq!(show.output, Output::Text, "{flag}");
         }
+        let Command::Artifact(ArtifactCommand::Reanalyse(reanalyse)) =
+            parse(&["artifact", "reanalyse", "--npm", "ms@2.1.3"])
+                .expect("parses")
+                .command
+        else {
+            panic!("artifact reanalyse");
+        };
+        assert_eq!(
+            reanalyse.target.artifact(),
+            &crate::analysis::decision::Artifact::parse("pkg:npm/ms@2.1.3").unwrap()
+        );
         for (args, output) in [
             (["artifact", "show", "-o", "json"], Output::Json),
             (["artifact", "show", "--output", "text"], Output::Text),
@@ -930,6 +954,10 @@ mod tests {
             ),
             (&["artifact", "show"], ErrorKind::MissingRequiredArgument),
             (
+                &["artifact", "reanalyse"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
                 &["artifact", "show", "pkg:npm/ms@2.1.3"],
                 ErrorKind::UnknownArgument,
             ),
@@ -1016,6 +1044,10 @@ mod tests {
             (&["token", "create", "--help"], "token-create.txt"),
             (&["artifact", "--help"], "artifact.txt"),
             (&["artifact", "show", "--help"], "artifact-show.txt"),
+            (
+                &["artifact", "reanalyse", "--help"],
+                "artifact-reanalyse.txt",
+            ),
             (&["artifact", "export", "--help"], "artifact-export.txt"),
         ] {
             let help = stops(args, ErrorKind::DisplayHelp);

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM version_detection v\n            USING unnest($1::text[], $2::text[], $3::text[]) AS t(repository, name, version)\n            WHERE v.repository = t.repository AND v.name = t.name AND v.version = t.version\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9da4d2d8311144a8135ea906245679d3d72419409536dab580129172473a025b"
+}
