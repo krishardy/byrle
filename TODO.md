@@ -561,6 +561,8 @@ Items that I've added that are not stage-bound.
           machine and compare with the release's `.sha256` files. If it is, publish the
           sums only after an independent rebuild matches, signed with the owner's key.
 
+58. To byrle explain, add --java, --python, --go, --cargo options (ecosystem-specific dependency lookups, similar to --npm)
+
 ## Architecture Refactor
 
 Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here

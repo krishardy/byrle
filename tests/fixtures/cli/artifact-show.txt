@@ -1,9 +1,10 @@
-The latest decision on each artifact named, as JSON Lines: its features and its disposition. Exits 1 when none is recorded
+The latest decision on each artifact named: its features and its disposition, as a list, or as JSON Lines with -o json. Exits 1 when none is recorded
 
-Usage: byrle artifact show <ARTIFACT>
-
-Arguments:
-  <ARTIFACT>  A digest, such as sha512-..., or one version's purl, such as pkg:npm/ms@2.1.3. A PyPI version has one artifact per file
+Usage: byrle artifact show [OPTIONS] <--digest <DIGEST>|--purl <PURL>|--npm <NAME@VERSION>>
 
 Options:
-  -h, --help  Print help
+      --digest <DIGEST>     One artifact's digest, for example sha512-...
+      --purl <PURL>         One package version, for example pkg:npm/ms@2.1.3. A PyPI version has one artifact per file
+      --npm <NAME@VERSION>  One npm package version as npm's errors print it, for example @babel/core@7.0.0
+  -o, --output <OUTPUT>     How each decision is printed: a list to read, or the JSON line the store keeps [default: text] [possible values: text, json]
+  -h, --help                Print help

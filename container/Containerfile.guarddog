@@ -1,0 +1,43 @@
+# GuardDog 3.2.0, the detector `BYRLE_DETECTORS` runs through container/guarddog-byrle.sh.
+# Built by `make guarddog-image`. Its build context is container/.
+#
+# GuardDog downloads and reads the package it is asked about, by name, from the public
+# registry. It runs here so that code reads no file of the host's and no variable of
+# byrle's: see docs/engineering_decisions/0146-guarddog-container.md.
+
+FROM docker.io/library/python:3.13-slim-trixie
+
+# Every package pinned with its hashes, from `uv pip compile --generate-hashes`. pygit2
+# 1.18.2 publishes wheels for Python 3.13 and none for 3.14, whose source build needs
+# libgit2's headers.
+COPY guarddog-requirements.txt /tmp/requirements.txt
+# pip is removed after: trivy found urllib3 2.7.0, msgpack and setuptools vendored in it, 5
+# HIGH, on 2026-11-25, and GuardDog never runs it.
+RUN pip install --no-cache-dir --no-deps --require-hashes -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt \
+    && pip uninstall --yes pip
+
+# GuardDog's sandbox grants read access to the directory of Python's CA file, and pygit2
+# loads it when imported. Debian's bundle is a regular file, named here so that directory
+# is the one granted.
+#
+# GuardDog rewrites its lists of popular packages in place once they are 30 days old, by
+# default inside its own install. Here they are in /var/cache/guarddog, seeded with the
+# lists GuardDog ships. guarddog-byrle mounts a named volume there, which podman fills from
+# this directory the first time, so a refresh is kept and the root filesystem stays
+# read-only.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_DIR=/etc/ssl/certs \
+    GUARDDOG_TOP_PACKAGES_CACHE_LOCATION=/var/cache/guarddog \
+    HOME=/tmp \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Not root. The root filesystem is mounted read-only at run time, and /tmp is a tmpfs.
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin guarddog \
+    && mkdir -p /var/cache/guarddog \
+    && cp /usr/local/lib/python3.13/site-packages/guarddog/analyzer/metadata/resources/* \
+        /var/cache/guarddog/ \
+    && chown -R guarddog /var/cache/guarddog
+USER guarddog
+WORKDIR /tmp
+ENTRYPOINT ["guarddog"]

@@ -1,8 +1,9 @@
-# `byrle explain` takes a purl with `--purl`, or npm's `name@version` with `--npm`
+# `byrle explain` and `artifact show` take a purl with `--purl`, or npm's `name@version` with `--npm`
 
 - **Number:** 0143
-- **Status:** Implemented 2026-11-25. `src/cli.rs`, `src/explain.rs` (`purl_of`),
-  `src/ecosystem/npm/paths.rs` (`printed_purl`), `src/main.rs`.
+- **Status:** Implemented 2026-11-25. `src/cli.rs` (`npm_purl`, `npm_artifact`),
+  `src/ecosystem/npm/paths.rs` (`printed_purl`), `src/analysis/decision.rs`
+  (`Artifact::digest`, `Artifact::version`), `src/main.rs`.
 - **Related:** [explain-output](0084-explain-output.md),
   [remote-analysis-commands](0118-remote-analysis-commands.md)
 
@@ -14,8 +15,13 @@
 | `explain --purl <purl>` | a purl, as before | that purl, exactly |
 | `explain --npm <name@version>` | the name and version npm prints in an error | the npm purl built from them |
 
-Exactly one of the three is given. The purl is no longer a positional argument:
-`byrle explain pkg:npm/a@1.0.0` exits 2 with clap's unknown-argument error.
+| `artifact show --digest <digest>` | a Subresource Integrity digest | that artifact |
+| `artifact show --purl <purl>` | a purl with a version | each artifact of that version |
+| `artifact show --npm <name@version>` | as `explain --npm` | as `--purl`, with the npm purl |
+
+Each command takes exactly one of its forms. Neither takes a positional argument any more:
+`byrle explain pkg:npm/a@1.0.0` and `byrle artifact show pkg:npm/a@1.0.0` exit 2 with
+clap's unknown-argument error. `--digest` refuses a purl and `--purl` a digest.
 
 npm prints a refused version as `@anthropic-ai/sdk@1.14.0`, for example in
 `No matching version found for @anthropic-ai/sdk@1.14.0.` Its purl is
@@ -29,13 +35,16 @@ npm prints a refused version as `@anthropic-ai/sdk@1.14.0`, for example in
 - The name is split into scope and name by `ecosystem::npm::paths::split_name`, as a name
   from the registry is.
 
-`printed_purl` is in the npm adapter. `explain.rs` calls it, the one line outside an
-adapter that names npm, and `only_the_adapters_name_an_ecosystem` allows that line.
+`--npm` is parsed by clap, with `printed_purl` from the npm adapter, so an argument that
+is not a name@version exits 2 before anything runs. `cli.rs` calls it from `npm_purl`, the
+one line outside an adapter that names npm, and `only_the_adapters_name_an_ecosystem`
+allows that line.
 
 The first line `explain` prints is the purl, so the result shows which purl `--npm` built.
 
-A remote `explain` (`BYRLE_REMOTE_URL` set) builds the purl on the client and sends it as
-the `purl` query parameter. `GET /api/v1/explain` is unchanged.
+A remote `explain` or `artifact show` (`BYRLE_REMOTE_URL` set) builds the purl on the
+client and sends it as the `purl` or `artifact` query parameter. `GET /api/v1/explain` and
+`GET /api/v1/artifact` are unchanged.
 
 ## Rejected
 

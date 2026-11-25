@@ -24,7 +24,7 @@ holds this table to the routes the console answers.
 | GET | `api/v1/metrics/failures` | `requests.read` | failures by hour and case, R6 |
 | GET | `api/v1/config` | `config.read` | the configuration, secrets removed, R7 |
 | GET | `api/v1/explain` | `packages.read` | what `byrle explain` prints on the deployment, `{"stdout", "stderr", "code"}`; `purl` for a package, none for the policy ([remote-cli-plan](remote-cli-plan.md)) |
-| GET | `api/v1/artifact` | `packages.read` | what `byrle artifact show` prints on the deployment, for `artifact`, a digest or a version's purl |
+| GET | `api/v1/artifact` | `packages.read` | what `byrle artifact show -o json` prints on the deployment, for `artifact`, a digest or a version's purl |
 | GET | `api/v1/artifacts` | `packages.read` | what `byrle artifact export` prints on the deployment, its JSON Lines in `stdout`; `since` and `until` days |
 | GET | `api/v1/intel/history` | `packages.read` | what `byrle intel history` prints on the deployment; `limit`, 20 unless given |
 | GET | `api/v1/ecosystems` | `packages.read` | what `byrle status` prints on the deployment |

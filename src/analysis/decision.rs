@@ -4,6 +4,7 @@
 //! See docs/engineering_decisions/0105-artifact-decisions.md.
 
 pub mod command;
+pub mod readable;
 
 use serde::{Deserialize, Serialize};
 
@@ -237,13 +238,26 @@ impl std::fmt::Display for Artifact {
 impl Artifact {
     /// A digest, `sha512-...` or `sha256-...`, or a purl naming one version.
     pub fn parse(argument: &str) -> Result<Self, String> {
-        if let Ok(sri) = crate::integrity::Sri::parse(argument) {
-            return Ok(Self::Digest(sri.to_string()));
-        }
+        Self::digest(argument)
+            .or_else(|_| Self::version(argument))
+            .map_err(|_| {
+                format!(
+                    "{argument} is neither a digest nor a purl with a version, such as pkg:npm/ms@2.1.3"
+                )
+            })
+    }
+
+    /// A digest, `sha512-...` or `sha256-...`.
+    pub fn digest(argument: &str) -> Result<Self, String> {
+        crate::integrity::Sri::parse(argument)
+            .map(|sri| Self::Digest(sri.to_string()))
+            .map_err(|_| format!("{argument} is not a digest, such as sha512-..."))
+    }
+
+    /// A purl naming one version.
+    pub fn version(argument: &str) -> Result<Self, String> {
         let package: crate::identity::PackageRef = argument.parse().map_err(|_| {
-            format!(
-                "{argument} is neither a digest nor a purl with a version, such as pkg:npm/ms@2.1.3"
-            )
+            format!("{argument} is not a purl with a version, such as pkg:npm/ms@2.1.3")
         })?;
         let key = package.key();
         Ok(Self::Version {
@@ -549,6 +563,27 @@ pub(crate) mod tests {
             assert!(e.starts_with(refused), "{e}");
             assert!(e.contains("pkg:npm/ms@2.1.3"), "{e}");
         }
+    }
+
+    /// `digest` takes only a digest and `version` only a versioned purl.
+    #[test]
+    fn a_digest_and_a_version_are_read_apart() {
+        let digest = format!("sha512-{}", "A".repeat(86) + "==");
+        assert_eq!(
+            Artifact::digest(&digest),
+            Ok(Artifact::Digest(digest.clone()))
+        );
+        assert_eq!(
+            Artifact::digest("pkg:npm/ms@2.1.3"),
+            Err("pkg:npm/ms@2.1.3 is not a digest, such as sha512-...".to_owned())
+        );
+        assert_eq!(
+            Artifact::version(&digest),
+            Err(format!(
+                "{digest} is not a purl with a version, such as pkg:npm/ms@2.1.3"
+            ))
+        );
+        assert!(Artifact::version("pkg:npm/ms@2.1.3").is_ok());
     }
 
     /// An artifact is written as it is read, so a remote `artifact show` asks for the one

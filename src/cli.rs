@@ -65,22 +65,54 @@ pub enum Command {
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum ArtifactCommand {
     #[command(
-        about = "The latest decision on each artifact named, as JSON Lines: its features and \
-                       its disposition. Exits 1 when none is recorded"
+        about = "The latest decision on each artifact named: its features and its disposition, \
+                       as a list, or as JSON Lines with -o json. Exits 1 when none is recorded"
     )]
     Show(ShowArtifact),
     /// Every decision recorded, oldest first, as JSON Lines
     Export(ExportDecisions),
 }
 
-#[derive(Debug, PartialEq, Args)]
+#[derive(Debug, Default, PartialEq, Args)]
 pub struct ShowArtifact {
-    #[arg(
-        help = "A digest, such as sha512-..., or one version's purl, such as pkg:npm/ms@2.1.3. \
-                A PyPI version has one artifact per file",
-        value_parser = crate::analysis::decision::Artifact::parse
-    )]
-    pub artifact: crate::analysis::decision::Artifact,
+    #[command(flatten)]
+    pub target: ArtifactTarget,
+    /// How each decision is printed: a list to read, or the JSON line the store keeps
+    #[arg(short, long, value_enum, default_value_t = Output::Text)]
+    pub output: Output,
+}
+
+/// How `artifact show` prints.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Output {
+    #[default]
+    Text,
+    Json,
+}
+
+/// `artifact show --digest <digest>`, `--purl <purl>` or `--npm <name@version>`, exactly one.
+#[derive(Debug, Default, PartialEq, Args)]
+#[group(required = true, multiple = false)]
+pub struct ArtifactTarget {
+    /// One artifact's digest, for example sha512-...
+    #[arg(long, value_name = "DIGEST", value_parser = crate::analysis::decision::Artifact::digest)]
+    pub digest: Option<crate::analysis::decision::Artifact>,
+    /// One package version, for example pkg:npm/ms@2.1.3. A PyPI version has one artifact per file
+    #[arg(long, value_name = "PURL", value_parser = crate::analysis::decision::Artifact::version)]
+    pub purl: Option<crate::analysis::decision::Artifact>,
+    /// One npm package version as npm's errors print it, for example @babel/core@7.0.0
+    #[arg(long, value_name = "NAME@VERSION", value_parser = npm_artifact)]
+    pub npm: Option<crate::analysis::decision::Artifact>,
+}
+
+impl ArtifactTarget {
+    /// The artifact asked about, from whichever argument was given.
+    pub fn artifact(&self) -> &crate::analysis::decision::Artifact {
+        [&self.digest, &self.purl, &self.npm]
+            .into_iter()
+            .find_map(Option::as_ref)
+            .expect("clap requires one of the three")
+    }
 }
 
 #[derive(Debug, PartialEq, Args)]
@@ -251,8 +283,26 @@ pub struct Explain {
     #[arg(long, value_name = "PURL")]
     pub purl: Option<String>,
     /// One npm package version as npm's errors print it, for example @babel/core@7.0.0
-    #[arg(long, value_name = "NAME@VERSION")]
+    #[arg(long, value_name = "NAME@VERSION", value_parser = npm_purl)]
     pub npm: Option<String>,
+}
+
+impl Explain {
+    /// The purl asked about: `--purl` as given, or `--npm`'s as a purl. `None` for `--policy`.
+    pub fn purl(&self) -> Option<&str> {
+        self.purl.as_deref().or(self.npm.as_deref())
+    }
+}
+
+/// `--npm`'s argument, an npm `name@version` as npm prints it, as a purl
+/// (0143-explain-by-npm-name.md).
+fn npm_purl(spec: &str) -> Result<String, String> {
+    crate::ecosystem::npm::paths::printed_purl(spec)
+}
+
+/// `artifact show --npm`'s argument as the version it names.
+fn npm_artifact(spec: &str) -> Result<crate::analysis::decision::Artifact, String> {
+    npm_purl(spec).and_then(|purl| crate::analysis::decision::Artifact::version(&purl))
 }
 
 #[derive(Debug, PartialEq, Subcommand)]
@@ -510,9 +560,19 @@ mod tests {
         assert!(refused.to_string().contains("is not a role"), "{refused}");
         let refused = stops(&["account", "create", "Alice"], ErrorKind::ValueValidation);
         assert!(refused.to_string().contains("is not a name"), "{refused}");
-        let refused = stops(&["artifact", "show", "ms"], ErrorKind::ValueValidation);
+        let refused = stops(
+            &["artifact", "show", "--purl", "ms"],
+            ErrorKind::ValueValidation,
+        );
         assert!(
-            refused.to_string().contains("neither a digest"),
+            refused.to_string().contains("is not a purl with a version"),
+            "{refused}"
+        );
+        let refused = stops(&["explain", "--npm", "ms"], ErrorKind::ValueValidation);
+        assert!(
+            refused
+                .to_string()
+                .contains("`ms` is not an npm name@version"),
             "{refused}"
         );
         let refused = stops(
@@ -574,18 +634,43 @@ mod tests {
                 .command,
             Command::Intel(IntelCommand::History(History { limit: 1 }))
         );
-        assert_eq!(
-            parse(&["artifact", "show", "pkg:npm/ms@2.1.3"])
-                .expect("parses")
-                .command,
-            Command::Artifact(ArtifactCommand::Show(ShowArtifact {
-                artifact: crate::analysis::decision::Artifact::Version {
-                    ecosystem: "npm".into(),
-                    name: "ms".into(),
-                    version: "2.1.3".into(),
-                }
-            }))
-        );
+        let ms = crate::analysis::decision::Artifact::Version {
+            ecosystem: "npm".into(),
+            name: "ms".into(),
+            version: "2.1.3".into(),
+        };
+        let digest = format!("sha512-{}", "A".repeat(86) + "==");
+        for (flag, value, shown) in [
+            ("--purl", "pkg:npm/ms@2.1.3", ms.clone()),
+            ("--npm", "ms@2.1.3.", ms),
+            (
+                "--digest",
+                digest.as_str(),
+                crate::analysis::decision::Artifact::Digest(digest.clone()),
+            ),
+        ] {
+            let Command::Artifact(ArtifactCommand::Show(show)) =
+                parse(&["artifact", "show", flag, value])
+                    .expect("parses")
+                    .command
+            else {
+                panic!("{flag} is artifact show");
+            };
+            assert_eq!(show.target.artifact(), &shown, "{flag}");
+            assert_eq!(show.output, Output::Text, "{flag}");
+        }
+        for (args, output) in [
+            (["artifact", "show", "-o", "json"], Output::Json),
+            (["artifact", "show", "--output", "text"], Output::Text),
+        ] {
+            let args: Vec<&str> = args.into_iter().chain(["--npm", "ms@2.1.3"]).collect();
+            let Command::Artifact(ArtifactCommand::Show(show)) =
+                parse(&args).expect("parses").command
+            else {
+                panic!("{args:?} is artifact show");
+            };
+            assert_eq!(show.output, output, "{args:?}");
+        }
         assert_eq!(
             parse(&["artifact", "export", "--since", "2026-10-01"])
                 .expect("parses")
@@ -616,10 +701,24 @@ mod tests {
                 .expect("parses")
                 .command,
             Command::Explain(Explain {
-                npm: Some("@babel/core@7.0.0".to_owned()),
+                npm: Some("pkg:npm/%40babel/core@7.0.0".to_owned()),
                 ..Explain::default()
             })
         );
+        for (args, purl) in [
+            (["explain", "--npm", "a@1.0.0"], Some("pkg:npm/a@1.0.0")),
+            (
+                ["explain", "--purl", "pkg:npm/b@1.0.0"],
+                Some("pkg:npm/b@1.0.0"),
+            ),
+            (["explain", "--policy", "--"], None),
+        ] {
+            let args: Vec<&str> = args.into_iter().filter(|a| *a != "--").collect();
+            let Command::Explain(explain) = parse(&args).expect("parses").command else {
+                panic!("{args:?} is explain");
+            };
+            assert_eq!(explain.purl(), purl, "{args:?}");
+        }
         assert_eq!(
             diff(&["policy", "diff", "a.yaml", "b.yaml"]).expect("parses"),
             Diff {
@@ -824,6 +923,43 @@ mod tests {
                 ErrorKind::ArgumentConflict,
             ),
             (&["explain", "pkg:npm/a@1.0.0"], ErrorKind::UnknownArgument),
+            (&["explain", "--npm", "lodash"], ErrorKind::ValueValidation),
+            (
+                &["explain", "--npm", "lodash@^4.0.0"],
+                ErrorKind::ValueValidation,
+            ),
+            (&["artifact", "show"], ErrorKind::MissingRequiredArgument),
+            (
+                &["artifact", "show", "pkg:npm/ms@2.1.3"],
+                ErrorKind::UnknownArgument,
+            ),
+            (
+                &[
+                    "artifact",
+                    "show",
+                    "--purl",
+                    "pkg:npm/a@1.0.0",
+                    "--npm",
+                    "a@1.0.0",
+                ],
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                &["artifact", "show", "--npm", "ms"],
+                ErrorKind::ValueValidation,
+            ),
+            (
+                &["artifact", "show", "--digest", "pkg:npm/ms@2.1.3"],
+                ErrorKind::ValueValidation,
+            ),
+            (
+                &["artifact", "show", "--purl", "sha512-x"],
+                ErrorKind::ValueValidation,
+            ),
+            (
+                &["artifact", "show", "--npm", "ms@1.0.0", "-o", "yaml"],
+                ErrorKind::InvalidValue,
+            ),
             (&["doctor", "extra"], ErrorKind::UnknownArgument),
             (&["policy", "check"], ErrorKind::MissingRequiredArgument),
             (&["policy", "check", "a", "b"], ErrorKind::UnknownArgument),

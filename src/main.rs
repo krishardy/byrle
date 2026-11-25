@@ -198,14 +198,11 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     match remote("explain") {
         Err(code) => return code,
         Ok(Some(remote)) => {
-            let purl = match explain::purl_of(&target) {
-                Ok(purl) => purl,
-                Err(e) => {
-                    eprintln!("byrle explain: {e}");
-                    return std::process::ExitCode::from(2);
-                }
-            };
-            let query: Vec<(&str, String)> = purl.into_iter().map(|purl| ("purl", purl)).collect();
+            let query: Vec<(&str, String)> = target
+                .purl()
+                .map(|purl| ("purl", purl.to_owned()))
+                .into_iter()
+                .collect();
             let printed = remote
                 .get("explain", byrle::console::routes::EXPLAIN_PATH, &query)
                 .await;
@@ -322,10 +319,15 @@ async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
         Ok(Some(remote)) => {
             let printed = match &command {
                 cli::ArtifactCommand::Show(args) => {
-                    let query = [("artifact", args.artifact.to_string())];
-                    remote
+                    let query = [("artifact", args.target.artifact().to_string())];
+                    let mut printed = remote
                         .get("artifact", byrle::console::routes::ARTIFACT_PATH, &query)
-                        .await
+                        .await;
+                    if args.output == cli::Output::Text {
+                        printed.stdout =
+                            byrle::analysis::decision::readable::lines(&printed.stdout);
+                    }
+                    printed
                 }
                 cli::ArtifactCommand::Export(args) => {
                     let query: Vec<(&str, String)> =
@@ -352,7 +354,20 @@ async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
     let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
     std::process::ExitCode::from(match command {
         cli::ArtifactCommand::Show(args) => {
-            command::show(&store, &args.artifact, &mut out, &mut err).await
+            let mut json = Vec::new();
+            let code = command::show(&store, args.target.artifact(), &mut json, &mut err).await;
+            let json = String::from_utf8_lossy(&json);
+            let printed = match args.output {
+                cli::Output::Json => json.into_owned(),
+                cli::Output::Text => byrle::analysis::decision::readable::lines(&json),
+            };
+            match std::io::Write::write_all(&mut out, printed.as_bytes()) {
+                Ok(()) => code,
+                Err(e) => {
+                    eprintln!("byrle artifact: {e}");
+                    2
+                }
+            }
         }
         cli::ArtifactCommand::Export(args) => {
             command::export(&store, args.since, args.until, &mut out, &mut err).await
