@@ -7,7 +7,9 @@ use crate::account::gate::{self, Gate};
 use crate::analysis::Claim;
 use crate::analysis::attestation;
 use crate::analysis::decision;
-use crate::analysis::run::{Analyser, Attestation, Job, Known, ScanJob, SourceJob};
+use crate::analysis::decision::{NotRun, Unrun};
+use crate::analysis::detector::archive::NOT_READ as NOT_READ_FOR_SCRIPTS;
+use crate::analysis::run::{Analyser, Attestation, Job, Known, NO_DIGEST, ScanJob, SourceJob};
 use crate::analysis::source::Sourced;
 use crate::analysis::store::Scripts;
 use crate::analysis::virustotal::Scanned;
@@ -1810,24 +1812,22 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         record: analysed,
         provenance,
         state,
-        anomalies,
+        archive,
     } = deciding.analysed(&record, &fetch, times.as_ref()).await;
-    let detections = deciding.detections(
-        &record,
-        dated.full.as_ref(),
-        &Beside {
-            sourced: sourced.as_ref(),
-            scanned: scanned.as_ref(),
-            anomalies: anomalies.as_deref(),
-            detected: &detected,
-        },
+    let beside = Beside {
+        sourced: sourced.as_ref(),
+        scanned: scanned.as_ref(),
+        anomalies: archive.as_deref().ok(),
+        detected: &detected,
+    };
+    let detections = deciding.detections(&record, dated.full.as_ref(), &beside);
+    let not_run = deciding.not_run(
+        (&record, &described),
+        &fetch,
+        &beside,
+        archive.as_ref().err().cloned(),
     );
-    let basis = decision::Basis::of(
-        fetch.digest.as_ref().map(ToString::to_string),
-        proxy.config.mode,
-        &detections,
-        scanned.as_ref(),
-    );
+    let basis = deciding.basis(&fetch, &detections, not_run, scanned.as_ref());
     let record = analysed;
     let today = crate::policy::today();
     let own = deciding.own_signals(
@@ -2015,6 +2015,52 @@ impl<'a> Deciding<'a> {
             .collect()
     }
 
+    /// What the decision row records besides the audit line: the artifact's digest, the
+    /// mode, `detections`, `not_run`, and what VirusTotal said when it was `scanned`.
+    fn basis(
+        &self,
+        fetch: &ArtifactFetch,
+        detections: &[(String, crate::analysis::detector::Detection)],
+        not_run: Vec<NotRun>,
+        scanned: Option<&Scanned>,
+    ) -> decision::Basis {
+        let digest = fetch.digest.as_ref().map(ToString::to_string);
+        decision::Basis::of(digest, self.proxy.config.mode, detections, not_run, scanned)
+    }
+
+    /// Each detector with no result for this decision, and why: the source comparison on
+    /// `described`, the version as the full document describes it; the archive's, as
+    /// `archive` says; VirusTotal; then each other detector set on `record`.
+    /// See docs/engineering_decisions/0147-detector-states.md.
+    fn not_run(
+        &self,
+        (record, described): (&PackageRecord, &PackageRecord),
+        fetch: &ArtifactFetch,
+        beside: &Beside<'_>,
+        archive: Option<Unrun>,
+    ) -> Vec<NotRun> {
+        use crate::analysis::detector::{archive, source, virustotal};
+        let archive = archive.map(|why| NotRun::new(archive::NAME, why));
+        let digest = fetch.digest.as_ref();
+        let Some(analyser) = self.proxy.config.analyser.as_deref() else {
+            let off = [source::NAME, virustotal::NAME].map(|name| NotRun::new(name, Unrun::Off));
+            return off.into_iter().chain(archive).collect();
+        };
+        let sourced =
+            analyser.source_not_run(described, self.request.filename, digest, beside.sourced);
+        let scanned = beside
+            .scanned
+            .is_none()
+            .then(|| analyser.scan_not_run(digest));
+        let others = analyser.not_run(&target(self.request.repository, record), beside.detected);
+        sourced
+            .into_iter()
+            .chain(archive)
+            .chain(scanned)
+            .chain(others)
+            .collect()
+    }
+
     /// The signals `detections` report and the advisories against `record`.
     fn signals(
         &self,
@@ -2162,7 +2208,7 @@ impl<'a> Deciding<'a> {
             self.request.path,
             fetch.origin.as_deref(),
         );
-        if let Some(job) = SourceJob::of(record, self.request.filename, digest, url) {
+        if let Ok(job) = SourceJob::of(record, self.request.filename, digest, url) {
             analyser.start_source(job);
         }
     }
@@ -2981,8 +3027,8 @@ struct Analysed {
     /// What its attestations say against the version published before it.
     provenance: Provenance,
     state: AnalysisState,
-    /// What the stored analysis found in the tarball's shape, `None` when none was read.
-    anomalies: Option<Vec<crate::analysis::Anomaly>>,
+    /// What the stored analysis found in the tarball's shape, or why none was read.
+    archive: Result<Vec<crate::analysis::Anomaly>, Unrun>,
 }
 
 enum AnalysisState {
@@ -3012,19 +3058,19 @@ async fn analysed(
     let analyser = proxy.config.analyser.as_deref();
     let (provenance, attestations) = attested(proxy, at, analyser, &record, digest, times).await;
     let reader = crate::analysis::reader(key.ecosystem(), filename);
-    let decided = |record, provenance, anomalies| Analysed {
+    let decided = |record, provenance, archive| Analysed {
         record,
         provenance,
         state: AnalysisState::Decided,
-        anomalies,
+        archive,
     };
     let Some(analyser) = analyser else {
-        return decided(record, provenance, None);
+        return decided(record, provenance, Err(Unrun::Off));
     };
     let Some(digest) = digest else {
-        return decided(record, provenance, None);
+        return decided(record, provenance, Err(Unrun::did_not_run(NO_DIGEST)));
     };
-    let mut anomalies = None;
+    let mut archive = Err(Unrun::did_not_run(NOT_READ_FOR_SCRIPTS));
     let reads = match reader {
         None => None,
         Some(reader) => match analyser.known(digest).await {
@@ -3043,22 +3089,28 @@ async fn analysed(
                         .map(|name| (name.clone(), String::new()))
                         .collect()
                 });
-                anomalies = analysis.scripts.anomalies().map(<[_]>::to_vec);
+                archive = match &analysis.scripts {
+                    Scripts::Declared(found) => Ok(found.anomalies.clone()),
+                    Scripts::Unreadable(why) => Err(Unrun::did_not_run(why)),
+                };
                 None
             }
             Known::Mismatched(mismatch) => {
                 return Analysed {
                     record,
                     provenance,
+                    archive: Err(Unrun::did_not_run(&mismatch.to_string())),
                     state: AnalysisState::Mismatched(mismatch),
-                    anomalies,
                 };
             }
-            Known::Unknown => Some(reader),
+            Known::Unknown => {
+                archive = Err(Unrun::Pending);
+                Some(reader)
+            }
         },
     };
     if reads.is_none() && attestations.is_empty() {
-        return decided(record, provenance, anomalies);
+        return decided(record, provenance, archive);
     }
     let job = Job {
         digest: digest.clone(),
@@ -3073,7 +3125,7 @@ async fn analysed(
         record,
         provenance,
         state: AnalysisState::Pending(job),
-        anomalies,
+        archive,
     }
 }
 
@@ -14115,6 +14167,21 @@ mod tests {
         };
         assert_eq!(rows[0].features.virustotal, None);
         assert!(!detectors(&rows[0]).contains(&"guarddog".to_owned()));
+        let not_run = |row: &decision::Decided, detector: &str| {
+            let mut not_run = row.features.not_run.iter();
+            not_run
+                .find(|n| n.detector == detector)
+                .map(|n| n.why.clone())
+        };
+        for detector in ["virustotal", "guarddog"] {
+            assert_eq!(
+                not_run(&rows[0], detector),
+                Some(Unrun::Pending),
+                "{detector}: {:?}",
+                rows[0].features.not_run
+            );
+            assert_eq!(not_run(&rows[1], detector), None, "{detector}");
+        }
         assert_eq!(
             rows[1].features.virustotal,
             Some(decision::Scan {

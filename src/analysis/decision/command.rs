@@ -65,6 +65,38 @@ pub async fn export(
     }
 }
 
+/// Delete what was found in each artifact `artifact` names, so its next fetch analyses it
+/// again, and print each one's digest and how many results went. Returns 0, 1 when no
+/// decision or analysis is recorded on it, or 2 when the store or `out` fails.
+pub async fn reanalyse(
+    store: &dyn Analyses,
+    artifact: &Artifact,
+    out: &mut (dyn Write + Send),
+    err: &mut (dyn Write + Send),
+) -> u8 {
+    let forgotten = match store.forget_analyses(artifact).await {
+        Ok(forgotten) => forgotten,
+        Err(e) => return failed(err, &e.to_string()),
+    };
+    if forgotten.digests.is_empty() {
+        let _ = writeln!(
+            err,
+            "byrle artifact reanalyse: no decision or analysis is recorded on it"
+        );
+        return 1;
+    }
+    let mut printed: String = forgotten.digests.iter().map(|d| format!("{d}\n")).collect();
+    printed.push_str(&format!(
+        "{} stored results deleted. The next fetch of each artifact through the proxy \
+         analyses it again, such as `byrle warm` or an install\n",
+        forgotten.results
+    ));
+    match out.write_all(printed.as_bytes()) {
+        Ok(()) => 0,
+        Err(e) => failed(err, &e.to_string()),
+    }
+}
+
 fn failed(err: &mut (dyn Write + Send), why: &str) -> u8 {
     let _ = writeln!(err, "byrle artifact: {why}");
     2
@@ -174,5 +206,32 @@ mod tests {
         let mut err = Vec::new();
         assert_eq!(export(&store, None, None, &mut Closed, &mut err).await, 2);
         assert!(!err.is_empty());
+    }
+
+    /// The digest of each artifact found, and how many results went; 1 when nothing names
+    /// it, and 2 when the store or the output fails.
+    #[tokio::test]
+    async fn reanalyse_deletes_and_says_what_it_found() {
+        let store = holding(&[decided("a", "sha512-1")]).await;
+        let artifact = Artifact::parse("pkg:npm/a@1.0.0").unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(reanalyse(&store, &artifact, &mut out, &mut err).await, 0);
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "sha512-1\n0 stored results deleted. The next fetch of each artifact through the \
+             proxy analyses it again, such as `byrle warm` or an install\n"
+        );
+        assert!(err.is_empty());
+        assert_eq!(reanalyse(&store, &artifact, &mut Closed, &mut err).await, 2);
+
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let other = Artifact::parse("pkg:npm/b@1.0.0").unwrap();
+        assert_eq!(reanalyse(&store, &other, &mut out, &mut err).await, 1);
+        assert!(out.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&err),
+            "byrle artifact reanalyse: no decision or analysis is recorded on it\n"
+        );
+        assert_eq!(reanalyse(&Broken, &other, &mut out, &mut err).await, 2);
     }
 }

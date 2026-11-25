@@ -64,6 +64,9 @@ for a command. The source comparison's text changed with the move:
 guarddog=/opt/guarddog/bin/guarddog {ecosystem} scan {name} --version={version} --output-format=json
 ```
 
+Since 2026-11-25 GuardDog runs in a container, through `container/guarddog-byrle.sh`
+([guarddog-container](0146-guarddog-container.md)).
+
 The command prints a JSON object whose `results` maps each rule to what it found, empty or
 `null` when nothing, and whose `errors` maps a rule to why it did not run: GuardDog's output.
 

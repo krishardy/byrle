@@ -49,6 +49,13 @@ impl<K: Eq + Hash + Clone, V> Lru<K, V> {
         self.entries.remove(key).map(|entry| entry.value)
     }
 
+    /// Keep only the entries `keep` accepts. Returns how many were dropped.
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|key, entry| keep(key, &entry.value));
+        before - self.entries.len()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -82,6 +89,16 @@ impl<K: Eq + Hash + Clone, V> Lru<K, V> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retain_drops_the_entries_it_does_not_keep() {
+        let mut lru: Lru<u8, &str> = Lru::new(4);
+        for (key, value) in [(1, "a"), (2, "b"), (3, "a")] {
+            lru.insert(key, value);
+        }
+        assert_eq!(lru.retain(|_, value| *value != "a"), 2);
+        assert_eq!((lru.len(), lru.get(&2)), (1, Some(&"b")));
+    }
 
     #[test]
     fn a_key_holds_the_value_it_was_inserted_with() {

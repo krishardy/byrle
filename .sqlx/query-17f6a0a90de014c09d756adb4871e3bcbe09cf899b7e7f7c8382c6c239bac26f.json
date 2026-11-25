@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT digest AS \"digest!\", ecosystem AS \"ecosystem!\", name AS \"name!\",\n                   version AS \"version!\"\n            FROM (\n                SELECT digest, ecosystem, name, version FROM artifact_decision\n                WHERE digest IS NOT NULL\n                  AND (digest = $1 OR (ecosystem = $2 AND name = $3 AND version = $4))\n                UNION\n                SELECT digest, ecosystem, name, version FROM artifact_analysis\n                WHERE digest = $1 OR (ecosystem = $2 AND name = $3 AND version = $4)\n            ) found\n            ORDER BY digest\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "digest!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "ecosystem!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "name!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "version!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "17f6a0a90de014c09d756adb4871e3bcbe09cf899b7e7f7c8382c6c239bac26f"
+}

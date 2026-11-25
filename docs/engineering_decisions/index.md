@@ -154,5 +154,9 @@ Implemented means it is in the code, and the file names where.
 | 0140 | [Deployment scripts in `deployment/`, one directory per target, compose first](0140-deployment-targets.md) | Started 2026-11-15 |  |
 | 0141 | [A release verifies only as `release.yml`'s run for its tag, and no third-party action runs while one is made](0141-release-trust.md) | Implemented 2026-11-24 |  |
 | 0142 | [The development Postgres runs in podman-compose, and byrle on the host](0142-dev-db-and-host-server.md) | Implemented 2026-11-25 |  |
-| 0143 | [`byrle explain` takes a purl with `--purl`, or npm's `name@version` with `--npm`](0143-explain-by-npm-name.md) | Implemented 2026-11-25 |  |
+| 0143 | [`byrle explain` and `artifact show` take a purl with `--purl`, or npm's `name@version` with `--npm`](0143-explain-by-npm-name.md) | Implemented 2026-11-25 |  |
 | 0144 | [`latest` naming a removed npm version moves to the highest release below it](0144-latest-moves-off-a-removed-version.md) | Implemented 2026-11-25 |  |
+| 0145 | [`byrle artifact show` prints a list unless asked for `-o json`](0145-artifact-show-output.md) | Implemented 2026-11-25 |  |
+| 0146 | [GuardDog runs in its own container](0146-guarddog-container.md) | Implemented 2026-11-25 |  |
+| 0147 | [A decision records each detector with no result, and why](0147-detector-states.md) | Implemented 2026-11-26 |  |
+| 0148 | [`byrle artifact reanalyse` deletes an artifact's stored results](0148-artifact-reanalyse.md) | Implemented 2026-11-26 |  |

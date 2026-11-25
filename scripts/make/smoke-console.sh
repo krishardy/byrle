@@ -277,9 +277,12 @@ grep -q "cooldown_days    0" "$workdir/remote.out" || fail "explain --policy pri
 remote "$carol_token" explain --npm is-number@7.0.0 >/dev/null
 grep -q "known_malware    FAIL" "$workdir/remote.out" \
     || fail "explain is-number printed $(head -20 "$workdir/remote.out") $(cat "$workdir/remote.err")"
-[[ "$(remote "$carol_token" artifact show pkg:npm/is-number@7.0.0)" == "0" ]] \
+[[ "$(remote "$carol_token" artifact show --npm is-number@7.0.0 -o json)" == "0" ]] \
     || fail "artifact show: $(cat "$workdir/remote.err")"
 grep -q '"name":"is-number"' "$workdir/remote.out" || fail "artifact show printed $(cat "$workdir/remote.out")"
+[[ "$(remote "$carol_token" artifact show --npm is-number@7.0.0)" == "0" ]] \
+    || fail "artifact show as a list: $(cat "$workdir/remote.err")"
+grep -q '^  disposition$' "$workdir/remote.out" || fail "artifact show as a list printed $(head -20 "$workdir/remote.out")"
 [[ "$(remote "$carol_token" artifact export)" == "0" ]] || fail "artifact export: $(cat "$workdir/remote.err")"
 [[ "$(wc -l <"$workdir/remote.out")" -ge 1 ]] || fail "artifact export printed nothing"
 [[ "$(remote "$carol_token" intel history --limit 100)" == "0" ]] \

@@ -4,6 +4,7 @@
 //! See docs/engineering_decisions/0105-artifact-decisions.md.
 
 pub mod command;
+pub mod readable;
 
 use serde::{Deserialize, Serialize};
 
@@ -35,10 +36,50 @@ pub struct Decided {
 pub struct Features {
     /// What the policy read: the audit line's `inputs.facts`.
     pub facts: RecordedFacts,
-    /// Each detector result held when the decision was made. One absent had not run.
+    /// Each detector result held when the decision was made.
     pub detectors: Vec<DetectorRun>,
-    /// What VirusTotal said. `None` when it had not been asked about the artifact.
+    /// Each detector with no result when decided, and why. Empty before 2026-11-26.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_run: Vec<NotRun>,
+    /// What VirusTotal said. `None` when it had not answered about the artifact.
     pub virustotal: Option<Scan>,
+}
+
+/// A detector with no result when a decision was made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotRun {
+    pub detector: String,
+    #[serde(flatten)]
+    pub why: Unrun,
+}
+
+impl NotRun {
+    pub fn new(detector: &str, why: Unrun) -> Self {
+        Self {
+            detector: detector.to_owned(),
+            why,
+        }
+    }
+}
+
+/// Why a detector had no result. See docs/engineering_decisions/0147-detector-states.md.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum Unrun {
+    /// It is not set.
+    Off,
+    /// It is set, and had no result yet: running, waiting for its turn, or not started.
+    Pending,
+    /// It cannot run on this artifact, or its last run in this process failed.
+    DidNotRun { why: String },
+}
+
+impl Unrun {
+    pub fn did_not_run(why: &str) -> Self {
+        Self::DidNotRun {
+            why: why.to_owned(),
+        }
+    }
 }
 
 /// One detector's result.
@@ -115,15 +156,19 @@ pub struct Basis {
     /// [`crate::refusal::Mode::as_str`].
     pub mode: &'static str,
     pub detectors: Vec<DetectorRun>,
+    pub not_run: Vec<NotRun>,
     pub virustotal: Option<Scan>,
 }
 
 impl Basis {
-    /// `detections`, by detector name, and `scanned`, for the artifact with `digest`.
+    /// `detections`, by detector name, `not_run`, and `scanned`, for the artifact with
+    /// `digest`. A detection by a detector in `not_run` is left out: a source comparison
+    /// that could not compare fires nothing, and is not a run that found nothing.
     pub fn of(
         digest: Option<String>,
         mode: crate::refusal::Mode,
         detections: &[(String, Detection)],
+        not_run: Vec<NotRun>,
         scanned: Option<&Scanned>,
     ) -> Self {
         Self {
@@ -131,11 +176,13 @@ impl Basis {
             mode: mode.as_str(),
             detectors: detections
                 .iter()
+                .filter(|(detector, _)| !not_run.iter().any(|n| &n.detector == detector))
                 .map(|(detector, detection)| DetectorRun {
                     detector: detector.clone(),
                     detection: detection.clone(),
                 })
                 .collect(),
+            not_run,
             virustotal: scanned.map(Scan::of),
         }
     }
@@ -157,6 +204,7 @@ impl Decided {
             features: Features {
                 facts: inputs.facts.clone(),
                 detectors: basis.detectors.clone(),
+                not_run: basis.not_run.clone(),
                 virustotal: basis.virustotal.clone(),
             },
             disposition: Disposition {
@@ -237,13 +285,26 @@ impl std::fmt::Display for Artifact {
 impl Artifact {
     /// A digest, `sha512-...` or `sha256-...`, or a purl naming one version.
     pub fn parse(argument: &str) -> Result<Self, String> {
-        if let Ok(sri) = crate::integrity::Sri::parse(argument) {
-            return Ok(Self::Digest(sri.to_string()));
-        }
+        Self::digest(argument)
+            .or_else(|_| Self::version(argument))
+            .map_err(|_| {
+                format!(
+                    "{argument} is neither a digest nor a purl with a version, such as pkg:npm/ms@2.1.3"
+                )
+            })
+    }
+
+    /// A digest, `sha512-...` or `sha256-...`.
+    pub fn digest(argument: &str) -> Result<Self, String> {
+        crate::integrity::Sri::parse(argument)
+            .map(|sri| Self::Digest(sri.to_string()))
+            .map_err(|_| format!("{argument} is not a digest, such as sha512-..."))
+    }
+
+    /// A purl naming one version.
+    pub fn version(argument: &str) -> Result<Self, String> {
         let package: crate::identity::PackageRef = argument.parse().map_err(|_| {
-            format!(
-                "{argument} is neither a digest nor a purl with a version, such as pkg:npm/ms@2.1.3"
-            )
+            format!("{argument} is not a purl with a version, such as pkg:npm/ms@2.1.3")
         })?;
         let key = package.key();
         Ok(Self::Version {
@@ -363,6 +424,7 @@ pub(crate) mod tests {
                 ("metadata".to_owned(), found),
                 ("guarddog".to_owned(), Detection::default()),
             ],
+            Vec::new(),
             Some(&scanned),
         )
     }
@@ -495,9 +557,61 @@ pub(crate) mod tests {
                 }
             );
         }
-        let none = Basis::of(None, Mode::Enforce, &[], None);
+        let none = Basis::of(None, Mode::Enforce, &[], Vec::new(), None);
         assert_eq!(none.virustotal, None);
         assert_eq!(none.mode, "enforce");
+    }
+
+    /// A detector with no result is recorded with why, and a detection it is said not to
+    /// have run is left out of the runs.
+    #[test]
+    fn a_detector_that_did_not_run_is_recorded_with_why_and_not_as_a_run() {
+        let not_compared = NotRun::new(
+            "source",
+            Unrun::DidNotRun {
+                why: "no repository".into(),
+            },
+        );
+        let basis = Basis::of(
+            None,
+            Mode::Enforce,
+            &[
+                ("metadata".to_owned(), Detection::default()),
+                ("source".to_owned(), Detection::default()),
+            ],
+            vec![
+                not_compared.clone(),
+                NotRun::new("virustotal", Unrun::Pending),
+            ],
+            None,
+        );
+        let runs: Vec<&str> = basis
+            .detectors
+            .iter()
+            .map(|r| r.detector.as_str())
+            .collect();
+        assert_eq!(runs, ["metadata"]);
+        let decided = Decided::of(&served_line("ms"), &basis).unwrap();
+        let json = decided.to_json();
+        assert!(
+            json.contains(
+                r#""not_run":[{"detector":"source","state":"did-not-run","why":"no repository"},{"detector":"virustotal","state":"pending"}]"#
+            ),
+            "{json}"
+        );
+        assert_eq!(Decided::from_json(&json), Some(decided));
+        let off = serde_json::to_string(&NotRun::new("guarddog", Unrun::Off)).unwrap();
+        assert_eq!(off, r#"{"detector":"guarddog","state":"off"}"#);
+    }
+
+    /// A decision recorded before `not_run` was reads with none, and one with none writes
+    /// no `not_run`.
+    #[test]
+    fn a_decision_without_not_run_reads_and_writes_without_it() {
+        let decided = decided("ms", "sha512-x");
+        let json = decided.to_json();
+        assert!(!json.contains("not_run"), "{json}");
+        assert_eq!(Decided::from_json(&json).unwrap().features.not_run, []);
     }
 
     #[test]
@@ -549,6 +663,27 @@ pub(crate) mod tests {
             assert!(e.starts_with(refused), "{e}");
             assert!(e.contains("pkg:npm/ms@2.1.3"), "{e}");
         }
+    }
+
+    /// `digest` takes only a digest and `version` only a versioned purl.
+    #[test]
+    fn a_digest_and_a_version_are_read_apart() {
+        let digest = format!("sha512-{}", "A".repeat(86) + "==");
+        assert_eq!(
+            Artifact::digest(&digest),
+            Ok(Artifact::Digest(digest.clone()))
+        );
+        assert_eq!(
+            Artifact::digest("pkg:npm/ms@2.1.3"),
+            Err("pkg:npm/ms@2.1.3 is not a digest, such as sha512-...".to_owned())
+        );
+        assert_eq!(
+            Artifact::version(&digest),
+            Err(format!(
+                "{digest} is not a purl with a version, such as pkg:npm/ms@2.1.3"
+            ))
+        );
+        assert!(Artifact::version("pkg:npm/ms@2.1.3").is_ok());
     }
 
     /// An artifact is written as it is read, so a remote `artifact show` asks for the one

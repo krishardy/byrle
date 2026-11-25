@@ -123,9 +123,42 @@ pub struct Analyser {
     recorder: crate::util::batched::Batched<crate::analysis::decision::Decided>,
     /// The claims being checked, and those whose last check failed.
     claims: claiming::Claims,
+    /// Why each failed detector run and VirusTotal lookup failed, until one succeeds.
+    failed: Arc<Mutex<Lru<FailedRun, String>>>,
+}
+
+/// Why a background run, which verifies the bytes it fetches, has no result with no digest.
+pub const NO_DIGEST: &str = "the metadata published no digest to verify the artifact by";
+
+/// A detector's run on a version, or VirusTotal's lookup of a digest.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FailedRun {
+    Detection(crate::analysis::store::DetectionKey),
+    Scan(Sri),
 }
 
 impl Analyser {
+    /// Remember that `run` failed, and `why`.
+    fn run_failed(&self, run: FailedRun, why: String) {
+        self.failed
+            .lock()
+            .expect("failed runs lock")
+            .insert(run, why);
+    }
+
+    /// Forget that `run` failed, once it has not.
+    fn run_succeeded(&self, run: &FailedRun) {
+        self.failed.lock().expect("failed runs lock").remove(run);
+    }
+
+    /// Why `run` last failed, when it did.
+    fn why_failed(&self, run: &FailedRun) -> Option<String> {
+        self.failed
+            .lock()
+            .expect("failed runs lock")
+            .get(run)
+            .cloned()
+    }
     /// Where it keeps what it found.
     pub fn store(&self) -> Arc<dyn Analyses> {
         self.store.clone()
@@ -150,6 +183,7 @@ impl Analyser {
             in_flight: Arc::default(),
             mismatched: Arc::new(Mutex::new(Lru::new(max_mismatches))),
             claims: claiming::Claims::new(max_mismatches),
+            failed: Arc::new(Mutex::new(Lru::new(max_mismatches))),
             ended: Arc::new(watch::Sender::new(0)),
             deadline: DEADLINE,
             sources: None,

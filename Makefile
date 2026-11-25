@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-compose ansible-check opentofu-check smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup start-dev-db start-dev-server reset-dev-db
+.PHONY: help dev-setup build clean lint semgrep opengrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps smoke-npm smoke-python smoke-cargo smoke-go smoke-maven smoke-npm-clients smoke-proxy smoke-tls-front smoke-compose ansible-check opentofu-check smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates commit-fixup pr-signatures install-shellcheck install-opengrep install-java install-gradle ci-setup start-dev-db start-dev-server reset-dev-db guarddog-image
 
 help:
 	@echo "byrle targets:"
@@ -27,6 +27,7 @@ help:
 	@echo "  start-dev-db   start the development Postgres in podman-compose, on 127.0.0.1:DEV_DB_PORT"
 	@echo "  start-dev-server  start-dev-db, then byrle on the host with cargo run, in the foreground"
 	@echo "  reset-dev-db   delete the development Postgres and its volume, then start-dev-db"
+	@echo "  guarddog-image build the GuardDog image container/guarddog-byrle.sh runs"
 	@echo "  smoke-npm      what the proxy does, checked with npm"
 	@echo "  smoke-python   what the proxy does for PyPI, checked with pip and uv"
 	@echo "  smoke-cargo    what the proxy does for crates.io, checked with cargo"
@@ -148,6 +149,9 @@ start-dev-server: start-dev-db
 
 reset-dev-db:
 	@scripts/make/reset-dev-db.sh $(DEV_DB_ARGS)
+
+guarddog-image:
+	@scripts/make/guarddog-image.sh
 
 smoke-npm:
 	@scripts/make/smoke-npm.sh

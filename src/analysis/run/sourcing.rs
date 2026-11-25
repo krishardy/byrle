@@ -8,8 +8,9 @@ use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use super::{Analyser, InFlight};
+use super::{Analyser, InFlight, NO_DIGEST};
 use crate::analysis::ReadError;
+use crate::analysis::decision::{NotRun, Unrun};
 use crate::analysis::source::{self, CEILING, Layout, Repo, Sourced, Tree};
 use crate::identity::Ecosystem;
 use crate::integrity::Sri;
@@ -44,23 +45,35 @@ pub struct SourceJob {
 
 impl SourceJob {
     /// The job for `record`'s artifact `filename` with `digest`, fetched from `url`.
-    /// Returns `None` for an npm record naming no repository on GitHub, or a file this does
-    /// not read.
-    pub fn of(record: &PackageRecord, filename: &str, digest: &Sri, url: String) -> Option<Self> {
+    /// Errors with why there is nothing to compare: an npm record naming no repository on
+    /// GitHub, or a file this does not read.
+    pub fn of(
+        record: &PackageRecord,
+        filename: &str,
+        digest: &Sri,
+        url: String,
+    ) -> Result<Self, &'static str> {
         let ecosystem = record.package.key().ecosystem();
-        let (repo, directory) = (crate::ecosystem::of(ecosystem).source)(record)?;
-        Some(Self {
+        let (repo, directory) =
+            (crate::ecosystem::of(ecosystem).source)(record).ok_or(NO_SOURCE)?;
+        Ok(Self {
             digest: digest.clone(),
             url,
             name: record.package.key().registry_name(),
             ecosystem,
-            layout: Layout::of(ecosystem, filename)?,
+            layout: Layout::of(ecosystem, filename).ok_or(NOT_READ)?,
             repo,
             directory,
             references: source::references(record),
         })
     }
 }
+
+/// Why a version's metadata gives the comparison nothing to compare with.
+pub const NO_SOURCE: &str = "the metadata names no source repository it reads";
+
+/// Why an artifact file is not compared.
+pub const NOT_READ: &str = "the source comparison does not read this kind of file";
 
 /// The comparisons' own host, slots and cache, apart from the analyses a client waits on.
 #[derive(Clone)]
@@ -118,6 +131,31 @@ impl Analyser {
                 None
             }
         }
+    }
+
+    /// Why the comparison has no result on `record`'s artifact `filename` with `digest`, as
+    /// `sourced` stored it: it is off, there is no digest to verify the artifact by, nothing
+    /// to compare, or it could not compare. `None` when it compared. Otherwise it is pending.
+    pub fn source_not_run(
+        &self,
+        record: &PackageRecord,
+        filename: &str,
+        digest: Option<&Sri>,
+        sourced: Option<&Sourced>,
+    ) -> Option<NotRun> {
+        let why = match (&self.sources, digest, sourced) {
+            (_, _, Some(Sourced::Compared { .. })) => return None,
+            (_, _, Some(Sourced::NotCompared(why))) => Unrun::did_not_run(why),
+            (None, _, None) => Unrun::Off,
+            (Some(_), None, None) => Unrun::did_not_run(NO_DIGEST),
+            (Some(_), Some(digest), None) => {
+                match SourceJob::of(record, filename, digest, String::new()) {
+                    Ok(_) => Unrun::Pending,
+                    Err(why) => Unrun::did_not_run(why),
+                }
+            }
+        };
+        Some(NotRun::new(crate::analysis::detector::source::NAME, why))
     }
 
     /// Start comparing `job` unless the comparison is off or its digest is being compared.
@@ -761,9 +799,12 @@ mod tests {
         assert_eq!(made.name, "@babel/traverse");
         let mut elsewhere = record.clone();
         elsewhere.repository.as_mut().unwrap().url = "https://gitlab.com/o/r".to_owned();
-        assert!(SourceJob::of(&elsewhere, "x.tgz", &sri_of(b"x"), "u".to_owned()).is_none());
+        let none = |record: &PackageRecord, filename: &str| {
+            SourceJob::of(record, filename, &sri_of(b"x"), "u".to_owned()).err()
+        };
+        assert_eq!(none(&elsewhere, "x.tgz"), Some(NO_SOURCE));
         elsewhere.repository = None;
-        assert!(SourceJob::of(&elsewhere, "x.tgz", &sri_of(b"x"), "u".to_owned()).is_none());
+        assert_eq!(none(&elsewhere, "x.tgz"), Some(NO_SOURCE));
 
         let mut pypi = record.clone();
         pypi.repository = None;
@@ -779,7 +820,57 @@ mod tests {
         .expect("a PyPI job needs no repository from its record");
         assert_eq!((wheel.repo, wheel.layout), (None, Layout::Wheel));
         let sdist = SourceJob::of(&pypi, "idna-3.10.tar.gz", &sri_of(b"x"), "u".to_owned());
-        assert_eq!(sdist.map(|job| job.layout), Some(Layout::Tar));
-        assert!(SourceJob::of(&pypi, "idna-3.10.zip", &sri_of(b"x"), "u".to_owned()).is_none());
+        assert_eq!(sdist.map(|job| job.layout), Ok(Layout::Tar));
+        assert_eq!(none(&pypi, "idna-3.10.zip"), Some(NOT_READ));
+    }
+
+    /// The comparison is off, has no digest, nothing to compare, or stored not compared;
+    /// it is pending until it stores a result; one stored as compared is a run.
+    #[test]
+    fn the_comparison_says_why_it_has_no_result() {
+        let record = crate::ecosystem::npm::normalized(
+            "@babel_traverse-8.0.5.full.json",
+            crate::record::DocumentDetail::Full,
+        )
+        .version("8.0.5")
+        .unwrap()
+        .clone();
+        let digest = sri_of(b"x");
+        let off = analyser("source-not-run-off", 1 << 20, Arc::new(InProcess::new(8)));
+        let on = off
+            .clone()
+            .with_sources(Some("http://127.0.0.1:1".to_owned()));
+        let why = |analyser: &Analyser, record, digest, sourced| {
+            analyser
+                .source_not_run(record, "x.tgz", digest, sourced)
+                .map(|not_run| (not_run.detector, not_run.why))
+        };
+        let named = |why| Some((crate::analysis::detector::source::NAME.to_owned(), why));
+        assert_eq!(why(&off, &record, Some(&digest), None), named(Unrun::Off));
+        assert_eq!(
+            why(&on, &record, None, None),
+            named(Unrun::did_not_run(NO_DIGEST))
+        );
+        assert_eq!(
+            why(&on, &record, Some(&digest), None),
+            named(Unrun::Pending)
+        );
+        let mut elsewhere = record.clone();
+        elsewhere.repository = None;
+        assert_eq!(
+            why(&on, &elsewhere, Some(&digest), None),
+            named(Unrun::did_not_run(NO_SOURCE))
+        );
+        let not_compared = Sourced::NotCompared("no tag".to_owned());
+        assert_eq!(
+            why(&off, &record, Some(&digest), Some(&not_compared)),
+            named(Unrun::did_not_run("no tag"))
+        );
+        let compared = Sourced::Compared {
+            repository: "babel/babel".to_owned(),
+            reference: "v8.0.5".to_owned(),
+            comparison: Box::default(),
+        };
+        assert_eq!(why(&on, &record, Some(&digest), Some(&compared)), None);
     }
 }

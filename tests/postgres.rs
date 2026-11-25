@@ -2946,3 +2946,114 @@ async fn each_served_version_and_hourly_failure_count_is_merged() {
         "until is exclusive"
     );
 }
+
+/// A version's results go, by name and version and by digest, the install scripts with its
+/// analysis; another version's, another repository's and the decisions stay.
+#[tokio::test]
+async fn forgetting_an_artifact_deletes_each_result_on_it() {
+    use byrle::analysis::attestation::Attested;
+    use byrle::analysis::decision::Artifact;
+    use byrle::analysis::detector::Detection;
+    use byrle::analysis::source::Sourced;
+    use byrle::analysis::store::{DetectionKey, Forgotten};
+    use byrle::analysis::virustotal::{Scanned, Verdict};
+    use byrle::ecosystem::Signature;
+    let intel = skip_without_database!("t_forget");
+    let store = analyses(&intel);
+    let widget = sri(3).to_string();
+    store
+        .put_decisions(&[decision("widget", Some(&widget), "2026-11-25T00:00:00Z")])
+        .await
+        .expect("writes");
+    let scripts = Scripts::Declared(InstallScripts {
+        names: vec!["install".to_owned()],
+        bodies: vec![("install".to_owned(), "node-gyp-build".to_owned())],
+        anomalies: Vec::new(),
+    });
+    store
+        .put(&sri(1), &analysis(scripts))
+        .await
+        .expect("writes");
+    let failed = Attested::Failed {
+        why: "x".to_owned(),
+    };
+    store.put_attested(&sri(1), &failed).await.expect("writes");
+    let not = Sourced::NotCompared("x".to_owned());
+    store.put_sourced(&sri(3), &not).await.expect("writes");
+    let scanned = Scanned {
+        sha256: "x".to_owned(),
+        verdict: Verdict::Unknown,
+        asked: 0,
+    };
+    store.put_scanned(&sri(3), &scanned).await.expect("writes");
+    let signed = Signature::Failed {
+        why: "x".to_owned(),
+    };
+    store
+        .put_signature(&sri(3), "npm", "v", &signed)
+        .await
+        .expect("writes");
+    let run = |repository: &str, name: &str, version: &str| DetectionKey {
+        detector: "guarddog".to_owned(),
+        detector_version: "3.2.0".to_owned(),
+        repository: repository.to_owned(),
+        name: name.to_owned(),
+        version: version.to_owned(),
+    };
+    let runs = [
+        run("npm", "widget", "1.0.0"),
+        run("npm", "widget", "2.0.0"),
+        run("gradle-plugins", "widget", "1.0.0"),
+        run("npm", "bufferutil", "4.1.0"),
+    ];
+    for key in &runs {
+        store
+            .put_detected(key, &Detection::default())
+            .await
+            .expect("writes");
+    }
+
+    let version = Artifact::Version {
+        ecosystem: "npm".to_owned(),
+        name: "widget".to_owned(),
+        version: "1.0.0".to_owned(),
+    };
+    assert_eq!(
+        store.forget_analyses(&version).await.expect("deletes"),
+        Forgotten {
+            digests: vec![widget.clone()],
+            results: 4
+        },
+        "its source, VirusTotal answer, signature and npm detection"
+    );
+    assert_eq!(store.sourced(&sri(3)).await.expect("reads"), None);
+    assert_eq!(store.scanned(&sri(3)).await.expect("reads"), None);
+    assert_eq!(store.detected(&runs[0]).await.expect("reads"), None);
+    for kept in &runs[1..] {
+        assert!(
+            store.detected(kept).await.expect("reads").is_some(),
+            "{kept:?}"
+        );
+    }
+    assert_eq!(store.dispositions(&version).await.expect("reads").len(), 1);
+
+    let digest = Artifact::Digest(sri(1).to_string());
+    assert_eq!(
+        store.forget_analyses(&digest).await.expect("deletes"),
+        Forgotten {
+            digests: vec![sri(1).to_string()],
+            results: 3
+        },
+        "its analysis, attestation and detection"
+    );
+    assert_eq!(store.get(&sri(1)).await.expect("reads"), None);
+    let scripts: i64 = sqlx::query_scalar("SELECT count(*) FROM artifact_install_script")
+        .fetch_one(intel.pool())
+        .await
+        .expect("counts");
+    assert_eq!(scripts, 0, "deleted with its analysis");
+    assert_eq!(
+        store.forget_analyses(&digest).await.expect("deletes"),
+        Forgotten::default()
+    );
+}
