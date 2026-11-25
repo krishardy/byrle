@@ -9,7 +9,8 @@ use std::time::Duration;
 use tokio::sync::{Semaphore, watch};
 use tracing::{info, warn};
 
-use super::{Analyser, InFlight};
+use super::{Analyser, FailedRun, InFlight};
+use crate::analysis::decision::{NotRun, Unrun};
 use crate::analysis::detector::{Detection, Detector, Target};
 use crate::analysis::store::DetectionKey;
 use crate::ecosystem::Repository;
@@ -155,13 +156,38 @@ impl Analyser {
         target: &Target,
         key: &DetectionKey,
     ) -> Option<Detection> {
+        let run = FailedRun::Detection(key.clone());
         let why = match tokio::time::timeout(self.deadline, detector.detect(target)).await {
-            Ok(Ok(detection)) => return Some(detection),
+            Ok(Ok(detection)) => {
+                self.run_succeeded(&run);
+                return Some(detection);
+            }
             Ok(Err(why)) => why,
             Err(_) => "past its deadline".to_owned(),
         };
         warn!(byrle.detector = %key.detector, byrle.package.name = %key.name, byrle.package.version = %key.version, error.message = %why, "detector did not run, nothing stored");
+        self.run_failed(run, why);
         None
+    }
+
+    /// Each detector reading `target`'s ecosystem with no result in `done`: why its last
+    /// run failed, in this process, or pending.
+    pub fn not_run(&self, target: &Target, done: &[(String, Detection)]) -> Vec<NotRun> {
+        let Some(detectors) = &self.detectors else {
+            return Vec::new();
+        };
+        detectors
+            .reading(target.repository)
+            .filter(|detector| !done.iter().any(|(name, _)| name == detector.name()))
+            .map(|detector| {
+                let run = FailedRun::Detection(key(detector.as_ref(), target));
+                let why = match self.why_failed(&run) {
+                    Some(why) => Unrun::did_not_run(&why),
+                    None => Unrun::Pending,
+                };
+                NotRun::new(detector.name(), why)
+            })
+            .collect()
     }
 
     /// The detectors a download of `target` waits on, each awaited one reading its ecosystem
@@ -479,5 +505,45 @@ pub(crate) mod tests {
         ] {
             assert!(log.contains(said), "{said}: {log}");
         }
+    }
+
+    /// A detector with no result is pending until a run fails, then says why until one
+    /// succeeds. One with a result is not listed, and with none set none is.
+    #[tokio::test]
+    async fn a_detector_with_no_result_says_why() {
+        let pending = |why| vec![NotRun::new("guarddog", why)];
+        let off = made("not-run-off", 1 << 20, Arc::new(InProcess::new(8)));
+        assert_eq!(off.not_run(&target(), &[]), []);
+
+        let failing = Arc::new(Fake {
+            answer: Err("no".to_owned()),
+            delay: Duration::ZERO,
+            runs: AtomicU64::new(0),
+            awaited: false,
+        });
+        let analyser = made("not-run-failing", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_detectors(vec![failing]);
+        assert_eq!(analyser.not_run(&target(), &[]), pending(Unrun::Pending));
+        run_all(&analyser, &[]).await;
+        assert_eq!(
+            analyser.not_run(&target(), &[]),
+            pending(Unrun::did_not_run("no"))
+        );
+
+        let fake = Fake::firing(&["x"]);
+        let analyser = made("not-run-succeeds", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_detectors(vec![fake.clone()]);
+        analyser.run_failed(
+            FailedRun::Detection(key(fake.as_ref(), &target())),
+            "before".to_owned(),
+        );
+        assert_eq!(
+            analyser.not_run(&target(), &[]),
+            pending(Unrun::did_not_run("before"))
+        );
+        run_all(&analyser, &[]).await;
+        let detected = analyser.detected(&target()).await;
+        assert_eq!(analyser.not_run(&target(), &detected), []);
+        assert_eq!(analyser.not_run(&target(), &[]), pending(Unrun::Pending));
     }
 }

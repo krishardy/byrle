@@ -10,6 +10,9 @@ pub const NAME: &str = "archive";
 /// Every rule it reports.
 pub const RULES: [&str; 1] = ["archive_suspicious"];
 
+/// Why it has no result on a file no install-script reader reads, whose shape is not read.
+pub const NOT_READ: &str = "no reader reads this kind of file";
+
 /// `archive_suspicious`, naming each of `anomalies`, when there are any.
 pub fn detection(anomalies: &[Anomaly]) -> Detection {
     let findings = if anomalies.is_empty() {

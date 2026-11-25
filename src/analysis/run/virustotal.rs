@@ -8,7 +8,8 @@ use tokio::sync::{OnceCell, Semaphore, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use super::{Analyser, InFlight};
+use super::{Analyser, FailedRun, InFlight, NO_DIGEST};
+use crate::analysis::decision::{NotRun, Unrun};
 use crate::analysis::virustotal::{
     self, Client, Counts, DIRECT_UPLOAD_BYTES, Failure, Limiter, MAX_UPLOAD_BYTES, Mode, Scanned,
     Settings, Verdict,
@@ -117,10 +118,15 @@ impl Analyser {
                 }) => analyser.polled(&scans, sha256, &id).await,
                 _ => analyser.looked_up(&scans, &job).await,
             };
+            let run = FailedRun::Scan(job.digest.clone());
             match scanned {
-                Ok(scanned) => analyser.put_scanned(&job, &scanned).await,
+                Ok(scanned) => {
+                    analyser.run_succeeded(&run);
+                    analyser.put_scanned(&job, &scanned).await
+                }
                 Err(why) => {
-                    warn!(url.full = %job.url, error.message = %why, "virustotal: not answered, nothing stored")
+                    warn!(url.full = %job.url, error.message = %why, "virustotal: not answered, nothing stored");
+                    analyser.run_failed(run, why);
                 }
             }
         }))
@@ -129,6 +135,21 @@ impl Analyser {
     /// Whether VirusTotal is asked.
     pub fn scanning(&self) -> bool {
         self.scans.is_some()
+    }
+
+    /// Why VirusTotal had no answer about the artifact with `digest`: it is off, there is
+    /// no digest to verify the artifact by, its last lookup in this process failed, or it
+    /// is pending.
+    pub fn scan_not_run(&self, digest: Option<&Sri>) -> NotRun {
+        let why = match (&self.scans, digest) {
+            (None, _) => Unrun::Off,
+            (Some(_), None) => Unrun::did_not_run(NO_DIGEST),
+            (Some(_), Some(digest)) => match self.why_failed(&FailedRun::Scan(digest.clone())) {
+                Some(why) => Unrun::did_not_run(&why),
+                None => Unrun::Pending,
+            },
+        };
+        NotRun::new(crate::analysis::detector::virustotal::NAME, why)
     }
 
     /// How many VirusTotal jobs have started since this analyser was made. 0 when it is off.
@@ -543,6 +564,50 @@ mod tests {
         .await;
         let broken = scanning("vt-broken", &base, Mode::Hash, Arc::new(Broken));
         assert_eq!(run(&broken, job(&base, BYTES), None).await, None);
+    }
+
+    /// VirusTotal with no answer is off, or has no digest, or is pending until a lookup
+    /// fails, then says why it failed until one succeeds.
+    #[tokio::test]
+    async fn virustotal_with_no_answer_says_why() {
+        let named = |why| NotRun::new(crate::analysis::detector::virustotal::NAME, why);
+        let digest = sri_of(BYTES);
+        let off = analyser("vt-not-run-off", 1 << 20, Arc::new(InProcess::new(8)));
+        assert_eq!(off.scan_not_run(Some(&digest)), named(Unrun::Off));
+
+        let (base, _) = server(routes(vec![(
+            format!("/files/{}", sha256()),
+            429,
+            Vec::new(),
+        )]))
+        .await;
+        let refused = scanning("vt-not-run", &base, Mode::Hash, Arc::new(InProcess::new(8)));
+        assert_eq!(
+            refused.scan_not_run(None),
+            named(Unrun::did_not_run(NO_DIGEST))
+        );
+        assert_eq!(refused.scan_not_run(Some(&digest)), named(Unrun::Pending));
+        assert_eq!(run(&refused, job(&base, BYTES), None).await, None);
+        assert_eq!(
+            refused.scan_not_run(Some(&digest)),
+            named(Unrun::did_not_run("VirusTotal's quota is spent"))
+        );
+
+        let (base, _) = server(routes(vec![(
+            format!("/files/{}", sha256()),
+            200,
+            file(0, 0, 9),
+        )]))
+        .await;
+        let answered = scanning(
+            "vt-not-run-ok",
+            &base,
+            Mode::Hash,
+            Arc::new(InProcess::new(8)),
+        );
+        answered.run_failed(FailedRun::Scan(digest.clone()), "before".to_owned());
+        assert!(run(&answered, job(&base, BYTES), None).await.is_some());
+        assert_eq!(answered.scan_not_run(Some(&digest)), named(Unrun::Pending));
     }
 
     /// A poll, an upload URL or an upload VirusTotal refuses stores nothing.

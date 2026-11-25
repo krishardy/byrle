@@ -158,3 +158,4 @@ Implemented means it is in the code, and the file names where.
 | 0144 | [`latest` naming a removed npm version moves to the highest release below it](0144-latest-moves-off-a-removed-version.md) | Implemented 2026-11-25 |  |
 | 0145 | [`byrle artifact show` prints a list unless asked for `-o json`](0145-artifact-show-output.md) | Implemented 2026-11-25 |  |
 | 0146 | [GuardDog runs in its own container](0146-guarddog-container.md) | Implemented 2026-11-25 |  |
+| 0147 | [A decision records each detector with no result, and why](0147-detector-states.md) | Implemented 2026-11-26 |  |

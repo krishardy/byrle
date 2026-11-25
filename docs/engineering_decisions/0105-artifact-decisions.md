@@ -36,10 +36,11 @@ written, so `answered` is what the client got:
 | `cut-short` | a second row, with the served row's features and disposition |
 
 A row adds three things to the line: the digest the metadata published, the mode, and the
-detector and VirusTotal results the decision read. A detector with no entry had not run on
-the version. One with an entry and no findings ran and found nothing. `errors` lists the
-rules that could not run. VirusTotal is `null` until it has been asked, and `unknown` or
-`queued` carry no counts.
+detector and VirusTotal results the decision read. One with an entry and no findings ran
+and found nothing. `errors` lists the rules that could not run. `not_run` lists each
+detector with no result, as `off`, `pending` or `did-not-run` with why
+([detector-states](0147-detector-states.md)). VirusTotal is `null` until it has answered,
+and `unknown` or `queued` carry no counts.
 
 ## The features are those the decision read
 

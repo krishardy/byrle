@@ -153,15 +153,18 @@ async fn measure(
             .integrity
             .as_deref()
             .and_then(|i| Sri::parse(i).ok());
-        let job = digest.as_ref().and_then(|digest| {
-            SourceJob::of(&record, &artifact.filename, digest, artifact.url.clone())
-        });
-        let unjobbed = match (&digest, &job) {
-            (None, _) => Some("no strong digest"),
-            (_, None) => Some("no repository on GitHub"),
-            _ => None,
+        let job = digest
+            .as_ref()
+            .map(|digest| SourceJob::of(&record, &artifact.filename, digest, artifact.url.clone()));
+        let unjobbed = match &job {
+            None => Some("no strong digest"),
+            Some(Err(why)) => Some(*why),
+            Some(Ok(_)) => None,
         };
-        if let Some(handle) = job.and_then(|job| analyser.start_source(job)) {
+        if let Some(handle) = job
+            .and_then(Result::ok)
+            .and_then(|job| analyser.start_source(job))
+        {
             let _ = handle.await;
         }
         measured.push(Measured {

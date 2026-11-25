@@ -1,6 +1,7 @@
 //! `byrle artifact show` without `-o json`: each decision as a list to read.
 
-use super::{Decided, DetectorRun, Disposition, Scan};
+use super::{Decided, DetectorRun, Disposition, Features, Scan, Unrun};
+use crate::analysis::detector::virustotal::NAME as VIRUSTOTAL;
 use crate::audit::{RecordedAdvisory, RecordedFacts};
 
 /// `json_lines`, as [`super::command::show`] prints them, each decision as a readable list
@@ -44,11 +45,7 @@ fn readable(decided: &Decided) -> String {
     out.push_str("\n  facts\n");
     push_rows(&mut out, "    ", facts(&decided.features.facts).iter());
     out.push_str("\n  detectors\n");
-    let detectors = detectors(
-        &decided.features.detectors,
-        decided.features.virustotal.as_ref(),
-    );
-    push_rows(&mut out, "    ", detectors.iter());
+    push_rows(&mut out, "    ", detectors(&decided.features).iter());
     out.push_str("\n  decided under\n");
     let under = [
         ("policy", decided.disposition.policy_digest.clone()),
@@ -162,42 +159,70 @@ fn advisories(advisories: &[RecordedAdvisory]) -> String {
     listed(&each)
 }
 
-/// One row per detector, `none` or each finding and error, and one for VirusTotal.
-fn detectors(runs: &[DetectorRun], virustotal: Option<&Scan>) -> Vec<(String, String)> {
-    let mut rows: Vec<(String, String)> = runs
+/// One row per detector: each run's findings and errors, or `no findings`; then each
+/// detector with no result, and why; then VirusTotal, once, whose run its answer reports.
+fn detectors(features: &Features) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = features
+        .detectors
         .iter()
-        .map(|run| {
-            let found: Vec<String> = run
-                .detection
-                .findings
-                .iter()
-                .map(|f| format!("{}: {}", f.rule, f.detail))
-                .chain(
-                    run.detection
-                        .errors
-                        .iter()
-                        .map(|e| format!("error {}: {}", e.rule, e.detail)),
-                )
-                .collect();
-            let found = match found.is_empty() {
-                true => "no findings".to_owned(),
-                false => found.join(", "),
-            };
-            (run.detector.clone(), found)
-        })
+        .filter(|run| run.detector != VIRUSTOTAL)
+        .map(|run| (run.detector.clone(), found(run)))
         .collect();
-    let scanned = match virustotal {
-        None => "not asked".to_owned(),
-        Some(scan) => match (scan.malicious, scan.suspicious, scan.engines) {
-            (Some(malicious), Some(suspicious), Some(engines)) => format!(
-                "{}: {malicious} malicious, {suspicious} suspicious, of {engines} engines",
-                scan.state
-            ),
-            _ => scan.state.clone(),
-        },
+    rows.extend(
+        features
+            .not_run
+            .iter()
+            .filter(|not_run| not_run.detector != VIRUSTOTAL)
+            .map(|not_run| (not_run.detector.clone(), unrun(&not_run.why))),
+    );
+    let not_run = features.not_run.iter().find(|n| n.detector == VIRUSTOTAL);
+    let scanned = match (&features.virustotal, not_run) {
+        (Some(scan), _) => scanned(scan),
+        (None, Some(not_run)) => unrun(&not_run.why),
+        (None, None) => unrun(&Unrun::Pending),
     };
-    rows.push(("virustotal".to_owned(), scanned));
+    rows.push((VIRUSTOTAL.to_owned(), scanned));
     rows
+}
+
+/// A run's findings and errors, or `no findings`.
+fn found(run: &DetectorRun) -> String {
+    let found: Vec<String> = run
+        .detection
+        .findings
+        .iter()
+        .map(|f| format!("{}: {}", f.rule, f.detail))
+        .chain(
+            run.detection
+                .errors
+                .iter()
+                .map(|e| format!("error {}: {}", e.rule, e.detail)),
+        )
+        .collect();
+    match found.is_empty() {
+        true => "no findings".to_owned(),
+        false => found.join(", "),
+    }
+}
+
+/// VirusTotal's state, with its counts when it knew the file.
+fn scanned(scan: &Scan) -> String {
+    match (scan.malicious, scan.suspicious, scan.engines) {
+        (Some(malicious), Some(suspicious), Some(engines)) => format!(
+            "{}: {malicious} malicious, {suspicious} suspicious, of {engines} engines",
+            scan.state
+        ),
+        _ => scan.state.clone(),
+    }
+}
+
+/// Why a detector had no result when the decision was made.
+fn unrun(why: &Unrun) -> String {
+    match why {
+        Unrun::Off => "off".to_owned(),
+        Unrun::Pending => "no result when decided".to_owned(),
+        Unrun::DidNotRun { why } => format!("did not run: {why}"),
+    }
 }
 
 /// `value` serialised, a kebab-case string such as `no-strong-digest`.
@@ -376,7 +401,7 @@ mod tests {
             "    deprecated       yes: use v2\n",
             "    provenance       identity-changed: from a/b, previous 0.9.0, to c/d\n",
             "    guarddog    error whois: port 43 refused\n",
-            "    virustotal  not asked\n",
+            "    virustotal  no result when decided\n",
             "    intel snapshot  sha256:snap\n",
         ] {
             assert!(printed.contains(row), "{row:?} in\n{printed}");
@@ -400,6 +425,52 @@ mod tests {
         assert!(printed.contains("    virustotal  unknown\n"), "{printed}");
         assert!(
             printed.contains("    provenance       consistent\n"),
+            "{printed}"
+        );
+    }
+
+    /// Each detector with no result reads as why, after those that ran. VirusTotal reads
+    /// once: its answer over its run and its `not_run` entry, else that entry.
+    #[test]
+    fn a_detector_with_no_result_says_why() {
+        use crate::analysis::decision::NotRun;
+        let mut decided = at_a_fixed_time(decided("ms", "sha512-x"));
+        decided.features.detectors.push(DetectorRun {
+            detector: VIRUSTOTAL.to_owned(),
+            detection: Default::default(),
+        });
+        decided.features.not_run = vec![
+            NotRun::new("archive", Unrun::Pending),
+            NotRun::new(
+                "source",
+                Unrun::DidNotRun {
+                    why: "no repository".to_owned(),
+                },
+            ),
+            NotRun::new("signing", Unrun::Off),
+            NotRun::new(VIRUSTOTAL, Unrun::Pending),
+        ];
+        let printed = lines(&decided.to_json());
+        assert!(
+            printed.contains(
+                "  detectors
+    metadata    typosquat: near express
+    guarddog    no findings
+    archive     no result when decided
+    source      did not run: no repository
+    signing     off
+    virustotal  known: 2 malicious, 1 suspicious, of 70 engines
+"
+            ),
+            "{printed}"
+        );
+        decided.features.virustotal = None;
+        decided.features.not_run[3].why = Unrun::DidNotRun {
+            why: "VirusTotal answered 429".to_owned(),
+        };
+        let printed = lines(&decided.to_json());
+        assert!(
+            printed.contains("    virustotal  did not run: VirusTotal answered 429\n"),
             "{printed}"
         );
     }

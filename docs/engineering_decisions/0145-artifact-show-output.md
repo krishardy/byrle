@@ -32,8 +32,10 @@ pkg:npm/express@5.3.0
     virustotal  not asked
 ```
 
-A detector with nothing found prints `no findings`, so a detector that ran is told apart
-from one absent from the list, which had not run.
+A detector with nothing found prints `no findings`. Since 2026-11-26 a detector with no
+result prints `off`, `no result when decided` or `did not run: <why>`, and the decision
+above prints `virustotal  no result when decided`
+([detector-states](0147-detector-states.md)).
 
 `command::show` still writes JSON lines, and `readable::lines` renders them. `main.rs`
 renders after `show` locally, and after a remote answer when `BYRLE_REMOTE_URL` is set, so
