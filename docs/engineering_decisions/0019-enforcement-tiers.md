@@ -99,7 +99,8 @@ document is parsed only when there is something to remove; otherwise the byte re
 
 Before the allow list, the only way to exempt one origin was to turn refusing off for all.
 A `dist-tags` entry naming a removed version is dropped, so the resolver falls back to a
-version that remains. When nothing remains the filtered document is still sent, with an
+version that remains. `latest` is the exception: it moves to the highest release below the
+removed version ([latest-moves-off-a-removed-version](0144-latest-moves-off-a-removed-version.md)). When nothing remains the filtered document is still sent, with an
 empty `versions` map; forwarding the original would put every refused version back. A
 version with no `dist.tarball` is left alone: it produces no record, so nothing installs it.
 

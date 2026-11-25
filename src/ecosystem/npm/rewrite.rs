@@ -127,6 +127,14 @@ fn filter_listed(
 
     let gone: HashSet<&str> = removed.iter().map(String::as_str).collect();
     let tags = top.get("dist-tags").and_then(Members::of);
+    let latest = match (&tags, &versions) {
+        (Some(tags), Some(versions)) => tags
+            .get("latest")
+            .and_then(|raw| serde_json::from_str::<&str>(raw.get()).ok())
+            .filter(|was| gone.contains(was))
+            .and_then(|was| latest_after(versions, &gone, was)),
+        _ => None,
+    };
     let mut body = Vec::with_capacity(json.len());
     top.write(
         &mut body,
@@ -143,10 +151,17 @@ fn filter_listed(
             }
             ("dist-tags", _, Some(tags)) => tags.write(
                 out,
-                |_, raw| {
-                    serde_json::from_str::<&str>(raw.get()).map_or(true, |v| !gone.contains(v))
+                |key, raw| {
+                    (key == "latest" && latest.is_some())
+                        || serde_json::from_str::<&str>(raw.get())
+                            .map_or(true, |v| !gone.contains(v))
                 },
-                |_, raw, out| out.extend_from_slice(raw.get().as_bytes()),
+                |key, raw, out| match (key, &latest) {
+                    ("latest", Some(latest)) => {
+                        serde_json::to_writer(&mut *out, latest).expect("a string serialises");
+                    }
+                    _ => out.extend_from_slice(raw.get().as_bytes()),
+                },
             ),
             _ => out.extend_from_slice(raw.get().as_bytes()),
         },
@@ -179,6 +194,23 @@ fn filter_listed(
         allowed,
         unrepointed,
     })
+}
+
+/// What `latest` names once `was`, the version it named, is removed: the highest release
+/// below `was` that remains, as npm repoints `latest` when that version is unpublished.
+/// `None` when no release below it remains, and the tag is dropped. `npm view <name>` and
+/// `pnpm add <name>` read `latest`, and print or install nothing without it.
+fn latest_after(versions: &Members<'_>, gone: &HashSet<&str>, was: &str) -> Option<String> {
+    let was = semver::Version::parse(was).ok()?;
+    versions
+        .0
+        .iter()
+        .map(|(version, _)| version)
+        .filter(|version| !gone.contains(version.as_str()))
+        .filter_map(|version| Some((semver::Version::parse(version).ok()?, version)))
+        .filter(|(parsed, _)| parsed.pre.is_empty() && *parsed < was)
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, version)| version.clone())
 }
 
 /// The result of removing versions the proxy will not serve.
@@ -648,21 +680,50 @@ mod tests {
         assert!(body["versions"].get("1.0.1").is_some());
     }
 
-    /// A tag naming a removed version resolves to nothing, so the tag goes too.
+    /// `latest` naming a refused version moves to the highest release below it that
+    /// remains. Another tag naming a removed version is dropped.
     #[test]
-    fn a_tag_pointing_at_a_refused_version_is_dropped() {
+    fn latest_naming_a_refused_version_moves_to_the_release_below_it() {
         let out = filter_refusing(
             MIXED,
             &policy(&["https://elsewhere.example"], &[]),
             &refusing(&["1.0.2"]),
         );
-
         let body: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
-        assert!(
-            body["dist-tags"].get("latest").is_none(),
-            "`latest` named the refused version"
+        assert_eq!(
+            body["dist-tags"],
+            serde_json::json!({"latest": "1.0.1", "old": "1.0.0"})
         );
-        assert_eq!(body["dist-tags"]["old"], "1.0.0", "other tags survive");
+
+        let tagged = r#"{"name":"w","dist-tags":{"latest":"2.0.0","next":"3.0.0","beta":"2.0.0"},
+            "versions":{
+            "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}},
+            "1.1.0-rc.1":{"version":"1.1.0-rc.1","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.1.0-rc.1.tgz"}},
+            "not-semver":{"version":"not-semver","dist":{"tarball":"https://registry.npmjs.org/w/-/w-x.tgz"}},
+            "2.0.0":{"version":"2.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-2.0.0.tgz"}},
+            "3.0.0":{"version":"3.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-3.0.0.tgz"}}}}"#;
+        let out = filter_refusing(tagged, &policy(&[], &[]), &refusing(&["2.0.0"]));
+        let body: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+        assert_eq!(
+            body["dist-tags"],
+            serde_json::json!({"latest": "1.0.0", "next": "3.0.0"}),
+            "not 3.0.0, which is above it, nor the prerelease, nor what does not parse"
+        );
+    }
+
+    /// With no release below it left, or a `latest` that is not semver, the tag is dropped.
+    #[test]
+    fn latest_with_no_release_below_it_is_dropped() {
+        for (latest, refused) in [("1.0.0", ["1.0.0"].as_slice()), ("x", &["x"])] {
+            let json = format!(
+                r#"{{"name":"w","dist-tags":{{"latest":"{latest}"}},"versions":{{
+                "{latest}":{{"version":"{latest}","dist":{{"tarball":"https://registry.npmjs.org/w/-/w-1.tgz"}}}},
+                "2.0.0":{{"version":"2.0.0","dist":{{"tarball":"https://registry.npmjs.org/w/-/w-2.tgz"}}}}}}}}"#
+            );
+            let out = filter_refusing(&json, &policy(&[], &[]), &refusing(refused));
+            let body: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(body["dist-tags"], serde_json::json!({}), "{latest}");
+        }
     }
 
     /// The policy's answer does not depend on where the artifact lives, so a version
@@ -838,21 +899,15 @@ mod tests {
         assert!(v["dist-tags"].as_object().unwrap().is_empty());
     }
 
-    /// A tag naming a version that is gone resolves to nothing. Dropping the tag lets
-    /// the resolver fall back to one that is still there.
+    /// Versions removed for their origin move `latest` as refused ones do: 1.0.1 and 1.0.2
+    /// are gone, so it names 1.0.0.
     #[test]
-    fn tags_pointing_at_removed_versions_are_dropped() {
+    fn latest_moves_past_versions_removed_for_their_origin() {
         let out = filter(MIXED, &policy(&[], &[]));
         let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
-        let tags = v["dist-tags"].as_object().unwrap();
-        assert!(
-            !tags.contains_key("latest"),
-            "latest named a removed version"
-        );
         assert_eq!(
-            tags["old"],
-            serde_json::json!("1.0.0"),
-            "this one still resolves"
+            v["dist-tags"],
+            serde_json::json!({"latest": "1.0.0", "old": "1.0.0"})
         );
     }
 
@@ -1042,8 +1097,8 @@ mod tests {
         );
     }
 
-    /// A version that does not normalise is removed, with the tags naming it, whether or not
-    /// artifacts are pointed at the proxy: its tarball URL would not be.
+    /// A version that does not normalise is removed, and `latest` moves off it, whether or
+    /// not artifacts are pointed at the proxy: its tarball URL would not be.
     #[test]
     fn a_version_that_does_not_normalise_is_removed_with_its_tags() {
         let json = r#"{"name":"w","dist-tags":{"latest":"1.0.1","stable":"1.0.0"},"versions":{
@@ -1056,7 +1111,7 @@ mod tests {
             let body = rewrite_document(json, &policy(&[], &[]), base, &HashSet::new(), true)
                 .expect("the unread version is removed");
             assert!(body["versions"].get("1.0.1").is_none(), "{body}");
-            assert!(body["dist-tags"].get("latest").is_none(), "{body}");
+            assert_eq!(body["dist-tags"]["latest"], "1.0.0", "{body}");
             assert_eq!(body["dist-tags"]["stable"], "1.0.0");
             let tarball = body["versions"]["1.0.0"]["dist"]["tarball"]
                 .as_str()
@@ -1156,8 +1211,8 @@ mod tests {
         assert!(out.removed.is_empty());
     }
 
-    /// A refused version leaves `versions` and the tags naming it; the rest is written as it
-    /// came, with each kept artifact URL, `_resolved` too, pointed at the proxy.
+    /// A refused version leaves `versions`, and `latest` moves to 1.0.0; the rest is written
+    /// as it came, with each kept artifact URL, `_resolved` too, pointed at the proxy.
     #[test]
     fn a_refused_version_leaves_the_document_and_the_rest_is_as_written() {
         let json = r#"{"name":"w","dist-tags":{"latest":"1.0.1","old":"1.0.0","n":1},
@@ -1175,7 +1230,7 @@ mod tests {
             body,
             serde_json::json!({
                 "name": "w",
-                "dist-tags": {"old": "1.0.0", "n": 1},
+                "dist-tags": {"latest": "1.0.0", "old": "1.0.0", "n": 1},
                 "time": {"1.0.0": "2026-01-01T00:00:00.000Z"},
                 "x\"y": [1, 2.50, {"a": null}],
                 "versions": {"1.0.0": {"version": "1.0.0",
